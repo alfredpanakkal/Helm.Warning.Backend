@@ -1,0 +1,8 @@
+{
+  "name": "Helm Navigational Warning System",
+  "description": "Consolidated NAVAREA navigational warning scraper, deterministic parser, coordinate & GeoJSON extraction engine, and differential synchronization console for Baltic, NAVAREA I, and NAVAREA XI.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
