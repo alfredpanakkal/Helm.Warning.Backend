@@ -1,0 +1,75 @@
+name: NAVAREA Baltic Ingestion Pipeline
+
+on:
+  schedule:
+    - cron: '0 */6 * * *' # Automatically runs every 6 hours
+  push:
+    branches:
+      - main
+    paths:
+      - 'navareas/baltic/**'
+      - 'shared/**'
+      - 'scripts/run_baltic.py'
+      - 'requirements.txt'
+      - '.github/workflows/baltic-sync.yml'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: baltic-sync-engine
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  ingest-baltic-warnings:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Unit Tests for Baltic
+        run: |
+          python -m unittest tests.test_baltic -v
+
+      - name: Harvest Bulletins (Stage 1 Scraper)
+        run: |
+          python scripts/run_baltic.py
+
+      - name: Verify Output Files
+        run: |
+          if [ ! -f navareas/baltic/navarea_baltic_warnings.txt ]; then
+            echo "Scraper error: navarea_baltic_warnings.txt not generated!"
+            exit 1
+          fi
+          if [ ! -f navareas/baltic/parsed_baltic_warnings.json ]; then
+            echo "Parser error: parsed_baltic_warnings.json not generated!"
+            exit 1
+          fi
+          echo "Output files verified successfully."
+
+      - name: Upload Output Artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: baltic-warnings-data
+          path: |
+            navareas/baltic/navarea_baltic_warnings.txt
+            navareas/baltic/parsed_baltic_warnings.json
+          retention-days: 7
+          if-no-files-found: ignore
