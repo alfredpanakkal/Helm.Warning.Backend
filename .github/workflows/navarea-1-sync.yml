@@ -1,0 +1,75 @@
+name: NAVAREA I Ingestion Pipeline
+
+on:
+  schedule:
+    - cron: '0 */6 * * *' # Automatically runs every 6 hours
+  push:
+    branches:
+      - main
+    paths:
+      - 'navareas/navarea_1/**'
+      - 'shared/**'
+      - 'scripts/run_navarea_1.py'
+      - 'requirements.txt'
+      - '.github/workflows/navarea-1-sync.yml'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: navarea-1-sync-engine
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  ingest-navarea-1-warnings:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Unit Tests for NAVAREA I
+        run: |
+          python -m unittest tests.test_navarea_1 -v
+
+      - name: Harvest Bulletins (Stage 1 Scraper)
+        run: |
+          python scripts/run_navarea_1.py
+
+      - name: Verify Output Files
+        run: |
+          if [ ! -f navareas/navarea_1/navarea_1_warnings.txt ]; then
+            echo "Scraper error: navarea_1_warnings.txt not generated!"
+            exit 1
+          fi
+          if [ ! -f navareas/navarea_1/parsed_navarea_1_warnings.json ]; then
+            echo "Parser error: parsed_navarea_1_warnings.json not generated!"
+            exit 1
+          fi
+          echo "Output files verified successfully."
+
+      - name: Upload Output Artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: navarea-1-warnings-data
+          path: |
+            navareas/navarea_1/navarea_1_warnings.txt
+            navareas/navarea_1/parsed_navarea_1_warnings.json
+          retention-days: 7
+          if-no-files-found: ignore
