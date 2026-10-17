@@ -73,7 +73,7 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
       addLog(`  • TLS Chrome fingerprint impersonation active`);
       addLog(`  • Scraping navigational bulletins for Baltic Subarea & Swedish Waters...`);
       harvestedBulletins.push(
-        ...INITIAL_BULLETINS.filter((b) => b.type === 'baltic')
+        ...INITIAL_BULLETINS.filter((b: any) => b.type === 'baltic')
       );
     }
 
@@ -82,7 +82,7 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
       addLog(`  • Acquiring __RequestVerificationToken and maintaining session...`);
       addLog(`  • Submitting selection payload for active NAVAREA I alerts...`);
       harvestedBulletins.push(
-        ...INITIAL_BULLETINS.filter((b) => b.type === 'navarea_1')
+        ...INITIAL_BULLETINS.filter((b: any) => b.type === 'navarea_1')
       );
     }
 
@@ -91,7 +91,7 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
       addLog(`  • Querying Disp Warnings CGI portal with fallback...`);
       addLog(`  • Harvesting bulletins for NAVAREA XI Pacific & East Asian Seas...`);
       harvestedBulletins.push(
-        ...INITIAL_BULLETINS.filter((b) => b.type === 'navarea_xi')
+        ...INITIAL_BULLETINS.filter((b: any) => b.type === 'navarea_xi')
       );
     }
 
@@ -200,7 +200,7 @@ export const PipelineRunnerModal: React.FC<PipelineRunnerModalProps> = ({
     });
 
     // Apply cancellations
-    diff.cancel.forEach((wid) => {
+    diff.cancel.forEach((wid: string) => {
       const existing = mergedWarningsMap.get(wid);
       if (existing) {
         mergedWarningsMap.set(wid, { ...existing, status: 'cancelled' });

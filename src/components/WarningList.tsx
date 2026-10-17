@@ -297,7 +297,7 @@ export const WarningList: React.FC<WarningListProps> = ({
                   <div className="flex items-center gap-1 shrink-0 ml-2">
                     {warning.spatial && (
                       <span className="text-[9px] px-1 py-0.2 rounded bg-slate-800 text-slate-400 uppercase font-mono">
-                        {warning.spatial.type}
+                        {(warning.spatial as any)?.type || (warning.spatial as any)?.geometries?.[0]?.type || 'SPATIAL'}
                       </span>
                     )}
                     <button

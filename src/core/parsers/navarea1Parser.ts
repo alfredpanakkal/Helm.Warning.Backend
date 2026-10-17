@@ -1,11 +1,11 @@
 import { RawMessage, NavWarning, GeoJsonGeometry, ParsedData } from '../../types/maritime';
-import { parseCoordinates } from '../coordinates';
-import { classifyHazard } from '../classification';
-import { calculateSha256 } from '../utils';
+import { parseCoordinates, validateNavareaBounds } from '../coordinates';
+import { classifyHazard, determineSeverity } from '../classification';
+import { calculateSha256, parseMaritimeIssuedDate, extractCancellationDirectives } from '../utils';
 
 export const NAVAREA_1_CONFIG = {
   SOURCE_ID: 'ukho-navarea-1',
-  NAVAREA_ID: 'I',
+  NAVAREA_ID: 'NA I',
   SOURCE_URL: 'https://msi.admiralty.co.uk/RadioNavigationalWarnings',
   SCHEDULE: 'Every 6 hours',
   AUTHORITY: 'UK Hydrographic Office (UKHO) Admiralty'
@@ -30,14 +30,24 @@ export function parseNavarea1Warning(
 
   const title = lines[0] || '';
 
-  const { parsedCoords, primaryLat, primaryLon, spatial } = parseCoordinates(rawBlock);
+  const { parsedCoords, primaryLat, primaryLon, spatial, spatialBundle } = parseCoordinates(rawBlock);
 
   const datePattern = /(\d{6}\s+UTC\s+[A-Z]{3}\s+\d{4})/i;
   const dateMatch = title.match(datePattern) || rawBlock.match(datePattern);
   const issuedText = dateMatch ? dateMatch[1] : null;
 
   const hazard = classifyHazard(rawBlock);
+  const severity = determineSeverity(hazard, rawBlock);
   const checksum = calculateSha256(rawBlock);
+  const { cancelsIds, selfCancelsAt } = extractCancellationDirectives(rawBlock);
+
+  const boundsCheck =
+    primaryLat !== null && primaryLon !== null
+      ? validateNavareaBounds(primaryLat, primaryLon, NAVAREA_1_CONFIG.NAVAREA_ID)
+      : { isValid: true };
+  const verification = boundsCheck.isValid
+    ? parsedCoords.length > 0 ? 'verified' : 'needs_review'
+    : 'needs_review';
 
   const rawMessage: RawMessage = {
     warning_id: warningId,
@@ -49,18 +59,29 @@ export function parseNavarea1Warning(
   };
 
   const navWarning: NavWarning = {
+    id: `nav1-${warningId.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
     warning_id: warningId,
+    publisher_id: NAVAREA_1_CONFIG.AUTHORITY,
     source_id: NAVAREA_1_CONFIG.SOURCE_ID,
     navarea: NAVAREA_1_CONFIG.NAVAREA_ID,
+    series: 'NAVAREA I',
+    source_warning_id: warningId,
     title: title,
     issued_text: issuedText,
+    issued_date: parseMaritimeIssuedDate(issuedText),
     coordinates: parsedCoords.length > 0 ? parsedCoords.join(', ') : null,
     latitude: primaryLat,
     longitude: primaryLon,
     category: hazard,
+    severity: severity,
     status: 'active',
     raw_text: rawBlock,
-    spatial: spatial || undefined
+    spatial: spatialBundle || spatial || undefined,
+    is_verified: verification === 'verified',
+    verification: verification,
+    cancels_ids: cancelsIds.length > 0 ? cancelsIds : undefined,
+    valid_to: selfCancelsAt || undefined,
+    created_at: new Date().toISOString()
   };
 
   return { rawMessage, navWarning, spatial };

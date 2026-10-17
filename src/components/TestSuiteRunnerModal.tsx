@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { parseBalticWarning } from '../core/parsers/balticParser';
 import { parseNavarea1Warning } from '../core/parsers/navarea1Parser';
 import { parseNavareaXiWarning } from '../core/parsers/navareaXiParser';
-import { convertToDecimal, parseCoordinates } from '../core/coordinates';
+import { convertToDecimal, parseCoordinates, validateNavareaBounds } from '../core/coordinates';
 import { classifyHazard } from '../core/classification';
 import { computeDifferential } from '../core/syncEngine';
 import {
@@ -296,6 +296,84 @@ DANGER PERIOD: 22 JUN TO 25 JUN.`;
           assertEqual(diff.update[0].warn.warning_id, 'W2');
           assertEqual(diff.cancel.length, 1);
           assertEqual(diff.cancel[0], 'W_DROPPED');
+        }
+      },
+      {
+        suite: 'Rules Register M3: Coordinate & Spatial Geometry',
+        name: 'test_multi_format_coordinates_space_and_degree_symbols',
+        fn: () => {
+          // Format with spaces: DD MM.MM N DDD MM.MM E
+          const resSpaces = parseCoordinates('PSN 58 15.0 N 011 25.0 E');
+          assertEqual(resSpaces.parsedCoords.length, 1);
+          assertAlmostEqual(resSpaces.primaryLat!, 58.25, 4);
+          assertAlmostEqual(resSpaces.primaryLon!, 11.416667, 4);
+
+          // Format with degree and minute symbols: DD°MM.MM'N DDD°MM.MM'E
+          const resSymbols = parseCoordinates('APPROX PSN 57°47.0\'N 011°27.9\'E');
+          assertEqual(resSymbols.parsedCoords.length, 1);
+          assertAlmostEqual(resSymbols.primaryLat!, 57.783333, 4);
+          assertAlmostEqual(resSymbols.primaryLon!, 11.465000, 4);
+        }
+      },
+      {
+        suite: 'Rules Register M3: Clearance Zones & Safety Radii',
+        name: 'test_clearance_and_safety_zone_extraction',
+        fn: () => {
+          const rawBaltic = `PSN: 57-47.0N 011-27.9E. 1 M CLEARANCE FROM THE AREA IS REQUESTED.`;
+          const res1 = parseCoordinates(rawBaltic);
+          assertEqual(res1.circles.length, 1);
+          assertEqual(res1.circles[0].radius_nm, 1);
+
+          const rawMeters = `PSN: 58-15.0N 011-25.0E. SAFETY ZONE 1000 METRES.`;
+          const res2 = parseCoordinates(rawMeters);
+          assertEqual(res2.circles.length, 1);
+          assertAlmostEqual(res2.circles[0].radius_nm, 0.54, 2);
+        }
+      },
+      {
+        suite: 'Rules Register M5: Differential Sync Engine',
+        name: 'test_differential_explicit_cancellation_cascade',
+        fn: () => {
+          const scrapedWarnings: any[] = [
+            {
+              warning_id: 'NAVAREA XI 0451/26',
+              title: 'Hatch Cover Adrift',
+              cancels_ids: ['0450/26']
+            }
+          ];
+          const scrapedMessages: any[] = [
+            { warning_id: 'NAVAREA XI 0451/26', checksum_sha256: 'h_new' }
+          ];
+          const existingWarnings: any = {
+            'NAVAREA XI 0450/26': { warning_id: 'NAVAREA XI 0450/26', status: 'active' },
+            'NAVAREA XI 0451/26': { warning_id: 'NAVAREA XI 0451/26', status: 'active' }
+          };
+          const existingChecksums = new Set(['NAVAREA XI 0450/26:::h_old']);
+
+          const diff = computeDifferential(
+            scrapedWarnings,
+            scrapedMessages,
+            existingWarnings,
+            existingChecksums
+          );
+
+          // 0450/26 must be in toCancel due to explicit cancellation
+          assertIn('NAVAREA XI 0450/26', diff.cancel);
+        }
+      },
+      {
+        suite: 'Rules Register M6: Regional Bounding Box Validation',
+        name: 'test_navarea_regional_bounding_box_audit',
+        fn: () => {
+          const validBaltic = validateNavareaBounds(57.5, 11.5, 'Baltic');
+          assertEqual(validBaltic.isValid, true);
+
+          // Out-of-bounds coordinate for Baltic (e.g. Indian Ocean)
+          const invalidBaltic = validateNavareaBounds(10.0, 75.0, 'Baltic');
+          assertEqual(invalidBaltic.isValid, false);
+
+          const validUkho = validateNavareaBounds(52.0, 1.5, 'NA I');
+          assertEqual(validUkho.isValid, true);
         }
       }
     ];

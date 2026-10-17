@@ -230,3 +230,31 @@ export function getCategoryBadgeStyle(category: HazardCategory): {
       };
   }
 }
+
+export function determineSeverity(
+  category: HazardCategory,
+  rawText?: string
+): 'critical' | 'high' | 'moderate' | 'general' {
+  const text = (rawText || '').toUpperCase();
+
+  // Rule M401 / M402 priority overrides
+  if (category === 'military') return 'critical';
+  if (category === 'electronic') {
+    if (text.includes('SPOOFING') || text.includes('JAMMING') || text.includes('EXTREME CAUTION')) {
+      return 'critical';
+    }
+    return 'high';
+  }
+  if (category === 'drifting') return 'high';
+  if (category === 'subsea') {
+    if (text.includes('SUNKEN') || text.includes('UNLIT') || text.includes('EXPLOSIVE')) {
+      return 'high';
+    }
+    return 'moderate';
+  }
+  if (category === 'offshore') return 'moderate';
+  if (category === 'aton') return 'moderate';
+
+  return 'general';
+}
+

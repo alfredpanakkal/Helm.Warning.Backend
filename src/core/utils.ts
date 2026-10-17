@@ -108,3 +108,83 @@ export function calculateSha256(str: string): string {
   }
   return result;
 }
+
+const MONTH_MAP: Record<string, string> = {
+  JAN: '01',
+  FEB: '02',
+  MAR: '03',
+  APR: '04',
+  MAY: '05',
+  JUN: '06',
+  JUL: '07',
+  AUG: '08',
+  SEP: '09',
+  OCT: '10',
+  NOV: '11',
+  DEC: '12'
+};
+
+/**
+ * Parses maritime DTG (Date-Time Group) broadcast string into YYYY-MM-DD.
+ * e.g. "100600 UTC OCT 2026" -> "2026-10-10"
+ */
+export function parseMaritimeIssuedDate(text: string | null | undefined): string | null {
+  if (!text) return null;
+
+  const match = text.match(/(\d{2})\d{4}\s+UTC\s+([A-Z]{3})\s+(\d{4})/i);
+  if (match) {
+    const day = match[1];
+    const month = MONTH_MAP[match[2].toUpperCase()] || '01';
+    const year = match[3];
+    return `${year}-${month}-${day}`;
+  }
+
+  const matchNoYear = text.match(/(\d{2})\d{4}\s+UTC\s+([A-Z]{3})/i);
+  if (matchNoYear) {
+    const day = matchNoYear[1];
+    const month = MONTH_MAP[matchNoYear[2].toUpperCase()] || '01';
+    const year = new Date().getFullYear();
+    return `${year}-${month}-${day}`;
+  }
+
+  const isoMatch = text.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+  if (isoMatch) return isoMatch[1];
+
+  return null;
+}
+
+/**
+ * Extract cancellation directives from warning text per Rules Register R206.
+ * Extracts superseded warning IDs and self-cancellation timestamp.
+ */
+export function extractCancellationDirectives(rawText: string): {
+  cancelsIds: string[];
+  selfCancelsAt: string | null;
+} {
+  const cancelsIds: string[] = [];
+  let selfCancelsAt: string | null = null;
+
+  if (!rawText) return { cancelsIds, selfCancelsAt };
+
+  // Match: CANCEL 0450/26 or CANCEL NAVAREA I 512/26 or CANCEL SWEDISH 160/26
+  const cancelPattern = /\bCANCEL\s+(?:THIS\s+MSG\b|([A-Z0-9_\-\s\/]+?\d+\/\d{2}))/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = cancelPattern.exec(rawText)) !== null) {
+    if (match[1]) {
+      const cleanId = match[1].trim().replace(/\.$/, '');
+      if (cleanId && !cleanId.toUpperCase().includes('THIS MSG')) {
+        cancelsIds.push(cleanId);
+      }
+    }
+  }
+
+  // Self-cancellation date
+  const selfCancelMatch = rawText.match(/CANCEL\s+THIS\s+MSG(?:\s+AT)?\s+([0-9]{4,6}Z?\s+[A-Z]{3}(?:\s+\d{2,4})?)/i);
+  if (selfCancelMatch) {
+    selfCancelsAt = selfCancelMatch[1].trim();
+  }
+
+  return { cancelsIds, selfCancelsAt };
+}
+

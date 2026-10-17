@@ -36,10 +36,10 @@ export function computeDifferential(
     const wid = warn.warning_id;
     seenIds.add(wid);
 
-    const rawMsg = msgMap.get(wid) || {
+    const rawMsg: RawMessage = msgMap.get(wid) || {
       warning_id: wid,
       source_id: warn.source_id,
-      subject_header: warn.title,
+      subject_header: warn.title || wid,
       full_raw_text: warn.raw_text,
       received_timestamp: new Date().toISOString(),
       checksum_sha256: ''
@@ -62,10 +62,26 @@ export function computeDifferential(
     }
   }
 
+  const explicitCancels = new Set<string>();
+  for (const warn of scrapedWarnings) {
+    if (warn.cancels_ids && Array.isArray(warn.cancels_ids)) {
+      for (const cid of warn.cancels_ids) {
+        explicitCancels.add(cid.trim().toLowerCase());
+      }
+    }
+  }
+
   const toCancel: string[] = [];
   for (const [wid, record] of Object.entries(existingWarnings)) {
-    if (record.status === 'active' && !seenIds.has(wid)) {
-      toCancel.push(wid);
+    if (record.status === 'active') {
+      const isAbsent = !seenIds.has(wid);
+      const isExplicitlyCancelled =
+        explicitCancels.has(wid.toLowerCase()) ||
+        Array.from(explicitCancels).some((c) => wid.toLowerCase().endsWith(c));
+
+      if (isAbsent || isExplicitlyCancelled) {
+        toCancel.push(wid);
+      }
     }
   }
 

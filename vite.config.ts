@@ -8,5 +8,18 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 3000,
-  },
+    proxy: {
+      '/api/tiles/carto': {
+        target: 'https://basemaps.cartocdn.com',
+        changeOrigin: true,
+        rewrite: (path) => {
+          let stripped = path.replace(/^\/api\/tiles\/carto/, '');
+          if (stripped.startsWith('/voyager')) {
+            stripped = '/rastertiles' + stripped;
+          }
+          return stripped.endsWith('.png') ? stripped : `${stripped}.png`;
+        }
+      }
+    }
+  }
 });

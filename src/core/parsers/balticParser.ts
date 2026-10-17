@@ -1,7 +1,7 @@
 import { RawMessage, NavWarning, GeoJsonGeometry, ParsedData } from '../../types/maritime';
-import { parseCoordinates } from '../coordinates';
-import { classifyHazard } from '../classification';
-import { calculateSha256 } from '../utils';
+import { parseCoordinates, validateNavareaBounds } from '../coordinates';
+import { classifyHazard, determineSeverity } from '../classification';
+import { calculateSha256, parseMaritimeIssuedDate, extractCancellationDirectives } from '../utils';
 
 export const BALTIC_CONFIG = {
   SOURCE_ID: 'sma-baltic-subarea',
@@ -57,9 +57,19 @@ export function parseBalticWarning(
     issuedText = `${issuedText} ${fullYear}`;
   }
 
-  const { parsedCoords, primaryLat, primaryLon, spatial } = parseCoordinates(rawBlock);
+  const { parsedCoords, primaryLat, primaryLon, spatial, spatialBundle } = parseCoordinates(rawBlock);
   const hazard = classifyHazard(rawBlock);
+  const severity = determineSeverity(hazard, rawBlock);
   const checksum = calculateSha256(rawBlock);
+  const { cancelsIds, selfCancelsAt } = extractCancellationDirectives(rawBlock);
+
+  const boundsCheck =
+    primaryLat !== null && primaryLon !== null
+      ? validateNavareaBounds(primaryLat, primaryLon, BALTIC_CONFIG.NAVAREA_ID)
+      : { isValid: true };
+  const verification = boundsCheck.isValid
+    ? parsedCoords.length > 0 ? 'verified' : 'needs_review'
+    : 'needs_review';
 
   const rawMessage: RawMessage = {
     warning_id: warningId,
@@ -71,18 +81,29 @@ export function parseBalticWarning(
   };
 
   const navWarning: NavWarning = {
+    id: `baltic-${warningId.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
     warning_id: warningId,
+    publisher_id: BALTIC_CONFIG.AUTHORITY,
     source_id: BALTIC_CONFIG.SOURCE_ID,
     navarea: BALTIC_CONFIG.NAVAREA_ID,
+    series: 'Baltic Sub-Area',
+    source_warning_id: warningId,
     title: title || headerNoArea,
     issued_text: issuedText,
+    issued_date: parseMaritimeIssuedDate(issuedText),
     coordinates: parsedCoords.length > 0 ? parsedCoords.join(', ') : null,
     latitude: primaryLat,
     longitude: primaryLon,
     category: hazard,
+    severity: severity,
     status: 'active',
     raw_text: rawBlock,
-    spatial: spatial || undefined
+    spatial: spatialBundle || spatial || undefined,
+    is_verified: verification === 'verified',
+    verification: verification,
+    cancels_ids: cancelsIds.length > 0 ? cancelsIds : undefined,
+    valid_to: selfCancelsAt || undefined,
+    created_at: new Date().toISOString()
   };
 
   return { rawMessage, navWarning, spatial };
