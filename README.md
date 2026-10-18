@@ -43,6 +43,7 @@ src/
 
 1. **Deterministic Parsing & Geometry Engine**:
    - Parses varied coordinates: degrees and decimal minutes (`DD-MM.MM[N/S] DDD-MM.MM[E/W]`), degrees minutes seconds, and non-decimal representations.
+   - Strict coordinate validation in both the TypeScript core and the Python pipeline (`shared/utils.py`): out-of-range pairs (|lat| > 90, |lon| > 180, minutes >= 60) are rejected, never clamped.
    - Generates standards-compliant GeoJSON: `Point` for single coordinates, `LineString` for subsea operations, and closed `Polygon` geometries for military hazard zones.
 
 2. **IMO/IHO Maritime Hazard Classification**:
@@ -61,6 +62,9 @@ src/
      - **New**: First-time scraped bulletins inserted into `nav_warnings` and `raw_messages`
      - **Update**: Revisions with updated payload and new SHA-256 hash
      - **Cancel**: Bulletins dropped from authority feed marked as cancelled
+   - An empty harvest (no current warnings) is a valid state: the differential still runs so previously active warnings missing from the feed are cancelled.
+   - Cross-cancellations are matched only against structured warning references; inferred/proposed cancellations (Rule 105) never auto-cancel live public warnings.
+   - Database writes are batched (single `insert` / `upsert` / bulk `update` per run); a failed `raw_messages` insert is treated as a sync failure rather than being ignored.
 
 4. **Interactive Nautical Operations Console**:
    - Visualizes hazards on a dark hydrographic chart with category colors.
@@ -80,6 +84,20 @@ npm run dev
 # Build for production
 npm run build
 ```
+
+## Ingestion Pipeline (Python)
+
+The scrapers, parsers, and Supabase sync scripts under `scripts/` run independently of the frontend:
+
+```bash
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Run all NAVAREA pipelines (Baltic, I, XI): scrape → parse → sync
+python -m scripts.run_all
+```
+
+Set `SUPABASE_URL` and `SUPABASE_KEY` in the environment to enable database sync; when absent, the sync stage is skipped. All scrapers verify TLS certificates; an empty result from an authority feed is a valid state, not an error.
 
 ## License
 
