@@ -103,16 +103,20 @@ export function computeDifferential(
   }
 
   const toCancel: string[] = [];
+  // Hoist the list out of the per-warning loop and require suffix candidates
+  // to be structured warning references (contain a "/"), preventing short or
+  // numeric-only cancel IDs from matching unrelated warnings.
+  const explicitCancelList = Array.from(explicitCancels);
   for (const [wid, record] of Object.entries(existingWarnings)) {
-    if (record.status === 'active') {
-      const isExplicitlyCancelled =
-        explicitCancels.has(wid.toLowerCase()) ||
-        Array.from(explicitCancels).some((c) => wid.toLowerCase().endsWith(c));
+    if (record.status !== 'active') continue;
+    const widLower = wid.toLowerCase();
+    const isExplicitlyCancelled =
+      explicitCancels.has(widLower) ||
+      explicitCancelList.some((c) => c.includes('/') && widLower.endsWith(c));
 
-      // Rule 105 / Inferred proposals do NOT auto-cancel live public warnings
-      if (isExplicitlyCancelled) {
-        toCancel.push(wid);
-      }
+    // Rule 105 / Inferred proposals do NOT auto-cancel live public warnings
+    if (isExplicitlyCancelled) {
+      toCancel.push(wid);
     }
   }
 

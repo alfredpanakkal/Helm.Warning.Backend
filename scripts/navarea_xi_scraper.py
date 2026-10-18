@@ -6,7 +6,6 @@ navarea_xi_scraper.py — Japan Coast Guard NAVAREA XI Scraper
 import sys
 import os
 import re
-import urllib3
 from datetime import datetime
 from curl_cffi import requests as cffi_requests
 
@@ -14,8 +13,6 @@ if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 URL_DISP = "https://www1.kaiho.mlit.go.jp/TUHO/keiho/cgi/disp_warnings.cgi"
 URL_MIRROR = "https://www.sealagom.com/navarea/11/"
@@ -51,7 +48,7 @@ def _write_output(collected, output_filename):
 
 def fetch_direct_disp():
     print("Tier 1: Direct fetch...")
-    response = cffi_requests.get(URL_DISP, impersonate="chrome", timeout=30, verify=False)
+    response = cffi_requests.get(URL_DISP, impersonate="chrome", timeout=30, verify=True)
     response.raise_for_status()
     html = response.content.decode(JCG_ENCODING, errors="replace")
     html = re.sub(r'<br\s*/?>', '\n', html, flags=re.IGNORECASE)

@@ -86,10 +86,11 @@ def main(input_filename="navareas/baltic/navarea_baltic_warnings.txt",
         sys.exit(1)
     pattern = r'--- (.*?) ---\n(.*?)(?=\n--- |$)'
     matches = re.findall(pattern, content, re.DOTALL)
-    if not matches:
-        print("❌ No warning blocks found")
-        sys.exit(1)
     parsed_data = {"raw_messages": [], "nav_warnings": [], "spatial_features": []}
+    if not matches:
+        # Empty harvest is a valid state; emit an empty dataset so the sync
+        # stage can still cancel previously active warnings for this source.
+        print("ℹ️ No warning blocks found (empty harvest is valid)")
     for header, block in matches:
         raw_msg, nav_warn, spatial = parse_warning(block.strip(), header.strip())
         parsed_data["raw_messages"].append(raw_msg)

@@ -22,6 +22,29 @@ def convert_to_decimal(degrees: str, minutes: str, direction: str) -> float:
     return round(decimal, 6)
 
 
+def _is_valid_latlon(lat_deg, lat_min, lon_deg, lon_min) -> bool:
+    """
+    Strict coordinate value validation, mirroring validateCoordinateValues in
+    src/core/coordinates.ts. Invalid coordinates are rejected, never clamped:
+      - |latitude| <= 90, |longitude| <= 180
+      - 0 <= minutes < 60
+    """
+    try:
+        lat_deg = float(lat_deg)
+        lat_min = float(lat_min)
+        lon_deg = float(lon_deg)
+        lon_min = float(lon_min)
+    except (TypeError, ValueError):
+        return False
+    if lat_min < 0 or lat_min >= 60 or lon_min < 0 or lon_min >= 60:
+        return False
+    if abs(lat_deg) + lat_min / 60.0 > 90.0:
+        return False
+    if abs(lon_deg) + lon_min / 60.0 > 180.0:
+        return False
+    return True
+
+
 def parse_coordinates(raw_text: str):
     """
     Extracts navigational coordinates from text.
@@ -48,6 +71,10 @@ def parse_coordinates(raw_text: str):
         lon_dir = lon_dir_char.upper() if lon_dir_char in 'EW' else ''
 
         if not lat_dir or not lon_dir:
+            continue
+
+        # Strict range validation: skip invalid pairs instead of clamping
+        if not _is_valid_latlon(lat_deg, lat_min, lon_deg, lon_min):
             continue
 
         lat = convert_to_decimal(lat_deg, lat_min, lat_dir)
