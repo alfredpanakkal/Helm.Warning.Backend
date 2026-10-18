@@ -1,4 +1,37 @@
-import { NavWarning, RawMessage, DifferentialResult } from '../types/maritime';
+import { NavWarning, RawMessage, DifferentialResult, SyncMode } from '../types/maritime';
+
+export type SyncOp = 'skip' | 'add' | 'update' | 'cancel';
+
+export function computeDifferentialGuarded(
+  feedIds: string[],
+  activeIds: string[],
+  mode: SyncMode = 'live_feed',
+  minFeedSizeForCancel = 5
+): { op: SyncOp; id: string; reason: string }[] {
+  const feedSet = new Set(feedIds);
+  const activeSet = new Set(activeIds);
+  const out: { op: SyncOp; id: string; reason: string }[] = [];
+
+  for (const id of activeIds) {
+    if (feedSet.has(id)) {
+      out.push({ op: 'skip', id, reason: 'unchanged' });
+    } else if (mode === 'static_corpus') {
+      out.push({ op: 'skip', id, reason: 'corpus mode: cancel disabled' });
+    } else if (feedIds.length < minFeedSizeForCancel) {
+      out.push({ op: 'skip', id, reason: 'feed too small, cancel suppressed' });
+    } else {
+      out.push({ op: 'cancel', id, reason: 'missing from live feed' });
+    }
+  }
+
+  for (const id of feedIds) {
+    if (!activeSet.has(id)) {
+      out.push({ op: 'add', id, reason: 'new' });
+    }
+  }
+
+  return out;
+}
 
 export interface ExistingWarningRecord {
   warning_id: string;

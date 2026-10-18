@@ -17,6 +17,26 @@ export type VerificationState =
   | 'explicit'
   | 'ambiguous';
 
+export type TriageTier = 'A' | 'B' | 'C';
+export type DataQuality = 'EXPLICIT' | 'INFERRED' | 'AMBIGUOUS' | 'INVALID';
+export type ParsingMethod = 'RULE' | 'AI';
+export type SyncMode = 'live_feed' | 'static_corpus';
+
+export interface TriageFields {
+  data_quality: DataQuality;
+  parsing_method: ParsingMethod;
+  triage_tier: TriageTier;
+  qa_flags: string[];
+  unplotted_reason: string | null;
+  duplicate_of_id: string | null;
+}
+
+export const TRIAGE_COLORS: Record<TriageTier, string> = {
+  A: '#22c55e', // green — auto-plotted
+  B: '#f59e0b', // amber — review queue
+  C: '#ef4444' // red — blocked
+};
+
 export type NavareaCode =
   | 'NA I'
   | 'NA II'

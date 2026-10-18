@@ -13,6 +13,79 @@ if hasattr(sys.stdout, 'reconfigure'):
 if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
 
+# Rule 18 (Peru decimal-hyphen): 11-49-992S -> 11-49.992S
+RE_RULE_18 = re.compile(r"^(\d{1,2})-(\d{2})-(\d{3,})([NSEW])$")
+# Rule 19 (double-period): 049.01.55E -> 049-01.55E
+RE_RULE_19 = re.compile(r"^(\d{2,3})\.(\d{2})\.(\d{2})([NSEW])$")
+# Rule 20 (degree padding): 021-26.90N -> 21-26.90N ; 42-08.00E -> 042-08.00E
+RE_RULE_20_LAT = re.compile(r"^0(\d{2})-(\d{2}(?:\.\d+)?)([NS])$")
+RE_RULE_20_LON = re.compile(r"^(\d{2})-(\d{2}(?:\.\d+)?)([EW])$")
+# Rule 93 (European decimal comma): 44-05,12N -> 44-05.12N
+RE_RULE_93 = re.compile(r"^(\d{1,3})-(\d{2}),(\d+)([NSEW])$")
+
+
+def repair_coordinate_token(raw_token: str) -> tuple[str, list[str]]:
+    """Returns (repaired_token, applied_rules). Unchanged token -> (raw_token, [])."""
+    t = raw_token.strip()
+
+    m = RE_RULE_18.match(t)
+    if m:
+        deg, mins, secs, hem = m.groups()
+        minutes = float(f"{mins}.{secs}") if int(secs) >= 100 or len(secs) > 2 else None
+        if minutes is not None:
+            if minutes >= 60:
+                deg = str(int(deg) + int(minutes // 60))
+                minutes = minutes % 60
+            deg_int = int(deg)
+            deg_str = f"{deg_int:02d}" if deg_int < 100 else f"{deg_int}"
+            return f"{deg_str}-{minutes:06.3f}".rstrip('0').rstrip('.') + hem, ["rule18"]
+
+    m = RE_RULE_19.match(t)
+    if m:
+        deg, mins, secs, hem = m.groups()
+        return f"{deg}-{mins}.{secs}{hem}", ["rule19"]
+
+    m = RE_RULE_20_LAT.match(t)
+    if m:
+        deg, mins, hem = m.groups()
+        return f"{int(deg)}-{mins}{hem}", ["rule20"]
+
+    m = RE_RULE_20_LON.match(t)
+    if m:
+        deg, mins, hem = m.groups()
+        return f"{deg.zfill(3)}-{mins}{hem}", ["rule20"]
+
+    m = RE_RULE_93.match(t)
+    if m:
+        deg, mins, frac, hem = m.groups()
+        return f"{deg}-{mins}.{frac}{hem}", ["rule93"]
+
+    return t, []
+
+
+def parse_coordinate_with_provenance(raw_text: str, raw_token: str) -> Any:
+    """Wraps parse_coordinates(); never fabricates hemispheres (Rule 17)."""
+    from shared.models import CoordinateProvenance, DataQuality
+    repaired, rules = repair_coordinate_token(raw_token)
+    provenance = CoordinateProvenance(raw_token=raw_token, lat=None, lon=None)
+
+    if not re.search(r"[NSEW]$", repaired):
+        provenance.quality = DataQuality.AMBIGUOUS
+        provenance.flags.append("MISSING_HEM")
+        return provenance
+
+    parsed_coords, lat, lon, spatial = parse_coordinates(repaired)
+    if lat is None or lon is None:
+        provenance.quality = DataQuality.INVALID
+        provenance.flags.append("VALIDATION_FAILED")
+        return provenance
+
+    provenance.lat, provenance.lon = lat, lon
+    if rules:
+        provenance.quality = DataQuality.INFERRED
+        provenance.repairs.extend(rules)
+    return provenance
+
 
 def convert_to_decimal(degrees: str, minutes: str, direction: str) -> float:
     """Converts Degrees and Decimal Minutes into Signed Decimal Degrees (WGS84)."""
