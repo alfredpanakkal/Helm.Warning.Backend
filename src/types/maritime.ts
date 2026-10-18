@@ -124,8 +124,27 @@ export interface NavWarning {
   issued_text?: string | null;
   valid_from?: string | null;
   valid_to?: string | null;
-  status: WarningStatus | 'rejected' | 'unverified';
+  status: WarningStatus | 'expired' | 'superseded' | 'rejected' | 'unverified' | 'unknown';
   status_basis?: string | null;
+  data_quality?: 'EXPLICIT' | 'INFERRED' | 'AMBIGUOUS' | 'INVALID';
+  verification_status?: 'unverified' | 'human_verified';
+  triage_tier?: 'A' | 'B' | 'C';
+  qa_flags?: string[];
+  unplottedReason?:
+    | 'no_coordinates'
+    | 'parse_failure'
+    | 'meta_list'
+    | 'text_unavailable'
+    | 'empty_stub'
+    | 'cancellation_only'
+    | 'truncated_clause'
+    | 'missing_hemisphere'
+    | 'duplicate_of'
+    | null;
+  proposed_cancel?: boolean;
+  resolutionRule?: string;
+  resolutionRefs?: string[];
+  spanEditList?: Array<[number, number, number, number, string]>;
   area_text?: string | null;
   title: string;
   raw_text: string;

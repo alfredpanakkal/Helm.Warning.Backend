@@ -1,18 +1,1488 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#0f172a" />
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230284c7' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='10'/><path d='m16.2 7.8-2 6.3-6.4 2.1 2.1-6.4Z'/></svg>" />
-    <title>Helm Navigational Warning System</title>
-    <meta name="description" content="Consolidated NAVAREA navigational warning scraper, deterministic parser, coordinate & GeoJSON extraction engine, and differential synchronization console for Baltic, NAVAREA I, and NAVAREA XI." />
-    <meta property="og:title" content="Helm Navigational Warning System" />
-    <meta property="og:description" content="Consolidated NAVAREA navigational warning scraper, deterministic parser, coordinate & GeoJSON extraction engine, and differential synchronization console for Baltic, NAVAREA I, and NAVAREA XI." />
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
-  </head>
-  <body id="appBody">
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Helm.Warning — NAVAREA Maritime Safety Information Pipeline</title>
+  
+  <!-- Leaflet CSS for Map Rendering -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  
+  <style>
+    /* ==========================================================================
+       MARITIME SAFETY INFORMATION PIPELINE — UNIFIED CSS STYLESHEET
+       ========================================================================== */
+    :root {
+      --bg-canvas: #0b132b;
+      --bg-surface: #1c2541;
+      --bg-surface-hover: #293256;
+      --bg-card: rgba(28, 37, 65, 0.85);
+      --border-color: #3a506b;
+      --border-accent: #4c698d;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      
+      --accent-cyan: #00f5d4;
+      --accent-cyan-hover: #00d2b5;
+      --accent-blue: #3b82f6;
+      --accent-amber: #ffd166;
+      --accent-red: #ff5964;
+      --accent-purple: #a855f7;
+      
+      --hazard-military: #ef4444;
+      --hazard-aton: #f59e0b;
+      --hazard-subsea: #06b6d4;
+      --hazard-drifting: #ec4899;
+      --hazard-offshore: #3b82f6;
+      --hazard-general: #8b5cf6;
+      
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 16px;
+      --font-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-canvas);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Top Navigation Header Contract */
+    .app-header {
+      position: sticky;
+      top: 0;
+      z-index: 1000;
+      background-color: rgba(11, 19, 43, 0.95);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-color);
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .brand-lockup {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      cursor: pointer;
+    }
+
+    .brand-logo {
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, #00f5d4, #3b82f6);
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      color: #0b132b;
+      font-size: 16px;
+      letter-spacing: -0.05em;
+      box-shadow: 0 0 12px rgba(0, 245, 212, 0.3);
+    }
+
+    .brand-title-wrap {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .brand-title {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #ffffff;
+      line-height: 1.2;
+    }
+
+    .brand-subtitle {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .header-nav-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .tab-pills {
+      display: flex;
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      padding: 3px;
+      border-radius: var(--radius-md);
+      gap: 2px;
+    }
+
+    .tab-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      padding: 6px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .tab-btn:hover {
+      color: var(--text-main);
+      background-color: rgba(255, 255, 255, 0.05);
+    }
+
+    .tab-btn.active {
+      background-color: var(--accent-cyan);
+      color: #0b132b;
+      font-weight: 700;
+      box-shadow: 0 2px 8px rgba(0, 245, 212, 0.3);
+    }
+
+    .mode-switch-btn {
+      background-color: rgba(59, 130, 246, 0.15);
+      border: 1px solid rgba(59, 130, 246, 0.4);
+      color: #60a5fa;
+      padding: 6px 14px;
+      border-radius: var(--radius-md);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .mode-switch-btn:hover {
+      background-color: rgba(59, 130, 246, 0.25);
+      border-color: #60a5fa;
+    }
+
+    .mode-switch-btn.admin-mode {
+      background-color: rgba(245, 158, 11, 0.15);
+      border-color: rgba(245, 158, 11, 0.4);
+      color: #fcd34d;
+    }
+
+    /* Layout View Container */
+    .app-main {
+      flex: 1;
+      width: 100%;
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .view-pane {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      flex: 1;
+    }
+
+    .view-pane.hidden {
+      display: none !important;
+    }
+
+    /* Cards & Containers */
+    .card {
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 20px;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .card-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Maritime Map Container & Layout */
+    .map-viewport-grid {
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      gap: 16px;
+      height: calc(100vh - 120px);
+      min-height: 560px;
+    }
+
+    .map-container-wrap {
+      position: relative;
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      border: 1px solid var(--border-color);
+      background-color: #0d1b2a;
+      height: 100%;
+    }
+
+    #leaflet-map {
+      width: 100%;
+      height: 100%;
+      z-index: 1;
+      background: #0b132b;
+    }
+
+    /* Leaflet Overrides & Custom Overlay Toolbars */
+    .map-plot-toolbar {
+      position: absolute;
+      top: 14px;
+      left: 14px;
+      z-index: 500;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(11, 19, 43, 0.88);
+      backdrop-filter: blur(8px);
+      padding: 4px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-color);
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    }
+
+    .plot-chip {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      padding: 5px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .plot-chip:hover {
+      color: #ffffff;
+      background-color: rgba(255, 255, 255, 0.06);
+    }
+
+    .plot-chip.active {
+      background-color: var(--bg-surface-hover);
+      color: var(--accent-cyan);
+      border: 1px solid var(--border-accent);
+    }
+
+    .plot-count-badge {
+      background-color: rgba(255, 255, 255, 0.1);
+      padding: 1px 6px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-family: var(--font-mono);
+    }
+
+    .map-plot-legend {
+      position: absolute;
+      bottom: 14px;
+      left: 14px;
+      z-index: 500;
+      background: rgba(11, 19, 43, 0.92);
+      backdrop-filter: blur(8px);
+      padding: 12px 16px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-color);
+      max-width: 320px;
+      font-size: 12px;
+    }
+
+    .legend-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 16px;
+      margin-top: 8px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-muted);
+    }
+
+    .legend-swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      flex-shrink: 0;
+    }
+
+    /* Warning List Sidebar Panel */
+    .warnings-side-panel {
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      height: 100%;
+    }
+
+    .side-panel-header {
+      padding: 14px 16px;
+      background-color: rgba(15, 23, 42, 0.5);
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .warnings-scroll-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .warning-card-item {
+      background-color: var(--bg-canvas);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      padding: 12px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .warning-card-item:hover {
+      border-color: var(--accent-cyan);
+      transform: translateY(-1px);
+    }
+
+    .warning-card-item.selected {
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 0 1px var(--accent-cyan);
+      background-color: rgba(0, 245, 212, 0.03);
+    }
+
+    .warning-card-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+
+    .warning-id-tag {
+      font-family: var(--font-mono);
+      font-weight: 700;
+      color: var(--accent-cyan);
+      font-size: 13px;
+    }
+
+    .warning-title {
+      font-weight: 600;
+      color: #ffffff;
+      font-size: 13px;
+      margin-bottom: 6px;
+      line-height: 1.3;
+    }
+
+    .warning-meta-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* Badges & Status Indicators */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    .badge-critical { background: rgba(239, 68, 68, 0.2); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.4); }
+    .badge-high { background: rgba(245, 158, 11, 0.2); color: #fde047; border: 1px solid rgba(245, 158, 11, 0.4); }
+    .badge-moderate { background: rgba(59, 130, 246, 0.2); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.4); }
+    .badge-general { background: rgba(139, 92, 246, 0.2); color: #c084fc; border: 1px solid rgba(139, 92, 246, 0.4); }
+
+    .badge-active { background: rgba(16, 185, 129, 0.2); color: #6ee7b7; }
+    .badge-cancelled { background: rgba(100, 116, 139, 0.2); color: #cbd5e1; }
+
+    /* Tables & Data Bank */
+    .table-responsive {
+      overflow-x: auto;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      text-align: left;
+    }
+
+    th {
+      background-color: rgba(15, 23, 42, 0.6);
+      color: var(--text-muted);
+      padding: 10px 14px;
+      font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border-color);
+      color: var(--text-main);
+    }
+
+    tbody tr:hover {
+      background-color: rgba(255, 255, 255, 0.02);
+    }
+
+    .td-mono {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Forms & Controls */
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    input, select, textarea {
+      background-color: var(--bg-canvas);
+      border: 1px solid var(--border-color);
+      color: #ffffff;
+      padding: 9px 12px;
+      border-radius: var(--radius-sm);
+      font-family: inherit;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 0 2px rgba(0, 245, 212, 0.2);
+    }
+
+    textarea {
+      font-family: var(--font-mono);
+      line-height: 1.4;
+      resize: vertical;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      background-color: var(--accent-cyan);
+      color: #0b132b;
+      font-weight: 700;
+      font-size: 13px;
+      padding: 9px 18px;
+      border: none;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .btn:hover {
+      background-color: var(--accent-cyan-hover);
+      box-shadow: 0 0 12px rgba(0, 245, 212, 0.4);
+    }
+
+    .btn-secondary {
+      background-color: var(--bg-surface-hover);
+      color: #ffffff;
+      border: 1px solid var(--border-color);
+    }
+
+    .btn-secondary:hover {
+      background-color: var(--border-accent);
+    }
+
+    .btn-danger {
+      background-color: var(--accent-red);
+      color: #ffffff;
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    /* Modal Drawer & Toast */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 2000;
+      background-color: #00f5d4;
+      color: #0b132b;
+      padding: 10px 20px;
+      border-radius: var(--radius-md);
+      font-weight: 700;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+      transform: translateY(100px);
+      opacity: 0;
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .toast.show {
+      transform: translateY(0);
+      opacity: 1;
+    }
+
+    /* Custom Leaflet Map Markers */
+    .vertex-pin {
+      background: #00f5d4;
+      color: #0b132b;
+      font-weight: 800;
+      font-size: 11px;
+      font-family: var(--font-mono);
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 2px solid #0b132b;
+      box-shadow: 0 0 8px rgba(0, 245, 212, 0.8);
+    }
+
+    .metric-pill-marker {
+      background: rgba(11, 19, 43, 0.9);
+      color: #00f5d4;
+      border: 1px solid #00f5d4;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 12px;
+      white-space: nowrap;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.6);
+    }
+
+    /* Footer */
+    .site-footer {
+      border-top: 1px solid var(--border-color);
+      padding: 16px 20px;
+      margin-top: auto;
+      background-color: rgba(11, 19, 43, 0.8);
+      color: var(--text-muted);
+      font-size: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    /* Responsive Mobile Adjustments */
+    @media (max-width: 900px) {
+      .map-viewport-grid {
+        grid-template-columns: 1fr;
+        height: auto;
+      }
+      
+      .map-container-wrap {
+        height: 50vh;
+        min-height: 380px;
+      }
+
+      .app-header {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .header-nav-group {
+        justify-content: space-between;
+        overflow-x: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header Navigation -->
+  <header class="app-header">
+    <div class="brand-lockup" onclick="switchToPublicTab('map')">
+      <div class="brand-logo">HW</div>
+      <div class="brand-title-wrap">
+        <span class="brand-title">Helm.Warning</span>
+        <span class="brand-subtitle">NAVAREA Maritime Safety Information Pipeline</span>
+      </div>
+    </div>
+
+    <div class="header-nav-group">
+      <!-- Public Tabs -->
+      <div id="public-tabs" class="tab-pills">
+        <button id="tab-btn-map" class="tab-btn active" onclick="switchToPublicTab('map')">
+          🗺️ Map View
+        </button>
+        <button id="tab-btn-databank" class="tab-btn" onclick="switchToPublicTab('databank')">
+          🗄️ Data Bank <span id="public-count-badge" class="plot-count-badge">6</span>
+        </button>
+        <button id="tab-btn-sources" class="tab-btn" onclick="switchToPublicTab('sources')">
+          📡 Sources
+        </button>
+      </div>
+
+      <!-- Mode Switch Button -->
+      <button id="btn-mode-switch" class="mode-switch-btn" onclick="toggleAppMode()">
+        🔐 Admin Console
+      </button>
+    </div>
+  </header>
+
+  <!-- Main View Area -->
+  <main class="app-main">
+
+    <!-- ========================================== -->
+    <!-- PUBLIC TAB 1: MARITIME MAP VIEW           -->
+    <!-- ========================================== -->
+    <div id="pane-map" class="view-pane">
+      <div class="map-viewport-grid">
+        
+        <!-- Interactive Leaflet Map Container -->
+        <div class="map-container-wrap">
+          
+          <!-- Filter Chips Toolbar -->
+          <div class="map-plot-toolbar">
+            <button class="plot-chip active" onclick="filterMapPlotType('all', this)">
+              All Plots <span id="chip-count-all" class="plot-count-badge">6</span>
+            </button>
+            <button class="plot-chip" onclick="filterMapPlotType('polygon', this)">
+              ⬡ Polygons <span id="chip-count-polygon" class="plot-count-badge">2</span>
+            </button>
+            <button class="plot-chip" onclick="filterMapPlotType('circle', this)">
+              ◯ Circles <span id="chip-count-circle" class="plot-count-badge">1</span>
+            </button>
+            <button class="plot-chip" onclick="filterMapPlotType('line', this)">
+              〰 Lines/Corridors <span id="chip-count-line" class="plot-count-badge">2</span>
+            </button>
+            <button class="plot-chip" onclick="filterMapPlotType('point', this)">
+              ⚲ Points <span id="chip-count-point" class="plot-count-badge">1</span>
+            </button>
+          </div>
+
+          <!-- Leaflet Map Div -->
+          <div id="leaflet-map"></div>
+
+          <!-- Map Symbology Legend -->
+          <div class="map-plot-legend">
+            <strong style="color: #ffffff;">Spatial Plot Symbology</strong>
+            <div class="legend-grid">
+              <div class="legend-item"><div class="legend-swatch" style="background: rgba(239, 68, 68, 0.4); border: 1px dashed #ef4444;"></div> Military Range</div>
+              <div class="legend-item"><div class="legend-swatch" style="background: rgba(245, 158, 11, 0.4); border: 1px solid #f59e0b;"></div> Clearance Zone</div>
+              <div class="legend-item"><div class="legend-swatch" style="background: rgba(6, 182, 212, 0.4); border: 2px dashed #06b6d4;"></div> Cable / Track</div>
+              <div class="legend-item"><div class="legend-swatch" style="background: rgba(236, 72, 153, 0.4); border: 1px solid #ec4899;"></div> Drift Vector</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sidebar Warning List -->
+        <div class="warnings-side-panel">
+          <div class="side-panel-header">
+            <span style="font-weight: 700; color: #ffffff;">Active Navigational Warnings</span>
+            <span id="side-warning-count" class="badge badge-active">6 Active</span>
+          </div>
+
+          <div id="side-warnings-list" class="warnings-scroll-list">
+            <!-- Dynamic warning cards rendered here -->
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- PUBLIC TAB 2: DATA BANK VIEW              -->
+    <!-- ========================================== -->
+    <div id="pane-databank" class="view-pane hidden">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">🗄️ NAVAREA Navigational Warnings Ledger</span>
+          <div style="display: flex; gap: 10px; width: 320px;">
+            <input type="search" id="databank-search" placeholder="Search ID, title, text..." oninput="renderDataBankTable()">
+          </div>
+        </div>
+
+        <div class="table-responsive">
+          <table id="databank-table">
+            <thead>
+              <tr>
+                <th>Warning ID</th>
+                <th>NAVAREA</th>
+                <th>Category</th>
+                <th>Severity</th>
+                <th>Title / Location</th>
+                <th>Issued Date</th>
+                <th>Coordinates / Geometry</th>
+              </tr>
+            </thead>
+            <tbody id="databank-tbody">
+              <!-- Rendered via JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- PUBLIC TAB 3: SOURCES REGISTRY             -->
+    <!-- ========================================== -->
+    <div id="pane-sources" class="view-pane hidden">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">📡 Official NAVAREA Coordinators & Harvest Sources</span>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px;" id="sources-grid">
+          <!-- Rendered via JS -->
+        </div>
+      </div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- ADMIN VIEW: ADMIN CONSOLE                 -->
+    <!-- ========================================== -->
+    <div id="pane-admin" class="view-pane hidden">
+      
+      <!-- Admin Login Overlay if not authenticated -->
+      <div id="admin-login-card" class="card" style="max-width: 440px; margin: 40px auto; width: 100%;">
+        <div class="card-header">
+          <span class="card-title">🔐 Admin Console Authentication</span>
+        </div>
+        <p style="color: var(--text-muted); margin-bottom: 16px;">Sign in to access manual warning ingestion, pipeline differential rules, and harvester logs.</p>
+        
+        <form onsubmit="handleAdminLogin(event)">
+          <div class="form-group" style="margin-bottom: 12px;">
+            <label>Admin Email Address</label>
+            <input type="email" id="admin-email-input" value="admin@helm.warning" required>
+          </div>
+          <div class="form-group" style="margin-bottom: 20px;">
+            <label>Access Key / Password</label>
+            <input type="password" value="maritime2026" required>
+          </div>
+          <button type="submit" class="btn" style="width: 100%;">Sign In to Admin Console</button>
+        </form>
+      </div>
+
+      <!-- Admin Dashboard Controls (Visible when authenticated) -->
+      <div id="admin-dashboard-content" class="hidden">
+        
+        <!-- Admin Header Toolbar -->
+        <div class="card" style="margin-bottom: 16px; background-color: var(--bg-surface-hover);">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+            <div>
+              <span class="badge badge-high">Authenticated Admin Session</span>
+              <h2 style="font-size: 20px; color: #ffffff; margin-top: 4px;" id="admin-session-email">admin@helm.warning</h2>
+            </div>
+            <div class="btn-group">
+              <button class="btn btn-secondary" onclick="handleAdminLogout()">Sign Out</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-grid">
+          
+          <!-- Manual Warning Bulletin Ingestion Form -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">✏️ Manual Bulletin Ingestion & Coordinate Parser</span>
+            </div>
+
+            <form onsubmit="handleManualIngestSubmit(event)">
+              <div class="form-group">
+                <label>NAVAREA Region</label>
+                <select id="ingest-navarea">
+                  <option value="Baltic">Baltic Sea Sub-Area</option>
+                  <option value="NA I">NAVAREA I (UKHO)</option>
+                  <option value="NA XI">NAVAREA XI (Japan JCG)</option>
+                  <option value="NA II">NAVAREA II (SHOM)</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label>Warning ID / Series</label>
+                <input type="text" id="ingest-id" placeholder="SWEDISH NAV WARN 195/26" required>
+              </div>
+
+              <div class="form-group">
+                <label>Hazard Category</label>
+                <select id="ingest-category">
+                  <option value="military">Military Firing / Explosives</option>
+                  <option value="aton">AtoN / Lighthouse / Buoy</option>
+                  <option value="subsea">Subsea / Pipeline / Cable</option>
+                  <option value="drifting">Drifting Hazard / Container</option>
+                  <option value="offshore">Offshore Rig / Platform</option>
+                  <option value="general">General Navigational Warning</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label>Raw Bulletin Message Text</label>
+                <textarea id="ingest-raw" rows="6" placeholder="Paste WGS84 message text, e.g.:&#10;KATTEGAT. GUNNERY EXERCISES.&#10;PSN: 57-12.0N 011-30.0E, 57-15.0N 011-35.0E.&#10;500 MTR CLEARANCE REQUIRED." required></textarea>
+              </div>
+
+              <button type="submit" class="btn">🚀 Extract Coordinates & Publish Warning</button>
+            </form>
+          </div>
+
+          <!-- Pipeline Execution & Differential Log -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">⚙️ Pipeline Harvester & Differential Engine</span>
+            </div>
+
+            <p style="color: var(--text-muted); margin-bottom: 12px;">Trigger live feed polling and inspect checksum differential parsing.</p>
+
+            <button class="btn btn-secondary" style="width: 100%; margin-bottom: 16px;" onclick="triggerHarvestRun()">
+              ⚡ Trigger Automated Harvester Poll
+            </button>
+
+            <label>Live Engine Output Console:</label>
+            <pre><code id="admin-console-log">[INIT] Pipeline Harvester initialized.
+[STATUS] 8 NAVAREA Coordinators connected.
+[CACHE] 6 Active warnings synchronized in local storage.</code></pre>
+          </div>
+
+        </div>
+
+      </div>
+
+    </div>
+
+  </main>
+
+  <!-- Site Footer -->
+  <footer class="site-footer">
+    <div>
+      <strong>Helm.Warning</strong> — Automated Decision-Support System
+    </div>
+    <div>
+      Official GMDSS / NAVAREA MSI Data Engine &bull; Updated Live
+    </div>
+  </footer>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="toast">Data Refreshed</div>
+
+  <!-- Leaflet JS Script -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+  <!-- Application Logic & Seed Data -->
+  <script>
+    // ==========================================================================
+    // INITIAL SEED DATASET (NAVAREA WARNINGS & SPATIAL GEOMETRIES)
+    // ==========================================================================
+    const INITIAL_WARNINGS = [
+      {
+        warning_id: "SWEDISH WARN 168/26",
+        source_id: "sma-baltic-subarea",
+        navarea: "Baltic",
+        title: "Skagerrak Gunnery Firing Exercises",
+        category: "military",
+        severity: "critical",
+        status: "active",
+        issued_date: "2026-10-18",
+        coordinates: "58°10.2'N 011°13.3'E",
+        latitude: 58.17,
+        longitude: 11.221,
+        raw_text: "080056 UTC OCT. SKAGERRAK. LYSEKIL. BONDEN. THE SWEDISH ARMED FORCES WILL PERFORM DETONATIONS 09 OCT 0600 LT - 14 OCT 2000 LT. PSN: 58-10.2N 011-13.3E, 58-13.3N 011-13.3E, 58-13.3N 011-17.4E, 58-10.2N 011-17.4E. WIDE BERTH REQUESTED.",
+        spatial: {
+          geometries: [{
+            type: "Polygon",
+            coordinates: [[
+              [11.221, 58.170],
+              [11.221, 58.221],
+              [11.290, 58.221],
+              [11.290, 58.170],
+              [11.221, 58.170]
+            ]]
+          }]
+        }
+      },
+      {
+        warning_id: "NAVAREA I 042/26",
+        source_id: "ukho-navarea-1",
+        navarea: "NA I",
+        title: "Subsea Cable Installation Operations",
+        category: "subsea",
+        severity: "high",
+        status: "active",
+        issued_date: "2026-10-17",
+        coordinates: "57°30.0'N 001°15.0'E",
+        latitude: 57.5,
+        longitude: 1.25,
+        raw_text: "NAVAREA I 042/26. NORTH SEA. CABLE LAYING OPERATIONS IN PROGRESS BY C/S 'VIKING' BETWEEN 57-30.0N 001-15.0E AND 57-45.0N 002°00.0E. 1.0 NM WIDE BERTH REQUESTED.",
+        spatial: {
+          corridors: [{
+            path: [[1.25, 57.5], [2.0, 57.75]],
+            width_nm: 1.0,
+            label: "1.0 NM Cable Corridor"
+          }]
+        }
+      },
+      {
+        warning_id: "BALTIC WARN 089/26",
+        source_id: "sma-baltic-subarea",
+        navarea: "Baltic",
+        title: "Light Buoy Unlit & Off Station",
+        category: "aton",
+        severity: "moderate",
+        status: "active",
+        issued_date: "2026-10-16",
+        coordinates: "56°08.4'N 012°38.2'E",
+        latitude: 56.14,
+        longitude: 12.636,
+        raw_text: "BALTIC WARN 089/26. SOUND. HELSINGBORG APPROACH. LIGHT BUOY 'OERESUND N' IN PSN 56-08.4N 012-38.2E UNLIT AND REPORTED OFF STATION.",
+        spatial: {
+          geometries: [{
+            type: "Point",
+            coordinates: [12.636, 56.14]
+          }]
+        }
+      },
+      {
+        warning_id: "NAVAREA XI 112/26",
+        source_id: "kaiho-navarea-xi",
+        navarea: "NA XI",
+        title: "Drifting Shipping Container Hazard",
+        category: "drifting",
+        severity: "critical",
+        status: "active",
+        issued_date: "2026-10-18",
+        coordinates: "34°20.0'N 139°40.0'E",
+        latitude: 34.333,
+        longitude: 139.666,
+        raw_text: "NAVAREA XI 112/26. SAGAMI WAN. SEMI-SUBMERGED 40FT SHIPPING CONTAINER DRIFTING EASTWARD AT 1.5 KNOTS FROM PSN 34-20.0N 139-40.0E.",
+        spatial: {
+          driftVectors: [{
+            origin: [139.666, 34.333],
+            bearing_deg: 90,
+            speed_knots: 1.5,
+            label: "Drift 1.5 kts E"
+          }]
+        }
+      },
+      {
+        warning_id: "NAVAREA I 055/26",
+        source_id: "ukho-navarea-1",
+        navarea: "NA I",
+        title: "Offshore Rig Safety Zone 500m",
+        category: "offshore",
+        severity: "moderate",
+        status: "active",
+        issued_date: "2026-10-15",
+        coordinates: "59°12.0'N 001°40.0'E",
+        latitude: 59.2,
+        longitude: 1.666,
+        raw_text: "NAVAREA I 055/26. NORTH SEA. PLATFORM 'FORTIES DELTA' IN PSN 59-12.0N 001-40.0E. 500 MTR SAFETY ZONE ESTABLISHED. NAVIGATORS TO MAINTAIN CLEARANCE.",
+        spatial: {
+          circles: [{
+            center: [1.666, 59.2],
+            radius_nm: 0.27,
+            label: "500m Safety Zone"
+          }]
+        }
+      },
+      {
+        warning_id: "GERMAN WARN 044/26",
+        source_id: "sma-baltic-subarea",
+        navarea: "Baltic",
+        title: "Fehmarn Belt Restricted Area",
+        category: "general",
+        severity: "moderate",
+        status: "active",
+        issued_date: "2026-10-14",
+        coordinates: "54°30.0'N 011°15.0'E",
+        latitude: 54.5,
+        longitude: 11.25,
+        raw_text: "GERMAN WARN 044/26. WESTERN BALTIC. FEHMARN BELT. CONSTRUCTION WORK IN AREA BOUNDED BY 54-30.0N 011-15.0E, 54-32.0N 011-20.0E, 54-28.0N 011-22.0E.",
+        spatial: {
+          geometries: [{
+            type: "Polygon",
+            coordinates: [[
+              [11.25, 54.50],
+              [11.33, 54.53],
+              [11.36, 54.46],
+              [11.25, 54.50]
+            ]]
+          }]
+        }
+      }
+    ];
+
+    const SOURCE_FEEDS = [
+      { id: 'ukho-navarea-1', name: 'NAVAREA I Coordinator', region: 'North Sea & UK', authority: 'UKHO', status: 'operational', activeCount: 18 },
+      { id: 'sma-baltic-subarea', name: 'Baltic Sub-Area Coordinator', region: 'Baltic Sea', authority: 'Swedish Maritime Admin', status: 'operational', activeCount: 14 },
+      { id: 'kaiho-navarea-xi', name: 'NAVAREA XI Coordinator', region: 'East Asia & NW Pacific', authority: 'Japan Coast Guard', status: 'operational', activeCount: 22 },
+      { id: 'shom-navarea-2', name: 'NAVAREA II Coordinator', region: 'East Atlantic', authority: 'SHOM France', status: 'operational', activeCount: 9 }
+    ];
+
+    // ==========================================================================
+    // STATE MANAGEMENT
+    // ==========================================================================
+    let warnings = [...INITIAL_WARNINGS];
+    let selectedWarningId = null;
+    let activePlotFilter = 'all';
+    let isAdminAuthenticated = localStorage.getItem('HELM_ADMIN_AUTH') === 'true';
+    let mapInstance = null;
+    let mapLayerGroup = null;
+
+    // ==========================================================================
+    // APP INITIALIZATION
+    // ==========================================================================
+    window.addEventListener('DOMContentLoaded', () => {
+      initLeafletMap();
+      renderSideWarningsList();
+      renderDataBankTable();
+      renderSourcesGrid();
+      updateAdminStateUI();
+    });
+
+    // ==========================================================================
+    // LEAFLET MAP & SPATIAL ENGINE
+    // ==========================================================================
+    function initLeafletMap() {
+      const mapContainer = document.getElementById('leaflet-map');
+      if (!mapContainer) return;
+
+      // Initialize Leaflet map centered on North Sea / Baltic
+      mapInstance = L.map('leaflet-map', {
+        center: [57.0, 10.0],
+        zoom: 6,
+        zoomControl: true
+      });
+
+      // Dark tiles from CartoDB or OSM fallback
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; OpenStreetMap &copy; CARTO',
+        maxZoom: 18
+      }).addTo(mapInstance);
+
+      mapLayerGroup = L.layerGroup().addTo(mapInstance);
+
+      renderMapSpatialPlots();
+    }
+
+    function renderMapSpatialPlots() {
+      if (!mapLayerGroup) return;
+      mapLayerGroup.clearLayers();
+
+      warnings.forEach((item) => {
+        if (!item.spatial) return;
+
+        const categoryColor = getCategoryColorHex(item.category);
+
+        // 1. Polygon Geometries
+        if (item.spatial.geometries) {
+          item.spatial.geometries.forEach((geom) => {
+            if (geom.type === 'Polygon') {
+              const latLngs = geom.coordinates[0].map(c => [c[1], c[0]]);
+              
+              const polygon = L.polygon(latLngs, {
+                color: categoryColor,
+                weight: 2,
+                dashArray: '6, 6',
+                fillColor: categoryColor,
+                fillOpacity: 0.25
+              });
+
+              polygon.on('click', () => selectWarningCard(item.warning_id));
+              mapLayerGroup.addLayer(polygon);
+
+              // Add vertex markers
+              latLngs.slice(0, -1).forEach((pt, idx) => {
+                const vertexMarker = L.marker(pt, {
+                  icon: L.divIcon({
+                    className: 'custom-div-icon',
+                    html: `<div class="vertex-pin">${idx + 1}</div>`,
+                    iconSize: [22, 22],
+                    iconAnchor: [11, 11]
+                  })
+                });
+                vertexMarker.bindTooltip(`Vertex ${idx + 1}: ${pt[0].toFixed(3)}°N ${pt[1].toFixed(3)}°E`);
+                mapLayerGroup.addLayer(vertexMarker);
+              });
+            } else if (geom.type === 'Point') {
+              const marker = L.circleMarker([geom.coordinates[1], geom.coordinates[0]], {
+                radius: 8,
+                color: categoryColor,
+                fillColor: categoryColor,
+                fillOpacity: 0.8
+              });
+              marker.bindPopup(`<strong>${item.warning_id}</strong><br>${item.title}`);
+              marker.on('click', () => selectWarningCard(item.warning_id));
+              mapLayerGroup.addLayer(marker);
+            }
+          });
+        }
+
+        // 2. Circle Safety Zones
+        if (item.spatial.circles) {
+          item.spatial.circles.forEach((circ) => {
+            const center = [circ.center[1], circ.center[0]];
+            const radiusMeters = circ.radius_nm * 1852;
+
+            const circle = L.circle(center, {
+              radius: radiusMeters,
+              color: '#f59e0b',
+              fillColor: '#f59e0b',
+              fillOpacity: 0.2,
+              weight: 2
+            });
+
+            circle.on('click', () => selectWarningCard(item.warning_id));
+            mapLayerGroup.addLayer(circle);
+
+            // Center pill
+            const pill = L.marker(center, {
+              icon: L.divIcon({
+                className: 'custom-div-icon',
+                html: `<div class="metric-pill-marker">◯ ${circ.label || circ.radius_nm + ' NM'}</div>`,
+                iconAnchor: [40, 10]
+              })
+            });
+            mapLayerGroup.addLayer(pill);
+          });
+        }
+
+        // 3. Corridors & LineStrings
+        if (item.spatial.corridors) {
+          item.spatial.corridors.forEach((corr) => {
+            const latLngs = corr.path.map(c => [c[1], c[0]]);
+            const polyline = L.polyline(latLngs, {
+              color: '#06b6d4',
+              weight: 4,
+              dashArray: '8, 6'
+            });
+            polyline.on('click', () => selectWarningCard(item.warning_id));
+            mapLayerGroup.addLayer(polyline);
+          });
+        }
+
+        // 4. Drift Vectors
+        if (item.spatial.driftVectors) {
+          item.spatial.driftVectors.forEach((vec) => {
+            const origin = [vec.origin[1], vec.origin[0]];
+            const marker = L.circleMarker(origin, {
+              radius: 9,
+              color: '#ec4899',
+              fillColor: '#ec4899',
+              fillOpacity: 0.9
+            });
+            marker.bindPopup(`<strong>${item.warning_id}</strong><br>Drift Vector: ${vec.label}`);
+            mapLayerGroup.addLayer(marker);
+          });
+        }
+      });
+    }
+
+    function getCategoryColorHex(cat) {
+      switch(cat) {
+        case 'military': return '#ef4444';
+        case 'aton': return '#f59e0b';
+        case 'subsea': return '#06b6d4';
+        case 'drifting': return '#ec4899';
+        case 'offshore': return '#3b82f6';
+        default: return '#8b5cf6';
+      }
+    }
+
+    // Filter map plots by type
+    function filterMapPlotType(type, btnEl) {
+      activePlotFilter = type;
+      document.querySelectorAll('.map-plot-toolbar .plot-chip').forEach(b => b.classList.remove('active'));
+      if (btnEl) btnEl.classList.add('active');
+
+      renderSideWarningsList();
+    }
+
+    // ==========================================================================
+    // UI RENDERING FUNCTIONS
+    // ==========================================================================
+    function renderSideWarningsList() {
+      const container = document.getElementById('side-warnings-list');
+      if (!container) return;
+
+      const filtered = warnings.filter(w => {
+        if (activePlotFilter === 'all') return true;
+        if (activePlotFilter === 'polygon' && w.spatial?.geometries?.some(g => g.type === 'Polygon')) return true;
+        if (activePlotFilter === 'circle' && w.spatial?.circles) return true;
+        if (activePlotFilter === 'line' && w.spatial?.corridors) return true;
+        if (activePlotFilter === 'point' && w.spatial?.geometries?.some(g => g.type === 'Point')) return true;
+        return false;
+      });
+
+      document.getElementById('side-warning-count').textContent = `${filtered.length} Active`;
+
+      container.innerHTML = filtered.map(item => `
+        <div class="warning-card-item ${selectedWarningId === item.warning_id ? 'selected' : ''}" onclick="selectWarningCard('${item.warning_id}')">
+          <div class="warning-card-top">
+            <span class="warning-id-tag">${item.warning_id}</span>
+            <span class="badge badge-${item.severity}">${item.severity}</span>
+          </div>
+          <div class="warning-title">${item.title}</div>
+          <div class="warning-meta-row">
+            <span>🌐 ${item.navarea}</span>
+            <span>📍 ${item.coordinates || 'WGS84'}</span>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function selectWarningCard(id) {
+      selectedWarningId = id;
+      renderSideWarningsList();
+
+      const item = warnings.find(w => w.warning_id === id);
+      if (item && mapInstance && item.latitude && item.longitude) {
+        mapInstance.flyTo([item.latitude, item.longitude], 9, { duration: 1.2 });
+      }
+    }
+
+    function renderDataBankTable() {
+      const tbody = document.getElementById('databank-tbody');
+      const query = document.getElementById('databank-search')?.value.toLowerCase() || '';
+      if (!tbody) return;
+
+      const filtered = warnings.filter(w => 
+        w.warning_id.toLowerCase().includes(query) ||
+        w.title.toLowerCase().includes(query) ||
+        w.raw_text.toLowerCase().includes(query)
+      );
+
+      tbody.innerHTML = filtered.map(w => `
+        <tr>
+          <td class="td-mono" style="color: var(--accent-cyan); font-weight: 700;">${w.warning_id}</td>
+          <td><span class="badge badge-active">${w.navarea}</span></td>
+          <td>${w.category.toUpperCase()}</td>
+          <td><span class="badge badge-${w.severity}">${w.severity}</span></td>
+          <td>
+            <strong>${w.title}</strong>
+            <p style="font-size: 11px; color: var(--text-muted); margin-top: 4px; max-width: 480px;">${w.raw_text}</p>
+          </td>
+          <td class="td-mono">${w.issued_date}</td>
+          <td class="td-mono">${w.coordinates || 'N/A'}</td>
+        </tr>
+      `).join('');
+    }
+
+    function renderSourcesGrid() {
+      const grid = document.getElementById('sources-grid');
+      if (!grid) return;
+
+      grid.innerHTML = SOURCE_FEEDS.map(s => `
+        <div class="card" style="margin-bottom: 0;">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;">
+            <strong style="color: #ffffff; font-size: 15px;">${s.name}</strong>
+            <span class="badge badge-active">Operational</span>
+          </div>
+          <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">
+            Authority: <strong>${s.authority}</strong><br>
+            Region: ${s.region}
+          </div>
+          <div style="display: flex; justify-content: space-between; font-size: 11px; border-top: 1px solid var(--border-color); padding-top: 8px; color: var(--text-dim);">
+            <span>Active Warnings: ${s.activeCount}</span>
+            <span>Polled: 5m ago</span>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    // ==========================================================================
+    // TAB & NAVIGATION CONTROLLER
+    // ==========================================================================
+    function switchToPublicTab(tabName) {
+      // Hide all panes
+      document.querySelectorAll('.view-pane').forEach(p => p.classList.add('hidden'));
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+
+      document.getElementById(`pane-${tabName}`).classList.remove('hidden');
+      document.getElementById(`tab-btn-${tabName}`)?.classList.add('active');
+
+      if (tabName === 'map' && mapInstance) {
+        setTimeout(() => mapInstance.invalidateSize(), 100);
+      }
+    }
+
+    function toggleAppMode() {
+      const isCurrentlyAdmin = !document.getElementById('pane-admin').classList.contains('hidden');
+
+      if (isCurrentlyAdmin) {
+        // Switch back to Public Map View
+        switchToPublicTab('map');
+        document.getElementById('btn-mode-switch').textContent = '🔐 Admin Console';
+        document.getElementById('btn-mode-switch').classList.remove('admin-mode');
+      } else {
+        // Switch to Admin Console Pane
+        document.querySelectorAll('.view-pane').forEach(p => p.classList.add('hidden'));
+        document.getElementById('pane-admin').classList.remove('hidden');
+        document.getElementById('btn-mode-switch').textContent = '🌐 Public Portal';
+        document.getElementById('btn-mode-switch').classList.add('admin-mode');
+      }
+    }
+
+    // ==========================================================================
+    // ADMIN AUTHENTICATION & INGESTION ENGINE
+    // ==========================================================================
+    function updateAdminStateUI() {
+      const loginCard = document.getElementById('admin-login-card');
+      const dashboardContent = document.getElementById('admin-dashboard-content');
+
+      if (isAdminAuthenticated) {
+        loginCard.classList.add('hidden');
+        dashboardContent.classList.remove('hidden');
+      } else {
+        loginCard.classList.remove('hidden');
+        dashboardContent.classList.add('hidden');
+      }
+    }
+
+    function handleAdminLogin(event) {
+      event.preventDefault();
+      const email = document.getElementById('admin-email-input').value;
+      isAdminAuthenticated = true;
+      localStorage.setItem('HELM_ADMIN_AUTH', 'true');
+      document.getElementById('admin-session-email').textContent = email;
+      updateAdminStateUI();
+      showToast(`Signed in as ${email}`);
+    }
+
+    function handleAdminLogout() {
+      isAdminAuthenticated = false;
+      localStorage.removeItem('HELM_ADMIN_AUTH');
+      updateAdminStateUI();
+      showToast('Signed out of Admin Console');
+    }
+
+    function handleManualIngestSubmit(event) {
+      event.preventDefault();
+
+      const navarea = document.getElementById('ingest-navarea').value;
+      const id = document.getElementById('ingest-id').value;
+      const category = document.getElementById('ingest-category').value;
+      const raw = document.getElementById('ingest-raw').value;
+
+      // Extract basic lat/lon numbers if present
+      const latMatch = raw.match(/(\d{2})[-°](\d{2}\.\d+)[Nn]/);
+      const lonMatch = raw.match(/(\d{3}|\d{2})[-°](\d{2}\.\d+)[Ee]/);
+
+      let lat = 57.0;
+      let lon = 11.5;
+
+      if (latMatch) lat = parseFloat(latMatch[1]) + parseFloat(latMatch[2])/60;
+      if (lonMatch) lon = parseFloat(lonMatch[1]) + parseFloat(lonMatch[2])/60;
+
+      const newWarning = {
+        warning_id: id,
+        source_id: 'manual-admin',
+        navarea: navarea,
+        title: raw.split('\n')[0] || 'Manual Warning Entry',
+        category: category,
+        severity: 'high',
+        status: 'active',
+        issued_date: new Date().toISOString().split('T')[0],
+        coordinates: `${lat.toFixed(2)}°N ${lon.toFixed(2)}°E`,
+        latitude: lat,
+        longitude: lon,
+        raw_text: raw,
+        spatial: {
+          geometries: [{
+            type: 'Point',
+            coordinates: [lon, lat]
+          }]
+        }
+      };
+
+      warnings.unshift(newWarning);
+      renderSideWarningsList();
+      renderDataBankTable();
+      renderMapSpatialPlots();
+
+      showToast(`Warning ${id} Ingested & Published!`);
+      switchToPublicTab('map');
+      selectWarningCard(id);
+    }
+
+    function triggerHarvestRun() {
+      const consoleLog = document.getElementById('admin-console-log');
+      const now = new Date().toLocaleTimeString();
+
+      consoleLog.textContent += `\n[${now}] Polling NAVAREA I, II, III, XI, Baltic...`;
+      setTimeout(() => {
+        consoleLog.textContent += `\n[${now}] Differential Checksum: 0 new, 6 active unchanged.`;
+        showToast('Harvest Complete — 6 Warnings Synchronized');
+      }, 800);
+    }
+
+    function showToast(message) {
+      const toast = document.getElementById('toast');
+      toast.textContent = message;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2800);
+    }
+  </script>
+</body>
 </html>

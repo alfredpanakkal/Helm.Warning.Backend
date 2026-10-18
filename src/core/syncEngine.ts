@@ -5,6 +5,9 @@ export interface ExistingWarningRecord {
   status: string;
   raw_text?: string;
   source_id?: string;
+  title?: string;
+  category?: string;
+  navarea?: string;
 }
 
 export interface ExistingChecksumRecord {
@@ -13,8 +16,18 @@ export interface ExistingChecksumRecord {
 }
 
 /**
- * Compute differential actions between scraped data and current database state.
- * Direct translation of shared/sync.py compute_differential.
+ * SubjectSignature helper for supersession resolution (Section 4.2).
+ * Navarea + Category + Region tokens.
+ */
+export function computeSubjectSignature(warn: NavWarning): string {
+  const nav = (warn.navarea || '').toUpperCase();
+  const cat = (warn.category || 'general').toUpperCase();
+  const titleTokens = (warn.title || '').toUpperCase().split(/\s+/).slice(0, 3).join('_');
+  return `${nav}::${cat}::${titleTokens}`;
+}
+
+/**
+ * Compute differential actions and resolve chronological lifecycle (Milestone 3 / Section 4.2).
  */
 export function computeDifferential(
   scrapedWarnings: NavWarning[],
@@ -27,12 +40,19 @@ export function computeDifferential(
     msgMap.set(m.warning_id, m);
   }
 
+  // Sort warnings chronologically by issued date / timestamp
+  const sortedScraped = [...scrapedWarnings].sort((a, b) => {
+    const timeA = new Date(a.issued_date || a.created_at || '1970-01-01').getTime();
+    const timeB = new Date(b.issued_date || b.created_at || '1970-01-01').getTime();
+    return timeA - timeB;
+  });
+
   const toSkip: string[] = [];
   const toInsertNew: Array<{ warn: NavWarning; msg: RawMessage }> = [];
   const toUpdate: Array<{ warn: NavWarning; msg: RawMessage }> = [];
   const seenIds = new Set<string>();
 
-  for (const warn of scrapedWarnings) {
+  for (const warn of sortedScraped) {
     const wid = warn.warning_id;
     seenIds.add(wid);
 
@@ -63,10 +83,21 @@ export function computeDifferential(
   }
 
   const explicitCancels = new Set<string>();
-  for (const warn of scrapedWarnings) {
+  const proposedCancels = new Set<string>();
+
+  for (const warn of sortedScraped) {
     if (warn.cancels_ids && Array.isArray(warn.cancels_ids)) {
       for (const cid of warn.cancels_ids) {
-        explicitCancels.add(cid.trim().toLowerCase());
+        const cleanCid = cid.trim().toLowerCase();
+        // If cancellation is derived from inferred/repaired year or Rule 105, set proposed_cancel
+        if (warn.qa_flags?.includes('CANCELLATION_YEAR_INHERITED') || warn.triage_tier === 'B') {
+          proposedCancels.add(cleanCid);
+          warn.proposed_cancel = true;
+          warn.resolutionRule = 'RULE_105_PROPOSED_CANCEL';
+        } else {
+          explicitCancels.add(cleanCid);
+          warn.resolutionRule = 'CROSS_CANCEL_EXPLICIT';
+        }
       }
     }
   }
@@ -74,12 +105,12 @@ export function computeDifferential(
   const toCancel: string[] = [];
   for (const [wid, record] of Object.entries(existingWarnings)) {
     if (record.status === 'active') {
-      const isAbsent = !seenIds.has(wid);
       const isExplicitlyCancelled =
         explicitCancels.has(wid.toLowerCase()) ||
         Array.from(explicitCancels).some((c) => wid.toLowerCase().endsWith(c));
 
-      if (isAbsent || isExplicitlyCancelled) {
+      // Rule 105 / Inferred proposals do NOT auto-cancel live public warnings
+      if (isExplicitlyCancelled) {
         toCancel.push(wid);
       }
     }

@@ -567,56 +567,78 @@ KEEP CLEAR OF THE AREA.`);
               <div className="success-panel">
                 <div className="big">✓</div>
                 <h3>Verification Queue Empty</h3>
-                <p>All published warnings carry verified status.</p>
+                <p>All published warnings carry verified status with zero unreviewed Tier B or C proposals.</p>
               </div>
             ) : (
               <>
                 <div className="page-header" style={{ marginBottom: '14px' }}>
                   <div>
-                    <h1 style={{ fontSize: '20px' }}>Verification Queue</h1>
-                    <p className="subtitle">{unverifiedWarnings.length} human confirmation required</p>
+                    <h1 style={{ fontSize: '20px' }}>Verification Queue (Triage Tiers)</h1>
+                    <p className="subtitle">
+                      {unverifiedWarnings.length} pending human confirmation (Tier B Proposals &amp; Tier C Reviews)
+                    </p>
                   </div>
                   <div>
                     <button className="btn btn-secondary" onClick={verifyAll}>
-                      ✓ Verify All
+                      ✓ Verify All Tier B Proposals
                     </button>
                   </div>
                 </div>
 
-                {unverifiedWarnings.map((w) => (
-                  <div key={w.warning_id} className="verify-card">
-                    <div className="verify-head">
-                      <span className="verify-title">
-                        {w.warning_id} · {w.navarea}
-                      </span>
-                      <span className="badge-simple badge-high">
-                        <span className="dot"></span> {(w.severity || 'HIGH').toUpperCase()}
-                      </span>
+                {unverifiedWarnings.map((w) => {
+                  const quality = w.data_quality || 'EXPLICIT';
+                  const tier = w.triage_tier || 'B';
+                  const flags = w.qa_flags || [];
+
+                  return (
+                    <div key={w.warning_id} className="verify-card">
+                      <div className="verify-head">
+                        <span className="verify-title">
+                          {w.warning_id} · {w.navarea}
+                        </span>
+                        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                          <span className={`badge-simple ${tier === 'C' ? 'badge-high' : 'badge-neutral'}`}>
+                            TIER {tier}
+                          </span>
+                          <span className={`badge-simple ${quality === 'INFERRED' ? 'badge-neutral' : quality === 'INVALID' ? 'badge-high' : 'badge-active'}`}>
+                            {quality}
+                          </span>
+                        </div>
+                      </div>
+                      <div style={{ fontWeight: 500, margin: '4px 0' }}>{w.title}</div>
+                      <div className="verify-text">{w.raw_text}</div>
+                      {flags.length > 0 && (
+                        <div className="verify-checks" style={{ marginTop: '8px', flexWrap: 'wrap' }}>
+                          {flags.map((f) => (
+                            <span key={f} style={{ background: '#f1f5f9', color: '#475569', padding: '2px 6px', borderRadius: '4px', fontSize: '11px' }}>
+                              ⚡ {f}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <div className="verify-checks">
+                        <span>✓ Coords: {w.coordinates || 'N/A'}</span>
+                        <span>✓ Unplotted Reason: {w.unplottedReason || 'None (Plotted)'}</span>
+                      </div>
+                      <div className="verify-actions">
+                        <button
+                          className="btn btn-sm btn-secondary"
+                          style={{ color: 'var(--critical)' }}
+                          onClick={() => verifyWarning(w.warning_id, 'rejected')}
+                        >
+                          Reject / Block
+                        </button>
+                        <button
+                          className="btn btn-sm btn-primary"
+                          style={{ width: 'auto' }}
+                          onClick={() => verifyWarning(w.warning_id, 'verified')}
+                        >
+                          ✓ Approve Proposal
+                        </button>
+                      </div>
                     </div>
-                    <div style={{ fontWeight: 500 }}>{w.title}</div>
-                    <div className="verify-text">{w.raw_text}</div>
-                    <div className="verify-checks">
-                      <span>✓ Coords valid ({w.coordinates || 'N/A'})</span>
-                      <span>✓ In-force window open</span>
-                    </div>
-                    <div className="verify-actions">
-                      <button
-                        className="btn btn-sm btn-secondary"
-                        style={{ color: 'var(--critical)' }}
-                        onClick={() => verifyWarning(w.warning_id, 'rejected')}
-                      >
-                        Reject
-                      </button>
-                      <button
-                        className="btn btn-sm btn-primary"
-                        style={{ width: 'auto' }}
-                        onClick={() => verifyWarning(w.warning_id, 'verified')}
-                      >
-                        ✓ Verify
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </>
             )}
           </div>

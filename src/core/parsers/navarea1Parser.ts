@@ -2,6 +2,7 @@ import { RawMessage, NavWarning, GeoJsonGeometry, ParsedData } from '../../types
 import { parseCoordinates, validateNavareaBounds } from '../coordinates';
 import { classifyHazard, determineSeverity } from '../classification';
 import { calculateSha256, parseMaritimeIssuedDate, extractCancellationDirectives } from '../utils';
+import { sanitizeMessageText } from './sanitizer';
 
 export const NAVAREA_1_CONFIG = {
   SOURCE_ID: 'ukho-navarea-1',
@@ -19,33 +20,57 @@ export function parseNavarea1Warning(
   navWarning: NavWarning;
   spatial: GeoJsonGeometry | null;
 } {
+  const { cleanText, spanEditList, qaFlags: sanitizeFlags } = sanitizeMessageText(rawBlock);
   const warningId = referenceHeader.includes('NAVAREA I ')
     ? referenceHeader.split('NAVAREA I ').pop()?.trim() || referenceHeader
     : referenceHeader.trim();
 
-  const lines = rawBlock
+  const lines = cleanText
     .split('\n')
     .map((l) => l.trim())
     .filter(Boolean);
 
   const title = lines[0] || '';
 
-  const { parsedCoords, primaryLat, primaryLon, spatial, spatialBundle } = parseCoordinates(rawBlock);
+  const {
+    parsedCoords,
+    primaryLat,
+    primaryLon,
+    spatial,
+    spatialBundle,
+    qaFlags: coordFlags,
+    dataQuality: coordQuality,
+    unplottedReason
+  } = parseCoordinates(cleanText);
 
   const datePattern = /(\d{6}\s+UTC\s+[A-Z]{3}\s+\d{4})/i;
-  const dateMatch = title.match(datePattern) || rawBlock.match(datePattern);
+  const dateMatch = title.match(datePattern) || cleanText.match(datePattern);
   const issuedText = dateMatch ? dateMatch[1] : null;
 
-  const hazard = classifyHazard(rawBlock);
-  const severity = determineSeverity(hazard, rawBlock);
+  const allQaFlags = Array.from(new Set([...sanitizeFlags, ...coordFlags]));
+  const hazard = classifyHazard(cleanText);
+  const severity = determineSeverity(hazard, cleanText);
   const checksum = calculateSha256(rawBlock);
-  const { cancelsIds, selfCancelsAt } = extractCancellationDirectives(rawBlock);
+  const { cancelsIds, selfCancelsAt } = extractCancellationDirectives(cleanText);
 
   const boundsCheck =
     primaryLat !== null && primaryLon !== null
       ? validateNavareaBounds(primaryLat, primaryLon, NAVAREA_1_CONFIG.NAVAREA_ID)
       : { isValid: true };
-  const verification = boundsCheck.isValid
+
+  let triageTier: 'A' | 'B' | 'C' = 'A';
+  if (allQaFlags.includes('MISSING_HEMISPHERE') || allQaFlags.includes('COORDINATES_OUT_OF_RANGE') || !boundsCheck.isValid) {
+    triageTier = 'C';
+  } else if (
+    coordQuality === 'INFERRED' ||
+    allQaFlags.includes('POLYGON_BOUNDING_BOX_SYNTHESIZED') ||
+    allQaFlags.includes('BOWTIE_POLYGON_REORDERED') ||
+    allQaFlags.includes('SPELLED_QUANTITY_NORMALIZED')
+  ) {
+    triageTier = 'B';
+  }
+
+  const verification = boundsCheck.isValid && triageTier !== 'C'
     ? parsedCoords.length > 0 ? 'verified' : 'needs_review'
     : 'needs_review';
 
@@ -75,6 +100,12 @@ export function parseNavarea1Warning(
     category: hazard,
     severity: severity,
     status: 'active',
+    data_quality: coordQuality,
+    verification_status: verification === 'verified' ? 'human_verified' : 'unverified',
+    triage_tier: triageTier,
+    qa_flags: allQaFlags,
+    unplottedReason: unplottedReason as any,
+    spanEditList: spanEditList as any,
     raw_text: rawBlock,
     spatial: spatialBundle || spatial || undefined,
     is_verified: verification === 'verified',

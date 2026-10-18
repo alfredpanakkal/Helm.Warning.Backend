@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { parseBalticWarning } from '../core/parsers/balticParser';
 import { parseNavarea1Warning } from '../core/parsers/navarea1Parser';
 import { parseNavareaXiWarning } from '../core/parsers/navareaXiParser';
-import { convertToDecimal, parseCoordinates, validateNavareaBounds } from '../core/coordinates';
+import { convertToDecimal, parseCoordinates, validateNavareaBounds, formatCoordinateString } from '../core/coordinates';
 import { classifyHazard } from '../core/classification';
 import { computeDifferential } from '../core/syncEngine';
 import {
@@ -296,6 +296,56 @@ DANGER PERIOD: 22 JUN TO 25 JUN.`;
           assertEqual(diff.update[0].warn.warning_id, 'W2');
           assertEqual(diff.cancel.length, 1);
           assertEqual(diff.cancel[0], 'W_DROPPED');
+        }
+      },
+
+      // NAVAREA v7 Rule Engine Safety Tests
+      {
+        suite: 'v7 Safety & Dialect Rules',
+        name: 'test_bounds_91n_invalid_0_180_lon_valid',
+        fn: () => {
+          const invalidLat = convertToDecimal('91', '00', null, 'N');
+          assertEqual(isNaN(invalidLat), true, '91N must be NaN / invalid');
+
+          const validPrime = convertToDecimal('00', '00', null, 'E');
+          assertEqual(validPrime, 0, '0E must be 0');
+
+          const validAntimeridian = convertToDecimal('180', '00', null, 'E');
+          assertEqual(validAntimeridian, 180, '180E must be 180');
+
+          const invalidLonOver = convertToDecimal('180', '00.10', null, 'E');
+          assertEqual(isNaN(invalidLonOver), true, '180-00.10E must be invalid');
+        }
+      },
+      {
+        suite: 'v7 Safety & Dialect Rules',
+        name: 'test_rule_111_spelled_number_quantity_lexer',
+        fn: () => {
+          const text = 'SURVEY OPERATIONS TWO MILE WIDE SEA STRIP PSN 50-00N 001-00E TO 50-10N 001-10E';
+          const { parsedCoords, corridors, qaFlags } = parseCoordinates(text);
+          assertEqual(parsedCoords.length, 2);
+          assertEqual(corridors.length, 1);
+          assertEqual(corridors[0].width_nm, 4); // 2 miles either side = 4 NM swath
+          assertIn('SPELLED_QUANTITY_NORMALIZED', qaFlags);
+        }
+      },
+      {
+        suite: 'v7 Safety & Dialect Rules',
+        name: 'test_rule_109_bounding_box_synthesis',
+        fn: () => {
+          const text = 'NAVAREA I 999/26 FIRING PRACTICE. BOUNDED WITHIN 50N TO 55N AND 010W TO 005W.';
+          const { spatial, qaFlags, dataQuality } = parseCoordinates(text);
+          assertEqual(spatial?.type, 'Polygon');
+          assertEqual(dataQuality, 'INFERRED');
+          assertIn('POLYGON_BOUNDING_BOX_SYNTHESIZED', qaFlags);
+        }
+      },
+      {
+        suite: 'v7 Safety & Dialect Rules',
+        name: 'test_depth_sentinel_masking',
+        fn: () => {
+          const fmt = formatCoordinateString(-9999, -9999);
+          assertEqual(fmt, 'depth unknown');
         }
       },
       {
