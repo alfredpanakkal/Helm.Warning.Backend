@@ -2,7 +2,7 @@ name: All NAVAREA Ingestion Pipelines
 
 on:
   schedule:
-    - cron: '30 */6 * * *' # Runs 30 minutes past the hour, every 6 hours
+    - cron: '30 */6 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -15,7 +15,6 @@ permissions:
 jobs:
   run-all-pipelines:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4

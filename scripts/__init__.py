@@ -1,1 +1,1 @@
-# Package marker for scripts
+# NAVAREA ingestion scripts package

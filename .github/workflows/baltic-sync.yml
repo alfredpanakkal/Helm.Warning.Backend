@@ -2,14 +2,14 @@ name: NAVAREA Baltic Ingestion Pipeline
 
 on:
   schedule:
-    - cron: '0 */6 * * *' # Automatically runs every 6 hours
+    - cron: '0 */6 * * *'
   push:
     branches:
       - main
     paths:
-      - 'navareas/baltic/**'
-      - 'shared/**'
+      - 'scripts/baltic_*'
       - 'scripts/run_baltic.py'
+      - 'shared/utils.py'
       - 'requirements.txt'
       - '.github/workflows/baltic-sync.yml'
   pull_request:
@@ -27,7 +27,6 @@ permissions:
 jobs:
   ingest-baltic-warnings:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -48,10 +47,7 @@ jobs:
         run: |
           python -m unittest tests.test_baltic -v
 
-      - name: Harvest Bulletins (Stage 1 Scraper)
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      - name: Harvest Bulletins
         run: |
           python scripts/run_baltic.py
 
@@ -66,6 +62,13 @@ jobs:
             exit 1
           fi
           echo "Output files verified successfully."
+
+      - name: Differential Sync to Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python scripts/baltic_sync.py
 
       - name: Upload Output Artifacts
         uses: actions/upload-artifact@v4

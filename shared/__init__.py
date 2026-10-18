@@ -1,1 +1,1 @@
-# Package marker for shared utilities
+# Shared utilities package

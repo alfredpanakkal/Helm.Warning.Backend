@@ -1,1 +1,1 @@
-# Package marker for unittest discovery
+# Test package for unittest discovery
