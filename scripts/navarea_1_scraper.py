@@ -6,15 +6,12 @@ navarea_1_scraper.py — UKHO Admiralty NAVAREA I Scraper
 import sys
 import os
 import requests
-import urllib3
 from bs4 import BeautifulSoup
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def scrape_navarea_warnings(output_filename="navareas/navarea_1/navarea_1_warnings.txt"):
@@ -23,7 +20,7 @@ def scrape_navarea_warnings(output_filename="navareas/navarea_1/navarea_1_warnin
     print("=" * 60)
     session = requests.Session()
     session.headers.update({"User-Agent": "Mozilla/5.0"})
-    session.verify = False
+    session.verify = True
     url = "https://msi.admiralty.co.uk/RadioNavigationalWarnings"
     try:
         response = session.get(url, timeout=30)

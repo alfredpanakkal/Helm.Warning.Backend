@@ -6,7 +6,6 @@ baltic_scraper.py — Sjöfartsverket VHF Navigational Warnings Scraper
 import sys
 import re
 import html
-import urllib3
 from curl_cffi import requests as cffi_requests
 from bs4 import BeautifulSoup
 
@@ -14,8 +13,6 @@ if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 URL = "https://navvarn.sjofartsverket.se/en/Navigationsvarningar/VHF"
 
@@ -66,7 +63,7 @@ def scrape_baltic_warnings(output_filename="navareas/baltic/navarea_baltic_warni
     print("=" * 60)
     print(f"Fetching live bulletins from {URL}...")
     try:
-        response = cffi_requests.get(URL, impersonate="chrome", timeout=30, verify=False)
+        response = cffi_requests.get(URL, impersonate="chrome", timeout=30, verify=True)
         response.raise_for_status()
     except Exception as e:
         print(f"❌ Network error: {e}")
@@ -94,9 +91,12 @@ def scrape_baltic_warnings(output_filename="navareas/baltic/navarea_baltic_warni
                 continue
             _harvest_paragraph(el, area_name, collected_warnings)
     if not collected_warnings:
-        print("❌ No warnings extracted")
-        sys.exit(1)
-    print(f"Total warnings: {len(collected_warnings)}")
+        # An empty harvest is a valid state (no current warnings), not an error.
+        # The (empty) output file is still written below so the parser and sync
+        # stages can proceed and cancel previously active warnings for this source.
+        print("ℹ️ No current warnings in the area (empty harvest is valid)")
+    else:
+        print(f"Total warnings: {len(collected_warnings)}")
     import os
     os.makedirs(os.path.dirname(output_filename), exist_ok=True)
     with open(output_filename, "w", encoding="utf-8") as f:

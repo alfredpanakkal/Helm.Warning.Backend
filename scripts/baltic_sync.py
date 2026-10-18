@@ -46,9 +46,6 @@ def sync_to_supabase(json_file="navareas/baltic/parsed_baltic_warnings.json"):
         return False
     scraped_messages = data.get("raw_messages", [])
     scraped_warnings = data.get("nav_warnings", [])
-    if not scraped_warnings:
-        print("❓ No warnings to sync")
-        return True
     print("\n[1/4] Checking database state...")
     try:
         res_warn = supabase.table("nav_warnings").select("warning_id, status, raw_text").eq("source_id", SOURCE_ID).execute()
@@ -64,37 +61,41 @@ def sync_to_supabase(json_file="navareas/baltic/parsed_baltic_warnings.json"):
         return False
     print(f"  ✔ Found {len(existing_warnings)} existing warnings")
     print(f"  ✔ Found {len(existing_checksums)} existing checksums")
+    # Even with an empty harvest we must run the differential so that
+    # previously active warnings missing from the feed are cancelled.
     diff = compute_differential(scraped_warnings, scraped_messages, existing_warnings, existing_checksums)
     print(f"\n[2/4] Differential: {len(diff['skip'])} skip, {len(diff['new'])} new, {len(diff['update'])} update, {len(diff['cancel'])} cancel")
     has_errors = False
     to_write = diff["new"] + diff["update"]
     if to_write:
         print(f"\n[3/4] Syncing {len(to_write)} records...")
-        for warn, msg in to_write:
-            wid = warn["warning_id"]
-            if msg:
-                clean_msg = {k: v for k, v in msg.items() if k in VALID_RAW_COLUMNS}
-                try:
-                    supabase.table("raw_messages").insert(clean_msg).execute()
-                    print(f"  ✅ [raw_messages] {wid}")
-                except Exception as e:
-                    print(f"  ❓ [raw_messages] {wid}: {e}")
-            clean_warn = {k: v for k, v in warn.items() if k in VALID_NAV_COLUMNS}
+        # Batched writes. A failed raw_messages insert breaks future Skip
+        # detection (missing checksum => permanent rewrites), so it is fatal.
+        clean_msgs = [{k: v for k, v in msg.items() if k in VALID_RAW_COLUMNS}
+                      for warn, msg in to_write if msg]
+        if clean_msgs:
             try:
-                supabase.table("nav_warnings").upsert(clean_warn, on_conflict="warning_id,source_id").execute()
-                print(f"  ✨ {wid}")
+                supabase.table("raw_messages").insert(clean_msgs).execute()
+                print(f"  ✅ [raw_messages] inserted {len(clean_msgs)} rows")
             except Exception as e:
-                print(f"  ❌ {wid}: {e}")
+                print(f"  ❌ [raw_messages] batch insert failed: {e}")
                 has_errors = True
+        clean_warns = [{k: v for k, v in warn.items() if k in VALID_NAV_COLUMNS}
+                        for warn, msg in to_write]
+        try:
+            supabase.table("nav_warnings").upsert(clean_warns, on_conflict="warning_id,source_id").execute()
+            print(f"  ✨ Upserted {len(clean_warns)} warnings")
+        except Exception as e:
+            print(f"  ❌ [nav_warnings] batch upsert failed: {e}")
+            has_errors = True
     if diff["cancel"]:
         print(f"\n[4/4] Canceling {len(diff['cancel'])} warnings...")
-        for wid in diff["cancel"]:
-            try:
-                supabase.table("nav_warnings").update({"status": "cancelled"}).eq("source_id", SOURCE_ID).eq("warning_id", wid).execute()
-                print(f"  🗑️ {wid}")
-            except Exception as e:
-                print(f"  ❌ {wid}: {e}")
-                has_errors = True
+        try:
+            supabase.table("nav_warnings").update({"status": "cancelled"}).eq("source_id", SOURCE_ID).in_("warning_id", diff["cancel"]).execute()
+            print(f"  🗑️ Cancelled {len(diff['cancel'])} warnings")
+        except Exception as e:
+            print(f"  ❌ Cancel batch failed: {e}")
+            has_errors = True
     print("\n" + "=" * 65)
     print(f"📊 Summary: {len(scraped_warnings)} harvested, {len(diff['skip'])} skip, {len(diff['new'])} new, {len(diff['update'])} update, {len(diff['cancel'])} cancel")
     print("=" * 65)
