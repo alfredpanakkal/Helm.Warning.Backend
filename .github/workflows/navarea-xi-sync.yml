@@ -49,6 +49,9 @@ jobs:
           python -m unittest tests.test_navarea_xi -v
 
       - name: Harvest Bulletins (Stage 1 Scraper)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           python scripts/run_navarea_xi.py
 
