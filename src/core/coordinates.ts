@@ -39,6 +39,57 @@ export function validateCoordinateValues(
   return { valid: true };
 }
 
+export type CoordinateValidation = {
+  valid: boolean;
+  value?: number;
+  reason?: string;
+};
+
+export type CoordinateProvenance = {
+  rawText: string;
+  parser: 'rule' | 'ai_proposal';
+  hemisphereExplicit: boolean;
+  confidence?: number;
+  reviewRequired: boolean;
+  validationFlags: string[];
+};
+
+export function validateAxis(
+  degrees: number,
+  minutes: number,
+  hemisphere: string,
+  axis: 'lat' | 'lon'
+): CoordinateValidation {
+  const hem = hemisphere.toUpperCase();
+  const validHemispheres = axis === 'lat' ? ['N', 'S'] : ['E', 'W'];
+  const limit = axis === 'lat' ? 90 : 180;
+
+  if (!Number.isFinite(degrees) || !Number.isFinite(minutes)) {
+    return { valid: false, reason: 'NON_FINITE_VALUE' };
+  }
+
+  if (!validHemispheres.includes(hem)) {
+    return { valid: false, reason: 'AXIS_HEMISPHERE_MISMATCH' };
+  }
+
+  if (degrees < 0 || !Number.isInteger(degrees) || degrees > limit) {
+    return { valid: false, reason: 'DEGREES_OUT_OF_RANGE' };
+  }
+
+  if (minutes < 0 || minutes >= 60) {
+    return { valid: false, reason: 'MINUTES_OUT_OF_RANGE' };
+  }
+
+  if (degrees === limit && minutes > 0) {
+    return { valid: false, reason: 'AXIS_OUT_OF_RANGE' };
+  }
+
+  const magnitude = degrees + minutes / 60;
+  const value = hem === 'S' || hem === 'W' ? -magnitude : magnitude;
+
+  return { valid: true, value };
+}
+
 /**
  * Convert degrees, minutes, and optional seconds to signed decimal degrees (WGS84).
  * Returns NaN if strict range validation fails.

@@ -27,7 +27,7 @@ export function parseNavarea1Warning(
 
   const lines = cleanText
     .split('\n')
-    .map((l) => l.trim())
+    .map((l: string) => l.trim())
     .filter(Boolean);
 
   const title = lines[0] || '';

@@ -59,6 +59,15 @@ export interface RawCoordinate {
   lonDecimal: number;
 }
 
+export interface CoordinateProvenance {
+  rawText: string;
+  parser: 'rule' | 'ai_proposal';
+  hemisphereExplicit: boolean;
+  confidence?: number;
+  reviewRequired: boolean;
+  validationFlags: string[];
+}
+
 export type GeoJsonGeometry =
   | { type: 'Point'; coordinates: [number, number] } // [lon, lat]
   | { type: 'LineString'; coordinates: [number, number][] }

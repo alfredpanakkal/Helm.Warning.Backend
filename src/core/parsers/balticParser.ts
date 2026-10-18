@@ -37,7 +37,7 @@ export function parseBalticWarning(
 
   const lines = cleanText
     .split('\n')
-    .map((l) => l.trim())
+    .map((l: string) => l.trim())
     .filter(Boolean);
 
   const datePattern = /(\d{6}\s+UTC\s+[A-Z]{3})/i;

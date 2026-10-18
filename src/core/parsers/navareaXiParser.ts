@@ -35,7 +35,7 @@ export function parseNavareaXiWarning(
 
   const lines = cleanText
     .split('\n')
-    .map((l) => l.trim())
+    .map((l: string) => l.trim())
     .filter(Boolean);
 
   const datePattern = /Date:(\d{4}\/\d{2}\/\d{2}\s+\d{2}\s+UTC)/i;
