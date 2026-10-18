@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
-baltic_parser.py — Deterministic Navigational Warning Parser for Baltic & Swedish Bulletins
-Normalizes coordinate geometries into WGS84 decimal, infers issued years, classifies maritime hazard semantics,
-and prepares structured JSON payloads for Supabase synchronization.
+baltic_parser.py — Deterministic Parser for Baltic & Swedish Bulletins
 """
 
 import sys
@@ -12,84 +10,24 @@ import hashlib
 import os
 from datetime import datetime, timezone
 
-if hasattr(sys.stdout, 'reconfigure'):
-    sys.stdout.reconfigure(encoding='utf-8')
-if hasattr(sys.stderr, 'reconfigure'):
-    sys.stderr.reconfigure(encoding='utf-8')
+# Ensure root directory is on sys.path for shared imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from shared.utils import convert_to_decimal, parse_coordinates, classify_hazard
 
 SOURCE_ID = "sma-baltic-subarea"
 NAVAREA_ID = "Baltic"
 
-def convert_to_decimal(degrees: str, minutes: str, direction: str) -> float:
-    decimal = float(degrees) + (float(minutes) / 60.0)
-    if direction.upper() in ['S', 'W']:
-        decimal = -decimal
-    return round(decimal, 6)
-
-def parse_coordinates(raw_text: str):
-    pattern = r'(\d{2,3})-(\d{2}(?:\.\d+)?)[N|S]\s+(\d{2,3})-(\d{2}(?:\.\d+)?)[E|W]'
-    matches = list(re.finditer(pattern, raw_text))
-
-    parsed_coords = []
-    points = []
-
-    for match in matches:
-        full_match = match.group(0)
-        sub = re.match(r'(\d{2,3})-(\d{2}(?:\.\d+)?)([NS])\s+(\d{2,3})-(\d{2}(?:\.\d+)?)([EW])', full_match, re.IGNORECASE)
-        if sub:
-            lat_deg, lat_min, lat_dir = sub.group(1), sub.group(2), sub.group(3).upper()
-            lon_deg, lon_min, lon_dir = sub.group(4), sub.group(5), sub.group(6).upper()
-
-            lat = convert_to_decimal(lat_deg, lat_min, lat_dir)
-            lon = convert_to_decimal(lon_deg, lon_min, lon_dir)
-
-            points.append([lon, lat])
-            parsed_coords.append(f"{lat_deg}-{lat_min}{lat_dir} {lon_deg}-{lon_min}{lon_dir}")
-
-    spatial = None
-    primary_lat = None
-    primary_lon = None
-
-    if points:
-        if len(points) == 1:
-            primary_lat = points[0][1]
-            primary_lon = points[0][0]
-            spatial = {"type": "Point", "coordinates": points[0]}
-        elif len(points) >= 4:
-            primary_lat = round(sum(p[1] for p in points) / len(points), 6)
-            primary_lon = round(sum(p[0] for p in points) / len(points), 6)
-            closed_points = points if points[0] == points[-1] else points + [points[0]]
-            spatial = {"type": "Polygon", "coordinates": [closed_points]}
-        else:
-            primary_lat = points[0][1]
-            primary_lon = points[0][0]
-            spatial = {"type": "LineString", "coordinates": points}
-
-    return parsed_coords, primary_lat, primary_lon, spatial
-
-def classify_hazard(raw_text: str) -> str:
-    text = raw_text.upper()
-    if any(k in text for k in ["GNSS", "DGPS", "AIS INTERFERENCE", "RADAR INTERFERENCE", "INTERFERENCE OBSERVED", "JAMMING", "SPOOFING"]):
-        return "electronic"
-    military_pattern = r'\b(DETONATION|DETONATIONS|FIRING|FIRINGS|GUNNERY|MISSILE|WEAPONS?|ARMED FORCES|NAVAL EXERCISE|NAVAL EXERCISES|MILITARY EXERCISE)\b'
-    if re.search(military_pattern, text):
-        return "military"
-    if any(k in text for k in ["LIGHT", "LIGHTS", "BUOY", "BUOYS", "RACON", "BEACON", "UNLIT", "EXTINGUISHED"]):
-        return "aton"
-    if any(k in text for k in ["SEISMIC", "CABLE", "PIPELINE", "ROV", "TOWING", "DREDGING", "ANCHOR", "CHAIN LOST"]):
-        return "subsea"
-    if any(k in text for k in ["DRIFTING", "DERELICT", "MINE", "CONTAINER"]):
-        return "drifting"
-    if any(k in text for k in ["RIG", "PLATFORM", "JACK-UP"]):
-        return "offshore"
-    return "general"
-
 def parse_warning(raw_block: str, reference_header: str):
+    """Parse a single Baltic warning block into structured data."""
     header_clean = reference_header.strip()
+
+    # Extract warning ID and areas
     area_match = re.search(r'\[(.*?)\]', header_clean)
     sub_areas_text = area_match.group(1) if area_match else ""
     header_no_area = re.sub(r'\s*\[.*?\]', '', header_clean).strip()
 
+    # Form standardized warning_id
     if "BALTIC SEA NAV WARN" in header_no_area:
         num = header_no_area.split("BALTIC SEA NAV WARN")[-1].strip()
         warning_id = f"BALTIC {num}"
@@ -111,13 +49,19 @@ def parse_warning(raw_block: str, reference_header: str):
         elif not title and not d_match:
             title = line
 
+    # Infer year from warning_id
     yr_match = re.search(r'/(\d{2})$', warning_id)
     if yr_match and issued_text and not re.search(r'\b20\d{2}\b', issued_text):
         full_year = f"20{yr_match.group(1)}"
         issued_text = f"{issued_text} {full_year}"
 
+    # Parse coordinates
     coords_text, lat, lon, spatial = parse_coordinates(raw_block)
+
+    # Classify hazard
     hazard = classify_hazard(raw_block)
+
+    # Checksum
     checksum = hashlib.sha256(raw_block.encode('utf-8')).hexdigest()
 
     raw_message = {
@@ -145,39 +89,54 @@ def parse_warning(raw_block: str, reference_header: str):
 
     return raw_message, nav_warning, spatial
 
-def parse_baltic_warnings(input_filename="navarea_baltic_warnings.txt", output_filename="parsed_baltic_warnings.json"):
-    if not os.path.exists(input_filename):
-        print(f"❌ Input file '{input_filename}' not found.")
-        return []
+def main(input_path="navareas/baltic/navarea_baltic_warnings.txt",
+         output_path="navareas/baltic/parsed_baltic_warnings.json"):
+    """Parse Baltic warnings file and output structured JSON."""
+    print("=" * 60)
+    print("🧭 Baltic Navigational Warnings Parser")
+    print("=" * 60)
 
-    with open(input_filename, "r", encoding="utf-8") as f:
-        content = f.read()
+    try:
+        with open(input_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except FileNotFoundError:
+        print(f"❌ Error: {input_path} not found.")
+        sys.exit(1)
 
-    blocks = content.split("--- ")
-    parsed_warnings = []
+    # Match blocks delimited by --- HEADER [areas] ---
+    pattern = r'--- (.*?) ---\n(.*?)(?=\n--- |$)'
+    matches = re.findall(pattern, content, re.DOTALL)
 
-    for block in blocks:
-        if not block.strip():
-            continue
-        parts = block.split(" ---", 1)
-        if len(parts) < 2:
-            continue
-        header_text = parts[0]
-        body_text = parts[1].strip()
+    if not matches:
+        print("❌ No warning blocks found in the input file.")
+        sys.exit(1)
 
-        raw_msg, nav_warn, spatial = parse_warning(body_text, header_text)
-        nav_warn["spatial"] = spatial
-        parsed_warnings.append({
-            "raw_message": raw_msg,
-            "nav_warning": nav_warn
-        })
+    parsed_data = {
+        "raw_messages": [],
+        "nav_warnings": [],
+        "spatial_features": []
+    }
 
-    os.makedirs(os.path.dirname(output_filename) if os.path.dirname(output_filename) else ".", exist_ok=True)
-    with open(output_filename, "w", encoding="utf-8") as f:
-        json.dump(parsed_warnings, f, indent=2)
+    for header, block in matches:
+        raw_msg, nav_warn, spatial = parse_warning(block.strip(), header.strip())
+        parsed_data["raw_messages"].append(raw_msg)
+        parsed_data["nav_warnings"].append(nav_warn)
+        if spatial:
+            parsed_data["spatial_features"].append({
+                "warning_id": nav_warn["warning_id"],
+                "category": nav_warn["category"],
+                "geometry": spatial
+            })
 
-    print(f"✅ Successfully parsed {len(parsed_warnings)} Baltic warnings into '{output_filename}'.")
-    return parsed_warnings
+    os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(parsed_data, f, indent=2, ensure_ascii=False)
+
+    print(f"✅ Successfully parsed {len(matches)} warnings into '{output_path}'.")
+    print(f"   ✔ {len(parsed_data['raw_messages'])} audit records")
+    print(f"   ✔ {len(parsed_data['nav_warnings'])} active warnings")
+    print(f"   ✔ {len(parsed_data['spatial_features'])} GeoJSON geometries")
 
 if __name__ == "__main__":
-    parse_baltic_warnings()
+    main()
