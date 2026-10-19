@@ -1,189 +1,105 @@
-# Helm.Warning.Backend - End-to-End Production Hardening & Improvement Plan
+# NAVAREA II S-124 SECOM Ingestion Pipeline with Gemini Flash-Lite Backup
 
-Production hardening, reliability instrumentation, and asynchronous scaling architecture for the `Helm.Warning.Backend` maritime navigation warning ingestion, parsing, triage, and synchronization engine.
+Implements France's PING nautical service integration for NAVAREA II, ingesting IHO S-124 (Ed. 2.0) datasets packaged in S-100 Exchange Sets via IEC 63173-2 (SECOM) REST API, featuring high-speed local XML geometry extraction with intelligent Gemini 2.5 Flash-Lite fallback, adapted into the existing Supabase `nav_warnings` database and orchestrated via GitHub Actions.
 
 ## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> **Confirmed Choices from Phase 1 Planning:**
-> - **Execution Scope**: All three phases sequentially (Phase 1: Critical Hardening → Phase 2: Enhanced Reliability → Phase 3: Advanced Features) as a complete end-to-end overhaul.
-> - **Surface Area**: Backend Python scripts, modules, and CLI execution pipelines only; keeping the React web dashboard intact as-is.
-> - **Ingestion Error & Retry Policy**: Configurable per-feed mode with automatic triage escalation (invalid or anomalous records trigger automated quarantine to Tier B/C with explicit provenance and audit logs, preventing whole-feed aborts while preserving data integrity).
+> The following architectural decisions were confirmed during the requirements clarification phase:
+
+- **Confirmed Decision 1 (Database Strategy)**: Adapt S-124 records solely into the existing `nav_warnings` table (with standard columns: `warning_id`, `source_id`, `navarea`, `title`, `issued_text`, `coordinates`, `latitude`, `longitude`, `spatial`, `category`, `status`, `raw_text`, and triage columns). The script will also provide resilient fallback/dual-support for `navarea_warnings` and `navarea_sync_logs` if configured.
+- **Confirmed Decision 2 (Target Scope)**: Dedicated backend Python pipeline and GitHub Actions workflow only. No UI or frontend modifications are requested.
+- **Confirmed Decision 3 (Hybrid Extraction Architecture)**:
+  - **Primary Path**: Local zero-latency XML parser (`xml.etree.ElementTree`) extracting plain text, notice metadata, and converting GML `posList` / `pos` pairs (`lat lon`) into GeoJSON `[lon, lat]`.
+  - **Backup Path**: `gemini-2.5-flash-lite` via Google AI Studio (`google-genai` SDK) triggered if local parsing yields no valid geometry or suffers irregular formatting.
 
 ---
 
 ## 1. Overview & Core Concept
 
-- **What It Does**: Hardens the Python backend responsible for scraping, splitting, parsing, repairing, and synchronizing worldwide Navigational Warnings (NAVAREA I, NAVAREA XI, and Baltic Sea) into Supabase. It establishes strict schema validation, structured audit logging, centralized configuration with startup self-checks, Prometheus observability, property-based testing, circuit breaking, and high-throughput async processing.
-- **Target Audience / Persona**: Maritime data engineers, backend operators, and automated CI/CD cron workers executing daily or hourly navigational warning synchronizations.
-- **Key Value**: Guarantees zero unhandled crashes during corrupt feed ingestion, eliminates silent coordinate parsing failures, provides complete decision traceability for safety audits, and scales throughput via non-blocking asynchronous pipeline orchestration.
+- **What It Does**: Connects to France's SHOM / PING nautical SECOM service (`/secom/navarea_ii_en/v1/object`), retrieves Base64-encoded S-100 Exchange Set zip archives, decompresses them in-memory to access S-124 GML XML files, extracts warning text and vector boundaries (Point, LineString, Polygon), normalizes attributes, and upserts active warnings into Supabase.
+- **Target Audience / Persona**: Hydrographic data engineers, maritime operators, and automated backend cron workers monitoring Atlantic and English Channel navigational hazards (NAVAREA II).
+- **Key Value**: Replaces brittle HTML scraping with authoritative, standardized IHO S-124 hydrographic data exchange, while maintaining 100% extraction reliability via the local + Gemini hybrid pipeline.
 
 ---
 
-## 2. User Experience & Operator Interface (CLI & Backend)
+## 2. Operator Experience & Workflow
 
-Although the React web frontend remains untouched, the backend operator experience and CLI output are upgraded to deliver predictable, human-readable terminal output alongside machine-ingestible JSON logs:
-
-- **CLI Operator Workflow**:
-  - `python -m scripts.run_all` or regional commands (`run_baltic`, `run_navarea_1`, `run_navarea_xi`) run configuration pre-flight validation.
-  - Startup self-checks print a clean status card indicating database connectivity, Gemini API readiness, feed configurations, and log destinations.
-  - Interactive CLI displays clear step progression (Scraping → Splitting → Parsing & Provenance → Triage Gate → Guarded Sync) with per-stage item counters and anomaly warnings.
-  - Structured JSON logs are streamed simultaneously to configured log sinks (`stdout` or rotating log files) without interleaving or corrupting terminal formatting.
-- **Per-Feed Ingestion Modes**:
-  - `STRICT_ABORT`: Aborts regional pipeline on systemic anomalies.
-  - `ESCALATE_AND_CONTINUE` (Default): Catches parsing or schema defects on individual records, auto-quarantines them into Tier C (or Tier B for recoverable repairs) with exact QA flags, and proceeds with valid navigational notices.
-- **Graceful Termination & Error Reporting**:
-  - Clean exit codes (`0` for success or handled quarantines, `1` for configuration/fatal network errors).
-  - Clear remediation guidance printed upon configuration failure (e.g., missing environment variables, invalid Supabase keys, or network timeouts).
+- **Scheduled Ingestion**: GitHub Actions cron runs every 30 minutes (`*/30 * * * *`), automatically polling active notices, decompressing Exchange Sets, and syncing differentials into Supabase.
+- **Manual Triggering (`workflow_dispatch`)**: Operators can trigger immediate on-demand synchronization directly from GitHub Actions or CLI (`python scrapers/navarea_ii.py`).
+- **Structured CLI & Log Output**: Clear visual feedback detailing exchange set count, dataset IDs processed, fallback invocations (if any), database upsert confirmations, and server audit warnings (`responseText`).
 
 ---
 
 ## 3. Key Product Decisions & Trade-Offs
 
-- **Decision 1: Phased Sequential Overhaul vs Monolithic Refactor**
-  - *Chosen Approach*: Execute Phase 1 (Hardening & Config), Phase 2 (Observability, Caching & Testing), and Phase 3 (Circuit Breakers & Async Pipeline) in discrete, test-verified layers.
-  - *Why*: Ensures that basic data models, input validation, and logging foundations are fully stabilized before adding async concurrency and distributed caching layers.
-  - *Alternatives Considered*: Direct async conversion without hardening risks masking ingestion edge-cases and silent data corruptions.
+- **Decision 1: Primary Local XML Extractor + Gemini 2.5 Flash-Lite Backup**
+  - *Chosen Approach*: Execute local GML tag parsing first. Only invoke `gemini-2.5-flash-lite` when local extraction produces empty geometries, unparseable GML topologies, or malformed notice clauses.
+  - *Why*: Delivers near-instantaneous execution and zero API cost for standard notices, while ensuring zero data loss when dealing with complex, nested, or edge-case S-124 structures.
+  - *Alternatives Considered*: Pure Gemini LLM parsing on every notice (unnecessary latency and quota usage) or pure regex/XML parsing (fails on non-standard nested GML topologies).
 
-- **Decision 2: Automated Quarantine Triage Escalation over Immediate Pipeline Abort**
-  - *Chosen Approach*: Implement `ConfigurableFeedPolicy` with automated fallback to `TriageTier.C` / `DataQuality.INVALID` for unparseable records, recording `unplotted_reason="validation_failed"`.
-  - *Why*: In maritime safety, dropping an entire feed because of one corrupt notice from a hydrographic office endangers mariners who need the remaining 99 valid hazard alerts.
-  - *Alternatives Considered*: Strict failure halts the entire feed, delaying critical notices.
-
-- **Decision 3: Layered Caching with Graceful Local In-Memory Fallback**
-  - *Chosen Approach*: Implement an abstract Cache interface supporting an in-memory TTL store with thread locks by default, seamlessly delegating to Redis when `REDIS_HOST` is configured.
-  - *Why*: Allows zero-dependency operation in local testing and CI/CD while supporting distributed caching in multi-worker production deployments.
-
-- **Decision 4: Gemini AI Escalation Guarded by Circuit Breakers & Fallback Rules**
-  - *Chosen Approach*: Wrap `shared/ai_escalation.py` with the circuit breaker pattern, ensuring that rate limits, timeouts, or transient API outages immediately degrade to deterministic regex rules without hanging the pipeline.
+- **Decision 2: Adaptation to Existing `nav_warnings` Schema**
+  - *Chosen Approach*: Map S-124 fields directly into existing `nav_warnings` table rows (`source_id: "shom-navarea-2"`, `navarea: "NAVAREA II"`), computing standard triage fields (`triage_tier: "A"`, `data_quality: "EXPLICIT"` when geometry exists), with `spatial` GeoJSON representation and coordinate tokens.
+  - *Why*: Keeps the entire system unified under the existing multi-area architecture and query models without requiring migration overhead.
 
 ---
 
 ## 4. Technical Architecture & Data Strategy
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        AppConfig & Validation                          │
-│        (Centralized env parsing, startup checks, feed policies)        │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │ Validated Config
-                                    ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                   Structured Logger & Audit Trail                      │
-│        (JSONFormatter, UTC timestamps, contextual extra fields)         │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │
-       ┌────────────────────────────┼────────────────────────────┐
-       ▼                            ▼                            ▼
-┌──────────────┐             ┌──────────────┐             ┌──────────────┐
-│ Baltic Feed  │             │  NAVAREA I   │             │  NAVAREA XI  │
-└──────┬───────┘             └──────┬───────┘             └──────┬───────┘
-       │                            │                            │
-       └────────────────────────────┼────────────────────────────┘
-                                    │
-                                    ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                   Feed Ingestion & Circuit Breakers                    │
-│   - AsyncScraper / HTTP Retry with exponential backoff                 │
-│   - CircuitBreaker (CLOSED -> OPEN -> HALF_OPEN) for external APIs     │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │ Raw Bulletin Corpora
-                                    ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                   Pydantic Schema & Input Validation                   │
-│   - Coordinate token sanitization & bounding range checks              │
-│   - Splitter safety limits & encoding guards                           │
-│   - Custom exception hierarchy (ValidationError, ParseError, SyncError)│
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │ Validated Raw Notices
-                                    ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                    Parsing & Coordinate Provenance                     │
-│   - Deterministic regex & repair rules (Rule 18, etc.)                 │
-│   - AI Escalation with Gemini client & caching (In-Memory / Redis)     │
-│   - Full provenance tracking (quality, repairs, qa_flags)              │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │ Parsed TriageRecord
-                                    ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                  H02 Triage Precedence & Audit Gate                    │
-│   - Quality roll-up (worst wins)                                       │
-│   - Hard blockers -> Tier C (quarantine with unplotted_reason)         │
-│   - Inferred / Repaired / AI / Vessel-Filtered -> Tier B               │
-│   - Pristine, rule-parsed with verified geometry -> Tier A             │
-│   - Structured Audit Log of triage decisions                           │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │
-                                    ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                   Batch Synchronization & Metrics                      │
-│   - Batched differential sync (compute_differential_batched)           │
-│   - Guarded cancellation with min_feed_size check                      │
-│   - Metrics collection & Prometheus export (port 8000)                 │
-│   - Async Supabase bulk insert / upsert / cancel execution             │
-└────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────┐
+│               GitHub Actions (Cron Trigger)            │
+│         .github/workflows/navarea_ii.yml               │
+└──────────────────────────┬─────────────────────────────┘
+                           │ (1) Polling Request
+                           ▼
+┌────────────────────────────────────────────────────────┐
+│              PING SECOM REST API Endpoint              │
+│       GET /secom/navarea_ii_en/v1/object               │
+└──────────────────────────┬─────────────────────────────┘
+                           │ (2) 200 OK + JSON Payload
+                           ▼
+┌────────────────────────────────────────────────────────┐
+│            Ingestion & In-Memory Unpacking             │
+│  - Decode Base64 'data' to io.BytesIO ZIP              │
+│  - Extract S-100 Exchange Set (124FR*.gml)             │
+│  - Audit server responseText for missing notice IDs    │
+└──────────────────────────┬─────────────────────────────┘
+                           │ (3) Raw GML XML String
+                           ▼
+          ┌───────────────────────────────────┐
+          │     1. Local S-124 XML Parser     │
+          │  - Invert (lat, lon) -> [lon, lat]│
+          │  - Extract Point/Line/Polygon     │
+          └────────────────┬──────────────────┘
+                           │
+                 Valid geometry found?
+                  /             \
+               YES               NO / Missing
+                │                 │
+                │                 ▼
+                │   ┌───────────────────────────────────┐
+                │   │  2. Backup: Gemini 2.5 Flash-Lite │
+                │   │  - Structured Output via Pydantic │
+                │   │  - Extracts geometry & boundaries │
+                │   └─────────────┬─────────────────────┘
+                │                 │
+                └────────┬────────┘
+                         │ (4) Normalized Notice Object
+                         ▼
+┌────────────────────────────────────────────────────────┐
+│             Supabase Database (PostgreSQL)             │
+│  - UPSERT on public.nav_warnings (warning_id, source_id)
+│  - Optional audit entry in public.navarea_sync_logs   │
+└────────────────────────────────────────────────────────┘
 ```
 
-### Component & File Mapping
-
-#### Phase 1: Critical Hardening
-1. **`shared/config.py`**:
-   - `AppConfig`, `SupabaseConfig`, `AIConfig`, `FeedPolicyConfig`.
-   - Startup validation methods, strict type enforcement, sensible defaults.
-2. **`shared/exceptions.py`**:
-   - `NavWarnError` base exception with contextual dictionary metadata.
-   - Subclasses: `ValidationError`, `ParseError`, `SyncError`, `AIValidationError`, `ConfigurationError`, `CircuitBreakerError`.
-3. **`shared/logging.py`**:
-   - `JSONFormatter` formatting UTC timestamps, log level, module, function name, and dynamic `extra_data`.
-   - `setup_logging` utility supporting console and file outputs.
-4. **`shared/validation.py`**:
-   - Pydantic models for incoming raw warning chunks, coordinate tokens, and database write rows (`NavWarningWriteModel`).
-   - Range validators for latitude `[-90, 90]`, longitude `[-180, 180]`, depth, and speeds.
-5. **`shared/retry.py`**:
-   - Generic `@retry` decorator with configurable exponential backoff and jitter for network/database calls.
-6. **Hardening existing modules**:
-   - `shared/utils.py`: Add input validation guards to coordinate parsers and repair rules.
-   - `shared/triage.py`: Integrate structured audit logging for all tier assignments and unplotted reasons.
-   - `scripts/run_all.py`, `scripts/run_*.py`: Enforce pre-flight config checks and startup logs.
-
-#### Phase 2: Enhanced Reliability
-1. **`shared/metrics.py` & `shared/prometheus.py`**:
-   - Thread-safe `Counter`, `Histogram`, and `Gauge` implementations.
-   - Prometheus exporter on configurable port (default 8000) tracking scraped, parsed, repaired, triaged (Tier A/B/C), and synced counts.
-2. **`shared/cache.py`**:
-   - Base `Cache` interface with in-memory TTL implementation and `@cached` decorator.
-   - Key generators for coordinate parsing, AI grounding, and scraping responses.
-3. **`shared/sync_modes.py` & `scripts/*_sync.py`**:
-   - `BatchSyncResult` and `compute_differential_batched` to process and execute database upserts in batches (reducing Supabase round-trips).
-4. **Test Suite Expansion**:
-   - `tests/test_validation.py`: Exhaustive validation tests for all public helper functions and Pydantic models.
-   - `tests/test_error_handling.py`: Verify exception hierarchies, context capturing, and retry backoff.
-   - `tests/test_property_based.py`: Property-based testing using `hypothesis` or generative fuzzers for coordinate parsers and repair functions.
-   - `tests/test_metrics_and_cache.py`: Verify cache hit/miss and metrics increments.
-
-#### Phase 3: Advanced Features
-1. **`shared/circuit_breaker.py`**:
-   - State-machine circuit breaker (`CLOSED`, `OPEN`, `HALF_OPEN`) with thread safety and configurable failure thresholds.
-   - Decorator applied to Gemini API calls, Supabase operations, and external scraping HTTP requests.
-2. **`shared/cache.py` (Redis Extension)**:
-   - Redis backend integration enabled conditionally when `REDIS_HOST` is supplied, falling back to local thread-safe memory cache.
-3. **`scripts/async_scraper.py` & `shared/async_supabase.py`**:
-   - Async scraping engine using `aiohttp` / non-blocking clients.
-   - Async database batch operations and pipeline runner (`scripts/run_all_async.py`) orchestrating concurrent ingestion across all regions.
-
----
-
-## 5. Verification Plan
-
-### Test & Compilation Milestones
-1. **Phase 1 Validation Tests**:
-   - Run unit tests covering new validation decorators, Pydantic schemas, and config loaders.
-   - Simulate missing/malformed environment variables to ensure clear fatal exits.
-   - Verify JSON log formatting output on sample feeds.
-2. **Phase 2 Reliability Tests**:
-   - Execute batch sync tests ensuring identical differential output compared to single-record syncs.
-   - Run property-based coordinate fuzz tests verifying zero unhandled crashes on 10,000 randomized tokens.
-   - Verify Prometheus metrics endpoint exposure and metric updates.
-3. **Phase 3 Scalability & Resilience Tests**:
-   - Simulate Gemini API and scraper network timeouts to verify circuit breaker trip (`CLOSED` -> `OPEN`) and recovery (`HALF_OPEN` -> `CLOSED`).
-   - Run `run_all_async.py` pipeline across regional test fixtures and benchmark throughput against synchronous baseline.
+### Module Structure
+- `scrapers/navarea_ii.py`: Core ingestion engine containing:
+  - `local_s124_extractor`: Fast XML element parser for S-124 nodes (`posList`, `Point`, `Curve`, `Surface`, `Polygon`, `textDescription`).
+  - `gemini_flash_lite_backup`: Intelligent fallback using `gemini-2.5-flash-lite` with Pydantic structured output.
+  - `adapt_to_nav_warnings`: Formats S-124 payloads into unified `nav_warnings` database rows.
+  - `run_navarea_ii_pipeline`: SECOM fetch, decompression, diffing, and Supabase upsert logic.
+- `.github/workflows/navarea_ii.yml`: Automated 30-minute cron and manual dispatch workflow.
+- `requirements.txt`: Updates dependencies (`requests`, `google-genai>=1.0.0`, `supabase>=2.4.0`, `pydantic>=2.6.0`).
+- `tests/test_navarea_ii.py`: Pytest suite verifying GML unpacking, coordinate inversion, fallback execution, and database schema transformation.

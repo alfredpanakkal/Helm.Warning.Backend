@@ -80,6 +80,19 @@ def main() -> int:
         print(f"❌ NAVAREA XI failed: {e}")
         all_success = False
 
+    print("\n" + "=" * 70)
+    print("🚀 NAVAREA II (S-124 SECOM)")
+    print("=" * 70)
+    try:
+        from scrapers.navarea_ii import run_navarea_ii_pipeline
+        summary = run_navarea_ii_pipeline()
+        if summary.get("server_errors") and summary.get("harvested", 0) == 0:
+            logger.warning(f"NAVAREA II pipeline completed with server notices: {summary['server_errors']}")
+    except Exception as e:
+        logger.error(f"NAVAREA II pipeline failed: {e}", exc_info=True)
+        print(f"❌ NAVAREA II failed: {e}")
+        all_success = False
+
     total_duration = time.time() - start_total
     print("\n" + "=" * 70)
     if all_success:
