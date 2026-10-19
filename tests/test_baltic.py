@@ -57,7 +57,7 @@ GNSS, AIS, RADAR AND DGPS INTERFERENCE OBSERVED."""
         from shared.utils import parse_coordinates
         coords, lat, lon, spatial = parse_coordinates("PSN 58-10.2N 011-13.3E")
         self.assertEqual(len(coords), 1)
-        self.assertAlmostEqual(lat, 58.166667, places=4)
+        self.assertAlmostEqual(lat, 58.17, places=4)
         self.assertAlmostEqual(lon, 11.221667, places=4)
 
 

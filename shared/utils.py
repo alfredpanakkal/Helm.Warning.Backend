@@ -1,11 +1,22 @@
 #!/usr/bin/env python3
 """
 shared/utils.py — Common utilities for all NAVAREA parsers
+Includes hardened input validation, coordinate repairs, centroid computation, and error context.
 """
 
 import sys
 import re
-from typing import Dict, List, Tuple, Set, Any
+import math
+from typing import Dict, List, Tuple, Set, Any, Optional
+
+from shared.exceptions import ParseError, ValidationError
+from shared.validation import (
+    validate_coordinate_token,
+    validate_warning_id,
+    validate_raw_text,
+    validate_lat_lon,
+    validate_public_inputs,
+)
 
 # Ensure UTF-8 output
 if hasattr(sys.stdout, 'reconfigure'):
@@ -26,7 +37,13 @@ RE_RULE_93 = re.compile(r"^(\d{1,3})-(\d{2}),(\d+)([NSEW])$")
 
 def repair_coordinate_token(raw_token: str) -> tuple[str, list[str]]:
     """Returns (repaired_token, applied_rules). Unchanged token -> (raw_token, [])."""
-    t = raw_token.strip()
+    if raw_token is None:
+        return "", []
+    t = str(raw_token).strip()
+    if not t:
+        return "", []
+
+    applied_rules: list[str] = []
 
     m = RE_RULE_18.match(t)
     if m:
@@ -60,21 +77,43 @@ def repair_coordinate_token(raw_token: str) -> tuple[str, list[str]]:
         deg, mins, frac, hem = m.groups()
         return f"{deg}-{mins}.{frac}{hem}", ["rule93"]
 
-    return t, []
+    return t, applied_rules
 
 
 def parse_coordinate_with_provenance(raw_text: str, raw_token: str) -> Any:
     """Wraps parse_coordinates(); never fabricates hemispheres (Rule 17)."""
     from shared.models import CoordinateProvenance, DataQuality
-    repaired, rules = repair_coordinate_token(raw_token)
+
+    if not raw_token or not isinstance(raw_token, str) or not raw_token.strip():
+        provenance = CoordinateProvenance(raw_token=str(raw_token or ""), lat=None, lon=None)
+        provenance.quality = DataQuality.INVALID
+        provenance.flags.append("EMPTY_TOKEN")
+        return provenance
+
+    try:
+        token_clean = validate_coordinate_token(raw_token)
+    except ValidationError:
+        provenance = CoordinateProvenance(raw_token=str(raw_token), lat=None, lon=None)
+        provenance.quality = DataQuality.INVALID
+        provenance.flags.append("VALIDATION_FAILED")
+        return provenance
+    repaired, rules = repair_coordinate_token(token_clean)
     provenance = CoordinateProvenance(raw_token=raw_token, lat=None, lon=None)
 
-    if not re.search(r"[NSEW]$", repaired):
+    if not re.search(r"[NSEW]$", repaired, re.IGNORECASE):
         provenance.quality = DataQuality.AMBIGUOUS
         provenance.flags.append("MISSING_HEM")
         return provenance
 
+    # Check if the token itself is a full pair
     parsed_coords, lat, lon, spatial = parse_coordinates(repaired)
+
+    # If the token was a single axis (e.g. lat only), extract coordinate pair from raw_text
+    if (lat is None or lon is None) and raw_text:
+        # Check text with repaired token substituted
+        search_text = raw_text.replace(raw_token, repaired)
+        parsed_coords, lat, lon, spatial = parse_coordinates(search_text)
+
     if lat is None or lon is None:
         provenance.quality = DataQuality.INVALID
         provenance.flags.append("VALIDATION_FAILED")
@@ -84,36 +123,84 @@ def parse_coordinate_with_provenance(raw_text: str, raw_token: str) -> Any:
     if rules:
         provenance.quality = DataQuality.INFERRED
         provenance.repairs.extend(rules)
+    else:
+        provenance.quality = DataQuality.EXPLICIT
+
     return provenance
 
 
-def convert_to_decimal(degrees: str, minutes: str, direction: str) -> float:
-    """Converts Degrees and Decimal Minutes into Signed Decimal Degrees (WGS84)."""
-    decimal = float(degrees) + (float(minutes) / 60.0)
-    if direction.upper() in ['S', 'W']:
-        decimal = -decimal
-    return round(decimal, 6)
-
-
-def _is_valid_latlon(lat_deg, lat_min, lon_deg, lon_min) -> bool:
+def convert_to_decimal(
+    degrees: Any,
+    minutes: Any,
+    direction_or_seconds: Any = None,
+    direction: Optional[str] = None
+) -> float:
     """
-    Strict coordinate value validation, mirroring validateCoordinateValues in
-    src/core/coordinates.ts. Invalid coordinates are rejected, never clamped:
+    Converts Degrees and Decimal Minutes (or Seconds) into Signed Decimal Degrees (WGS84).
+    Supports 3-arg (deg, min, dir) and 4-arg (deg, min, sec, dir).
+    Returns math.nan on out-of-bounds or invalid inputs (never clamps).
+    """
+    try:
+        deg_f = float(degrees)
+        min_f = float(minutes)
+    except (TypeError, ValueError):
+        return float('nan')
+
+    # Resolve arguments
+    if direction is None:
+        # 3-arg signature: convert_to_decimal(deg, min, dir)
+        dir_str = str(direction_or_seconds or '').strip().upper()
+        sec_f = 0.0
+    else:
+        # 4-arg signature: convert_to_decimal(deg, min, sec, dir)
+        dir_str = str(direction or '').strip().upper()
+        try:
+            sec_f = float(direction_or_seconds) if direction_or_seconds is not None else 0.0
+        except (TypeError, ValueError):
+            return float('nan')
+
+    # Boundary checks: degrees must be non-negative, minutes and seconds in [0, 60)
+    if deg_f < 0.0 or min_f < 0.0 or min_f >= 60.0 or sec_f < 0.0 or sec_f >= 60.0:
+        return float('nan')
+
+    total_degrees = deg_f + (min_f / 60.0) + (sec_f / 3600.0)
+
+    # Direction specific bounds
+    if dir_str in ('N', 'S'):
+        if total_degrees > 90.0:
+            return float('nan')
+        if dir_str == 'S':
+            total_degrees = -total_degrees
+    elif dir_str in ('E', 'W'):
+        if total_degrees > 180.0:
+            return float('nan')
+        if dir_str == 'W':
+            total_degrees = -total_degrees
+    else:
+        # Unknown or missing direction
+        return float('nan')
+
+    return round(total_degrees, 6)
+
+
+def _is_valid_latlon(lat_deg: Any, lat_min: Any, lon_deg: Any, lon_min: Any) -> bool:
+    """
+    Strict coordinate value validation:
       - |latitude| <= 90, |longitude| <= 180
       - 0 <= minutes < 60
     """
     try:
-        lat_deg = float(lat_deg)
-        lat_min = float(lat_min)
-        lon_deg = float(lon_deg)
-        lon_min = float(lon_min)
+        lat_d = float(lat_deg)
+        lat_m = float(lat_min)
+        lon_d = float(lon_deg)
+        lon_m = float(lon_min)
     except (TypeError, ValueError):
         return False
-    if lat_min < 0 or lat_min >= 60 or lon_min < 0 or lon_min >= 60:
+    if lat_m < 0 or lat_m >= 60 or lon_m < 0 or lon_m >= 60:
         return False
-    if abs(lat_deg) + lat_min / 60.0 > 90.0:
+    if abs(lat_d) + lat_m / 60.0 > 90.0:
         return False
-    if abs(lon_deg) + lon_min / 60.0 > 180.0:
+    if abs(lon_d) + lon_m / 60.0 > 180.0:
         return False
     return True
 
@@ -123,7 +210,11 @@ def parse_coordinates(raw_text: str):
     Extracts navigational coordinates from text.
     Handles DD-MM.MM[N/S] DDD-MM.MM[E/W] format.
     Returns: (parsed_coords_list, primary_lat, primary_lon, spatial_geojson)
+    For polygons and line segments, primary_lat and primary_lon represent the centroid.
     """
+    if not raw_text or not isinstance(raw_text, str):
+        return [], None, None, None
+
     pattern = r'(\d{2,3})-(\d{2}(?:\.\d+)?)[NS]\s+(\d{2,3})-(\d{2}(?:\.\d+)?)[EW]'
     matches = list(re.finditer(pattern, raw_text, re.IGNORECASE))
 
@@ -132,14 +223,14 @@ def parse_coordinates(raw_text: str):
 
     for match in matches:
         lat_deg, lat_min, lon_deg, lon_min = match.groups()
-        
+
         # Extract direction characters from the raw text
         text_after_lat = raw_text[match.end(2):]
         lat_dir_char = text_after_lat[0] if text_after_lat and len(text_after_lat) > 0 else ''
-        
+
         text_after_lon = raw_text[match.end(4):]
         lon_dir_char = text_after_lon[0] if text_after_lon and len(text_after_lon) > 0 else ''
-        
+
         lat_dir = lat_dir_char.upper() if lat_dir_char in 'NS' else ''
         lon_dir = lon_dir_char.upper() if lon_dir_char in 'EW' else ''
 
@@ -153,6 +244,9 @@ def parse_coordinates(raw_text: str):
         lat = convert_to_decimal(lat_deg, lat_min, lat_dir)
         lon = convert_to_decimal(lon_deg, lon_min, lon_dir)
 
+        if math.isnan(lat) or math.isnan(lon):
+            continue
+
         points.append([lon, lat])
         parsed_coords.append(f"{lat_deg}-{lat_min}{lat_dir} {lon_deg}-{lon_min}{lon_dir}")
 
@@ -161,21 +255,28 @@ def parse_coordinates(raw_text: str):
     primary_lon = None
 
     if points:
-        primary_lat = points[0][1]
-        primary_lon = points[0][0]
         if len(points) == 1:
+            primary_lat = points[0][1]
+            primary_lon = points[0][0]
             spatial = {"type": "Point", "coordinates": points[0]}
-        elif len(points) >= 4:
-            closed_points = points if points[0] == points[-1] else points + [points[0]]
-            spatial = {"type": "Polygon", "coordinates": [closed_points]}
         else:
-            spatial = {"type": "LineString", "coordinates": points}
+            # Centroid calculation for multi-point, polygon, and linestring
+            primary_lat = round(sum(p[1] for p in points) / len(points), 6)
+            primary_lon = round(sum(p[0] for p in points) / len(points), 6)
+            if len(points) >= 4:
+                closed_points = points if points[0] == points[-1] else points + [points[0]]
+                spatial = {"type": "Polygon", "coordinates": [closed_points]}
+            else:
+                spatial = {"type": "LineString", "coordinates": points}
 
     return parsed_coords, primary_lat, primary_lon, spatial
 
 
 def classify_hazard(raw_text: str) -> str:
     """Classifies maritime hazard category based on terminology."""
+    if not raw_text or not isinstance(raw_text, str):
+        return "general"
+
     text = raw_text.upper()
     if any(k in text for k in ["GNSS", "DGPS", "AIS INTERFERENCE", "RADAR INTERFERENCE",
             "INTERFERENCE OBSERVED", "JAMMING", "SPOOFING"]):
@@ -207,7 +308,7 @@ def compute_differential(
     Deterministically computes differential actions between scraped data and current database state.
     Returns: {'skip': [...], 'new': [...], 'update': [...], 'cancel': [...]}
     """
-    msg_map = {m["warning_id"]: m for m in scraped_messages}
+    msg_map = {m.get("warning_id", ""): m for m in scraped_messages if isinstance(m, dict)}
 
     to_skip = []
     to_insert_new = []
@@ -216,7 +317,11 @@ def compute_differential(
     seen_ids = set()
 
     for warn in scraped_warnings:
-        wid = warn["warning_id"]
+        if not isinstance(warn, dict):
+            continue
+        wid = warn.get("warning_id")
+        if not wid:
+            continue
         seen_ids.add(wid)
         raw_msg = msg_map.get(wid, {})
         chk = raw_msg.get("checksum_sha256", "")
