@@ -163,20 +163,33 @@ npm run lint
 pip install -r requirements.txt
 
 # Run all NAVAREA pipelines synchronously with pre-flight checks:
+PYTHONPATH=. python -m scripts.run_all
+# or directly:
 python scripts/run_all.py
 
 # Run all NAVAREA pipelines concurrently with asynchronous orchestration:
-python scripts/run_all_async.py
+PYTHONPATH=. python -m scripts.run_all_async
 
-# Run individual regional pipelines:
+# Run individual regional pipelines (supports both module execution and direct script execution):
+PYTHONPATH=. python -m scripts.run_baltic
+# or:
 python scripts/run_baltic.py
-python scripts/run_navarea_1.py
-python scripts/run_navarea_xi.py
+
+PYTHONPATH=. python -m scripts.run_navarea_1
+PYTHONPATH=. python -m scripts.run_navarea_xi
 ```
+
+#### Operational Safeguards & Repo Layout
+- **`scripts/`**: Executable scrapers, deterministic parsers, and regional sync runners.
+- **`shared/`**: Common utilities, validation schemas, circuit breakers, and metrics.
+- **`navareas/`**: Generated raw bulletin text (`navarea_baltic_warnings.txt`) and parsed JSON (`parsed_baltic_warnings.json`).
+- **`tests/`**: Unit, integration, and fuzz testing suites.
+
+> **Environment Variables**: For live database synchronization, ensure `SUPABASE_URL` and `SUPABASE_KEY` are provided. When credentials are omitted, pipelines run in safe dry-run mode without failing.
 
 ### 3. Running Test Suites
 
-The backend includes a comprehensive 55-test suite covering parsing, repair rules, triage gates, error handling, circuit breakers, caching, and property-based fuzz testing:
+The backend includes a comprehensive 66-test suite covering parsing, repair rules, triage gates, error handling, circuit breakers, caching, empty harvest resilience, and property-based fuzz testing:
 
 ```bash
 # Run all unit and property-based tests:

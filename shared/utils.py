@@ -308,6 +308,11 @@ def compute_differential(
     Deterministically computes differential actions between scraped data and current database state.
     Returns: {'skip': [...], 'new': [...], 'update': [...], 'cancel': [...]}
     """
+    scraped_warnings = scraped_warnings if scraped_warnings is not None else []
+    scraped_messages = scraped_messages if scraped_messages is not None else []
+    existing_warnings = existing_warnings if existing_warnings is not None else {}
+    existing_checksums = existing_checksums if existing_checksums is not None else set()
+
     msg_map = {m.get("warning_id", ""): m for m in scraped_messages if isinstance(m, dict)}
 
     to_skip = []

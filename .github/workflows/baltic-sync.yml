@@ -43,16 +43,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Verify Module Importability
+        run: |
+          PYTHONPATH=${{ github.workspace }} python -c "import scripts; import scripts.run_baltic; import scripts.baltic_scraper; import scripts.baltic_parser; import scripts.baltic_sync; print('All Baltic pipeline modules imported successfully')"
+
       - name: Run Unit Tests for Baltic
         run: |
-          python -m unittest tests.test_baltic -v
+          PYTHONPATH=${{ github.workspace }} python -m unittest tests.test_baltic -v
 
       - name: Harvest Bulletins
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
-          python scripts/run_baltic.py
+          PYTHONPATH=${{ github.workspace }} python -m scripts.run_baltic
 
       - name: Verify Output Files
         run: |
+          echo "Verifying generated files in navareas/baltic:"
           if [ ! -f navareas/baltic/navarea_baltic_warnings.txt ]; then
             echo "Scraper error: navarea_baltic_warnings.txt not generated!"
             exit 1
@@ -68,7 +76,13 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
-          python scripts/baltic_sync.py
+          PYTHONPATH=${{ github.workspace }} python -m scripts.baltic_sync
+
+      - name: Debug Summary
+        if: always()
+        run: |
+          echo "=== Debug Summary: navareas/baltic ==="
+          ls -la navareas/baltic || echo "Directory does not exist"
 
       - name: Upload Output Artifacts
         uses: actions/upload-artifact@v4
@@ -80,3 +94,4 @@ jobs:
             navareas/baltic/parsed_baltic_warnings.json
           retention-days: 7
           if-no-files-found: ignore
+

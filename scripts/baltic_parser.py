@@ -10,6 +10,11 @@ import hashlib
 import os
 from datetime import datetime, timezone
 
+# Ensure repo root is on sys.path
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 if hasattr(sys.stderr, 'reconfigure'):
@@ -74,39 +79,51 @@ def parse_warning(raw_block, reference_header):
 
 
 def main(input_filename="navareas/baltic/navarea_baltic_warnings.txt",
-         output_filename="navareas/baltic/parsed_baltic_warnings.json"):
+         output_filename="navareas/baltic/parsed_baltic_warnings.json") -> bool:
     print("=" * 60)
     print("🧭 Baltic Parser")
     print("=" * 60)
-    try:
-        with open(input_filename, "r", encoding="utf-8") as f:
-            content = f.read()
-    except FileNotFoundError:
-        print(f"❌ Error: {input_filename} not found")
-        sys.exit(1)
+
+    content = ""
+    if os.path.exists(input_filename):
+        try:
+            with open(input_filename, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception as e:
+            print(f"⚠️ Warning: Could not read {input_filename} ({e}).")
+            content = ""
+    else:
+        print(f"ℹ️ Input file {input_filename} does not exist yet; initializing empty harvest.")
+
     pattern = r'--- (.*?) ---\n(.*?)(?=\n--- |$)'
-    matches = re.findall(pattern, content, re.DOTALL)
+    matches = re.findall(pattern, content, re.DOTALL) if content else []
     parsed_data = {"raw_messages": [], "nav_warnings": [], "spatial_features": []}
+
     if not matches:
         # Empty harvest is a valid state; emit an empty dataset so the sync
         # stage can still cancel previously active warnings for this source.
         print("ℹ️ No warning blocks found (empty harvest is valid)")
-    for header, block in matches:
-        raw_msg, nav_warn, spatial = parse_warning(block.strip(), header.strip())
-        parsed_data["raw_messages"].append(raw_msg)
-        parsed_data["nav_warnings"].append(nav_warn)
-        if spatial:
-            parsed_data["spatial_features"].append({
-                "warning_id": nav_warn["warning_id"],
-                "category": nav_warn["category"],
-                "geometry": spatial
-            })
+    else:
+        for header, block in matches:
+            raw_msg, nav_warn, spatial = parse_warning(block.strip(), header.strip())
+            parsed_data["raw_messages"].append(raw_msg)
+            parsed_data["nav_warnings"].append(nav_warn)
+            if spatial:
+                parsed_data["spatial_features"].append({
+                    "warning_id": nav_warn["warning_id"],
+                    "category": nav_warn["category"],
+                    "geometry": spatial
+                })
+
     os.makedirs(os.path.dirname(output_filename), exist_ok=True)
     with open(output_filename, "w", encoding="utf-8") as f:
         json.dump(parsed_data, f, indent=2, ensure_ascii=False)
+
     print(f"✅ Parsed {len(matches)} warnings into {output_filename}")
     return True
 
 
 if __name__ == "__main__":
-    main()
+    success = main()
+    sys.exit(0 if success else 1)
+
