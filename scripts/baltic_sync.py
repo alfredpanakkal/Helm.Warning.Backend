@@ -8,6 +8,10 @@ import json
 import sys
 from typing import Dict, List, Tuple, Set, Any
 
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 if hasattr(sys.stderr, 'reconfigure'):
@@ -17,7 +21,7 @@ from shared.utils import compute_differential
 
 SOURCE_ID = "sma-baltic-subarea"
 VALID_RAW_COLUMNS = {"warning_id", "source_id", "subject_header",
-                     "full_raw_text", "received_timestamp", "checksum_sha256"}
+                      "full_raw_text", "received_timestamp", "checksum_sha256"}
 VALID_NAV_COLUMNS = {"warning_id", "source_id", "navarea", "title",
                     "issued_text", "coordinates", "latitude", "longitude",
                     "category", "status", "raw_text"}
