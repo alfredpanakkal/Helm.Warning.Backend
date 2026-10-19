@@ -140,6 +140,7 @@ export interface RawMessage {
 
 export interface NavWarning {
   id?: string;
+  canonical_id?: string;
   warning_id: string;
   publisher_id?: string | null;
   source_id: string;
@@ -184,10 +185,110 @@ export interface NavWarning {
   risk_level?: string | null;
   severity?: SeverityLevel;
   category: HazardCategory;
+  categories?: string[];
   is_verified?: boolean;
   verification?: VerificationState;
   verified_at?: string | null;
   cancels_ids?: string[];
+  radio_frequencies?: string[];
+  radio_communications?: Array<{
+    band?: string;
+    channel?: string;
+    frequency?: number;
+    unit?: string;
+    service?: string;
+  }>;
+  space_launch_mission?: string | null;
+  altitude_ceiling_fl?: number | null;
+  shoal_depth_m?: number | null;
+  is_depth_unknown?: boolean;
+  tow_length_m?: number | null;
+  tow_speed_kts?: number | null;
+  applicable_vessel_filter?: string | null;
+  created_at?: string;
+}
+
+export interface NavWarningGeometry {
+  geom_id?: string;
+  warning_id: string; // UUID FK
+  zone_label?: string | null;
+  feature_type: 'POINT' | 'LINE' | 'POLYGON' | 'CORRIDOR' | 'SWEEP_ARC' | 'BOUNDING_BOX';
+  geom_postgis?: string; // WKT or geography representation
+  buffer_nm: number;
+  corridor_half_width_nm?: number | null;
+  altitude_floor_m?: number;
+  altitude_ceiling_fl?: number | null;
+  sweep_start_azimuth?: number | null;
+  sweep_end_azimuth?: number | null;
+  sweep_radius_nm?: number | null;
+  snapping_rule?: 'NONE' | 'COASTAL_CONTOUR';
+  created_at?: string;
+}
+
+export interface NavWarningEntity {
+  entity_id?: string;
+  warning_id: string; // UUID FK
+  entity_type: 'VESSEL' | 'OFFSHORE_RIG' | 'BUOY' | 'CABLE' | 'PIPELINE' | 'WRECK' | 'OBSTRUCTION';
+  entity_name: string;
+  role: 'PRIMARY' | 'LEAD_TUG' | 'BRAKE_TUG' | 'CHASE_BOAT' | 'GUARD_VESSEL' | 'CASUALTY' | 'STANDBY' | 'ATTENDANT';
+  callsign?: string | null;
+  mmsi?: string | null;
+  tow_length_m?: number | null;
+  tow_speed_kts?: number | null;
+  streamer_count?: number | null;
+  streamer_length_m?: number | null;
+  streamer_breadth_m?: number | null;
+  streamer_depth_m?: number | null;
+  clearance_requested_nm?: number | null;
+  depth_m?: number | null;
+  depth_status?: 'MEASURED' | 'UNKNOWN' | 'APPROXIMATE' | 'DRYING' | null;
+  datum_ref?: string;
+  radio_channels?: Array<Record<string, unknown>>;
+  created_at?: string;
+}
+
+export interface NavWarningChart {
+  chart_id?: string;
+  warning_id: string; // UUID FK
+  authority?: string | null;
+  chart_number: string;
+  int_equivalent?: string | null;
+  is_international: boolean;
+  raw_citation?: string | null;
+  created_at?: string;
+}
+
+export interface NavWarningSchedule {
+  schedule_id?: string;
+  warning_id: string; // UUID FK
+  window_start: string;
+  window_end: string;
+  is_alternate: boolean;
+  recurrence_rule?: string | null;
+  days_of_week?: number[] | null;
+  created_at?: string;
+}
+
+export interface NavWarningCancellation {
+  id?: string;
+  cancelling_warning_id: string; // UUID FK
+  target_canonical_id: string;
+  target_warning_id?: string | null;
+  cancellation_type: 'EXPLICIT_NOTICE' | 'IN_FORCE_OMISSION' | 'PARAGRAPH_SELF_CANCEL';
+  paragraph_ref?: string | null;
+  created_at?: string;
+}
+
+export interface NavWarningAudit {
+  audit_id?: string;
+  warning_id: string; // UUID FK
+  operator_id: string;
+  previous_tier: string;
+  new_tier: string;
+  action: string;
+  reason?: string | null;
+  signature_hash: string;
+  diff_patch?: Record<string, unknown>;
   created_at?: string;
 }
 

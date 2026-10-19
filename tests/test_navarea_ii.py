@@ -85,7 +85,7 @@ class TestNavareaIIExtractor(unittest.TestCase):
     def test_adapt_to_nav_warnings(self):
         row = adapt_to_nav_warnings(
             dataset_id="124FR00N035926E",
-            warning_number="359/26",
+            warning_number="NAVAREA II 359/26",
             warning_type="Military Exercise",
             general_area="BAY OF BISCAY",
             publication_time="2026-10-18T12:00:00Z",
@@ -99,13 +99,19 @@ class TestNavareaIIExtractor(unittest.TestCase):
         self.assertEqual(row["warning_id"], "359/26")
         self.assertEqual(row["source_id"], "shom-navarea-2")
         self.assertEqual(row["navarea"], "NAVAREA II")
+        self.assertEqual(row["coordinates"], "47.2000N 004.5000W")
         self.assertIn("NAVAREA II 359/26", row["title"])
         self.assertEqual(row["status"], "active")
         self.assertEqual(row["category"], "military")
         self.assertEqual(row["latitude"], 47.2)
         self.assertEqual(row["longitude"], -4.5)
-        self.assertEqual(row["triage_tier"], "A")
-        self.assertEqual(row["parsing_method"], "RULE")
+        self.assertEqual(row["severity"], "moderate")
+        # Ensure unmigrated triage columns are strictly stripped to prevent PostgREST PGRST204
+        self.assertNotIn("data_quality", row)
+        self.assertNotIn("triage_tier", row)
+        self.assertNotIn("parsing_method", row)
+        self.assertNotIn("qa_flags", row)
+        self.assertNotIn("unplotted_reason", row)
 
     def test_backup_schema_validation(self):
         raw_json = json.dumps({
@@ -115,14 +121,16 @@ class TestNavareaIIExtractor(unittest.TestCase):
             "publication_time": "2026-10-18T14:30:00Z",
             "cancellation_date": None,
             "warning_text": "CONTAINER REPORTED ADRIFT IN VICINITY OF 45-20N 008-10W.",
-            "geojson_geometry": {
-                "type": "Point",
-                "coordinates": [-8.1667, 45.3333]
-            }
+            "geometry_type": "Point",
+            "coordinates": [
+                {"longitude": -8.1667, "latitude": 45.3333}
+            ]
         })
         parsed = S124BackupSchema.model_validate_json(raw_json)
         self.assertEqual(parsed.warning_number, "512/26")
-        self.assertEqual(parsed.geojson_geometry["coordinates"], [-8.1667, 45.3333])
+        self.assertEqual(parsed.geometry_type, "Point")
+        self.assertEqual(parsed.coordinates[0].longitude, -8.1667)
+        self.assertEqual(parsed.coordinates[0].latitude, 45.3333)
 
     def test_pipeline_dry_run_with_mock_exchange_set(self):
         # Create an in-memory ZIP containing a sample S-124 GML

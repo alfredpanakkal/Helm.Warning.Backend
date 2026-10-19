@@ -60,7 +60,12 @@ class TriageRecord:
 
     def to_db_row(self, base: dict) -> dict:
         """Merge triage/provenance fields into an existing DB upsert row."""
+        canonical_id = base.get("canonical_id") or base.get("warning_id")
+        if "categories" not in base:
+            cat = base.get("category")
+            base["categories"] = [cat] if cat else []
         base.update({
+            "canonical_id": canonical_id,
             "data_quality": self.data_quality.value,
             "parsing_method": self.parsing_method.value,
             "triage_tier": self.triage_tier.value,

@@ -35,7 +35,12 @@ except ImportError:
         @classmethod
         def model_validate_json(cls, json_str):
             data = json.loads(json_str)
-            return cls(**data)
+            inst = cls()
+            for k, v in data.items():
+                if k == "coordinates" and isinstance(v, list):
+                    v = [CoordinatePair(**item) if isinstance(item, dict) else item for item in v]
+                setattr(inst, k, v)
+            return inst
     def Field(*args, **kwargs):
         return kwargs.get("default", None)
 
@@ -112,16 +117,22 @@ if HAS_GENAI and GEMINI_API_KEY:
 
 
 # --- Gemini Structured Output Schema ---
+class CoordinatePair(BaseModel):
+    longitude: float = Field(description="Longitude in decimal degrees")
+    latitude: float = Field(description="Latitude in decimal degrees")
+
+
 class S124BackupSchema(BaseModel):
-    warning_number: Optional[str] = Field(default=None, description="Notice number/year, e.g., '359/26'")
-    warning_type: Optional[str] = Field(default=None, description="Category or nature of the maritime hazard")
+    warning_number: Optional[str] = Field(default=None, description="Notice number, e.g., '359/26'")
     general_area: Optional[str] = Field(default=None, description="Broad geographic locality, e.g., 'BAY OF BISCAY'")
+    warning_type: Optional[str] = Field(default=None, description="Category or nature of the maritime hazard")
     publication_time: Optional[str] = Field(default=None, description="ISO 8601 publication or start timestamp")
     cancellation_date: Optional[str] = Field(default=None, description="ISO 8601 cancellation timestamp or null")
     warning_text: str = Field(default="", description="Full plain body text of the navigational warning")
-    geojson_geometry: Optional[Dict[str, Any]] = Field(
+    geometry_type: Optional[str] = Field(default=None, description="'Point', 'LineString', or 'Polygon'")
+    coordinates: Optional[List[CoordinatePair]] = Field(
         default=None,
-        description="GeoJSON geometry object with coordinates in strictly [longitude, latitude] format"
+        description="List of point coordinates in decimal degrees (longitude, latitude)",
     )
 
 
@@ -232,24 +243,19 @@ def local_s124_extractor(gml_content: str, filename: str = "dataset.gml") -> Dic
     }
 
 
-def gemini_flash_lite_backup(gml_content: str) -> Optional[S124BackupSchema]:
+def gemini_flash_lite_backup(gml_content: str) -> Optional[Dict[str, Any]]:
     """
     Intelligent backup parser using Gemini 2.5 Flash-Lite when local extraction
     lacks geometry, encounters complex GML nesting, or fails on irregular formatting.
+    Uses explicit Pydantic schema to avoid additional_properties error.
     """
     if not ai_client:
         return None
 
     try:
         print("    [!] Local parser lacked geometry; invoking Gemini 2.5 Flash-Lite fallback...")
-        system_instruction = (
-            "You are an expert IHO S-124 hydrographic data parser. Extract warning details "
-            "and hazard boundary geometry from GML datasets into structured JSON. "
-            "CRITICAL: In GML, coordinate pairs are given as 'latitude longitude'. "
-            "Strictly invert them to GeoJSON format '[longitude, latitude]'."
-        )
         prompt = (
-            "Extract the navigational warning attributes and maritime boundary geometry from this S-124 GML XML:\n\n"
+            "Extract the warning details and boundary geometry coordinates from this GML XML:\n\n"
             + gml_content[:15000]
         )
 
@@ -257,91 +263,148 @@ def gemini_flash_lite_backup(gml_content: str) -> Optional[S124BackupSchema]:
             model="gemini-2.5-flash-lite",
             contents=prompt,
             config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
                 response_mime_type="application/json",
                 response_schema=S124BackupSchema,
                 temperature=0.0,
             ),
         )
-        if response.text:
-            return S124BackupSchema.model_validate_json(response.text)
-        return None
+        if not response.text:
+            return None
+
+        data = S124BackupSchema.model_validate_json(response.text)
+
+        # Reconstruct GeoJSON geometry safely
+        geojson_geom = None
+        if data.coordinates and data.geometry_type:
+            raw_pts = []
+            for pt in data.coordinates:
+                if hasattr(pt, "longitude") and hasattr(pt, "latitude"):
+                    raw_pts.append([pt.longitude, pt.latitude])
+                elif isinstance(pt, dict):
+                    raw_pts.append([pt.get("longitude"), pt.get("latitude")])
+                elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                    raw_pts.append([pt[0], pt[1]])
+
+            gtype = (data.geometry_type or "").strip().lower()
+            if gtype == "point" and raw_pts:
+                geojson_geom = {"type": "Point", "coordinates": raw_pts[0]}
+            elif gtype == "polygon" and raw_pts:
+                # Close the polygon ring if not closed
+                if raw_pts[0] != raw_pts[-1]:
+                    raw_pts.append(raw_pts[0])
+                geojson_geom = {"type": "Polygon", "coordinates": [raw_pts]}
+            elif gtype in ("linestring", "curve") and raw_pts:
+                geojson_geom = {"type": "LineString", "coordinates": raw_pts}
+
+        return {
+            "warning_number": data.warning_number,
+            "general_area": data.general_area,
+            "warning_type": data.warning_type,
+            "publication_time": data.publication_time,
+            "cancellation_date": data.cancellation_date,
+            "warning_text": data.warning_text,
+            "geojson_geometry": geojson_geom,
+        }
     except Exception as e:
         print(f"    [!] Gemini Flash-Lite fallback error: {e}")
         return None
 
 
-def adapt_to_nav_warnings(
-    dataset_id: str,
-    warning_number: Optional[str],
-    warning_type: Optional[str],
-    general_area: Optional[str],
-    publication_time: Optional[str],
-    cancellation_date: Optional[str],
-    warning_text: str,
-    geojson_geometry: Optional[Dict[str, Any]],
-    raw_payload: str,
-    used_ai: bool = False,
-) -> Dict[str, Any]:
-    """
-    Adapts S-124 extracted notice into standard schema for public.nav_warnings.
-    Computes coordinates, centroids, hazard category, and triage metadata.
-    """
-    wid = warning_number or dataset_id
-    full_wid = f"NAVAREA II {wid}" if not wid.startswith("NAVAREA") else wid
+def compute_centroid(geojson_geometry: Optional[Dict[str, Any]]) -> Tuple[Optional[float], Optional[float], Optional[str]]:
+    """Calculates center latitude, longitude, and formatted coordinate string (e.g. 46.5000N 004.2500W)."""
+    if not geojson_geometry:
+        return None, None, None
 
-    # Determine representative latitude and longitude
+    gtype = geojson_geometry.get("type")
+    coords = geojson_geometry.get("coordinates")
     lat: Optional[float] = None
     lon: Optional[float] = None
-    coords_text: Optional[str] = None
 
-    if geojson_geometry:
-        gtype = geojson_geometry.get("type")
-        coords = geojson_geometry.get("coordinates")
-        if gtype == "Point" and isinstance(coords, (list, tuple)) and len(coords) >= 2:
-            lon, lat = float(coords[0]), float(coords[1])
-            coords_text = f"{abs(lat):.4f}{'N' if lat >= 0 else 'S'} {abs(lon):.4f}{'E' if lon >= 0 else 'W'}"
-        elif gtype in ("Polygon", "LineString") and coords:
-            # Centroid approximation
-            pts = coords[0] if gtype == "Polygon" else coords
-            if pts and isinstance(pts, list):
-                valid_pts = [p for p in pts if isinstance(p, (list, tuple)) and len(p) >= 2]
-                if valid_pts:
-                    avg_lon = sum(float(p[0]) for p in valid_pts) / len(valid_pts)
-                    avg_lat = sum(float(p[1]) for p in valid_pts) / len(valid_pts)
-                    lon, lat = round(avg_lon, 5), round(avg_lat, 5)
-                    coords_text = f"{abs(lat):.4f}{'N' if lat >= 0 else 'S'} {abs(lon):.4f}{'E' if lon >= 0 else 'W'}"
+    if gtype == "Point" and isinstance(coords, (list, tuple)) and len(coords) >= 2:
+        lon, lat = round(float(coords[0]), 4), round(float(coords[1]), 4)
+    elif gtype in ("Polygon", "LineString") and coords:
+        pts = coords[0] if gtype == "Polygon" else coords
+        if pts and isinstance(pts, list):
+            valid_pts = [p for p in pts if isinstance(p, (list, tuple)) and len(p) >= 2]
+            if valid_pts:
+                avg_lon = sum(float(p[0]) for p in valid_pts) / len(valid_pts)
+                avg_lat = sum(float(p[1]) for p in valid_pts) / len(valid_pts)
+                lon, lat = round(avg_lon, 4), round(avg_lat, 4)
 
-    # Determine hazard category
-    category = classify_hazard(f"{warning_type or ''} {warning_text}")
+    coord_str = None
+    if lat is not None and lon is not None:
+        coord_str = f"{abs(lat):.4f}{'N' if lat >= 0 else 'S'} {abs(lon):08.4f}{'E' if lon >= 0 else 'W'}"
 
-    # Build title
-    title_parts = [full_wid]
-    if general_area:
-        title_parts.append(general_area)
-    if warning_type and warning_type not in (general_area or ""):
-        title_parts.append(warning_type)
-    title = " - ".join(title_parts)
+    return lat, lon, coord_str
 
-    return {
-        "warning_id": wid,
-        "source_id": SOURCE_ID,
+
+def adapt_to_nav_warnings(
+    local_or_ai_data: Any = None,
+    raw_gml_text: str = "",
+    used_ai: bool = False,
+    **kwargs
+) -> Dict[str, Any]:
+    """
+    Adapts S-124 extracted notice into the exact schema existing in live public.nav_warnings.
+    Strips non-existent triage columns (data_quality, triage_tier, parsing_method, etc.)
+    to avoid PostgREST error PGRST204.
+    """
+    import re
+    if isinstance(local_or_ai_data, dict):
+        raw_num = str(local_or_ai_data.get("warning_number") or "")
+        dataset_id = local_or_ai_data.get("dataset_id", "")
+        body_text = local_or_ai_data.get("warning_text") or ""
+        general_area = local_or_ai_data.get("general_area") or "ATLANTIC"
+        warning_type = local_or_ai_data.get("warning_type")
+        pub_time = local_or_ai_data.get("publication_time")
+        cancel_time = local_or_ai_data.get("cancellation_date")
+        spatial = local_or_ai_data.get("geojson_geometry")
+        raw_gml = raw_gml_text or local_or_ai_data.get("raw_payload", "")
+    else:
+        dataset_id = str(local_or_ai_data or kwargs.get("dataset_id", ""))
+        raw_num = str(kwargs.get("warning_number") or "")
+        warning_type = kwargs.get("warning_type")
+        general_area = kwargs.get("general_area") or "ATLANTIC"
+        pub_time = kwargs.get("publication_time")
+        cancel_time = kwargs.get("cancellation_date")
+        body_text = kwargs.get("warning_text") or ""
+        spatial = kwargs.get("geojson_geometry")
+        raw_gml = raw_gml_text or kwargs.get("raw_payload", "")
+
+    num_match = re.search(r"(\d+/\d+)", raw_num)
+    if num_match:
+        warning_id = num_match.group(1)
+    elif dataset_id:
+        match = re.search(r"0*(\d{1,4})(\d{2})[A-Za-z]?$", dataset_id)
+        warning_id = f"{int(match.group(1))}/{match.group(2)}" if match else dataset_id
+    else:
+        warning_id = raw_num or "UNKNOWN"
+
+    title = f"NAVAREA II {warning_id} - {general_area}"
+    if warning_type and warning_type not in general_area:
+        title = f"{title} - {warning_type}"
+
+    lat, lon, coord_str = compute_centroid(spatial)
+    category = classify_hazard(f"{warning_type or ''} {body_text}")
+
+    # Base payload containing strictly verified columns present in live public.nav_warnings
+    record = {
+        "warning_id": warning_id,
+        "source_id": SOURCE_ID,  # "shom-navarea-2"
         "navarea": "NAVAREA II",
-        "title": title,
-        "issued_text": publication_time,
-        "coordinates": coords_text,
+        "title": title[:255],
+        "issued_text": pub_time,
+        "coordinates": coord_str,
         "latitude": lat,
         "longitude": lon,
         "category": category,
-        "status": "active" if not cancellation_date else "cancelled",
-        "raw_text": warning_text or raw_payload[:500],
-        "spatial": geojson_geometry,
-        "data_quality": "EXPLICIT" if geojson_geometry else "INFERRED",
-        "parsing_method": "AI" if used_ai else "RULE",
-        "triage_tier": "A" if (geojson_geometry and lat is not None) else "B",
-        "qa_flags": [] if geojson_geometry else ["NO_GEOMETRY_DETECTED"],
-        "unplotted_reason": None if geojson_geometry else "no_coordinates",
+        "severity": "moderate",
+        "status": "active" if not cancel_time else "cancelled",
+        "raw_text": body_text or raw_gml[:1000],
+        "spatial": spatial,
     }
+
+    return record
 
 
 def run_navarea_ii_pipeline(
@@ -458,20 +521,20 @@ def run_navarea_ii_pipeline(
                     used_ai = True
                     ai_backup = gemini_flash_lite_backup(raw_gml)
                     if ai_backup:
-                        if not final_geometry and ai_backup.geojson_geometry:
-                            final_geometry = ai_backup.geojson_geometry
-                        if not final_text and ai_backup.warning_text:
-                            final_text = ai_backup.warning_text
-                        if not warning_no and ai_backup.warning_number:
-                            warning_no = ai_backup.warning_number
-                        if not general_area and ai_backup.general_area:
-                            general_area = ai_backup.general_area
-                        if not warning_type and ai_backup.warning_type:
-                            warning_type = ai_backup.warning_type
-                        if not pub_time and ai_backup.publication_time:
-                            pub_time = ai_backup.publication_time
-                        if not cancel_time and ai_backup.cancellation_date:
-                            cancel_time = ai_backup.cancellation_date
+                        if not final_geometry and ai_backup.get("geojson_geometry"):
+                            final_geometry = ai_backup["geojson_geometry"]
+                        if not final_text and ai_backup.get("warning_text"):
+                            final_text = ai_backup["warning_text"]
+                        if not warning_no and ai_backup.get("warning_number"):
+                            warning_no = ai_backup["warning_number"]
+                        if not general_area and ai_backup.get("general_area"):
+                            general_area = ai_backup["general_area"]
+                        if not warning_type and ai_backup.get("warning_type"):
+                            warning_type = ai_backup["warning_type"]
+                        if not pub_time and ai_backup.get("publication_time"):
+                            pub_time = ai_backup["publication_time"]
+                        if not cancel_time and ai_backup.get("cancellation_date"):
+                            cancel_time = ai_backup["cancellation_date"]
 
                 # 3. Format adapted record for nav_warnings
                 adapted_warn = adapt_to_nav_warnings(

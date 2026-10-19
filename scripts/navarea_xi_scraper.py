@@ -56,13 +56,27 @@ def _collect_from_text_lines(blocks):
         lines = [l.strip() for l in block.split('\n') if l.strip()]
         if not lines:
             continue
-        id_match = re.search(r'(NO\.\d{2}-\d{4})', lines[0])
+
+        # Search leading lines (up to 3) for the notice identifier
+        id_match = None
+        date_line = lines[0]
+        id_line_idx = 0
+        for idx, l in enumerate(lines[:3]):
+            m = re.search(r'(NO\.?\s*\d{2}-\d{4})', l, re.IGNORECASE)
+            if m:
+                id_match = m
+                date_line = l
+                id_line_idx = idx
+                break
+
         if not id_match:
             continue
-        wid = id_match.group(1)
+
+        wid = re.sub(r'\s+', '', id_match.group(1)).upper()
         header = f"NAVAREA XI {wid}"
-        body = "\n".join(lines[1:]).strip()
-        collected[header] = {"header": header, "date_line": lines[0], "body": body}
+        body_lines = [l for i, l in enumerate(lines) if i > id_line_idx]
+        body = "\n".join(body_lines).strip()
+        collected[header] = {"header": header, "date_line": date_line, "body": body}
     return collected
 
 
@@ -218,17 +232,63 @@ async def fetch_via_browser(year=None) -> dict:
             await browser.close()
 
 
-def fetch_direct_disp():
-    """HTTP fallback if browser automation or Playwright is not available."""
-    print("Direct HTTP fetch from official Japan Coast Guard (kaiho.mlit.go.jp)...")
+def fetch_direct_disp(year=None):
+    """
+    HTTP fallback if browser automation or Playwright is not available.
+    Submits structured form payload with dynamic year resolution targeting disp_warnings.cgi.
+    """
+    current_year = year or datetime.now().year
+    print(f"Direct HTTP fetch from official Japan Coast Guard (kaiho.mlit.go.jp) for year {current_year}...")
     if cffi_requests is None:
         return {}
-    if HAS_CURL_CFFI:
-        response = cffi_requests.get(URL_DISP, impersonate="chrome", timeout=30, verify=True)
-    else:
-        response = cffi_requests.get(URL_DISP, headers={"User-Agent": "Mozilla/5.0"}, timeout=30, verify=True)
-    response.raise_for_status()
-    html = response.content.decode(JCG_ENCODING, errors="replace")
+
+    form_payload = {
+        "year": str(current_year),
+        "YEAR": str(current_year),
+        "action": "all",
+        "ALLMAP": "All Display",
+        "btn_all": "All Display"
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Referer": URL_PORTAL,
+        "Origin": "https://www1.kaiho.mlit.go.jp",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+
+    response = None
+    try:
+        if HAS_CURL_CFFI:
+            response = cffi_requests.post(URL_DISP, data=form_payload, headers=headers, impersonate="chrome", timeout=30, verify=True)
+        else:
+            response = cffi_requests.post(URL_DISP, data=form_payload, headers=headers, timeout=30, verify=True)
+        response.raise_for_status()
+    except Exception:
+        # Fallback to GET with query parameters
+        try:
+            get_params = {
+                "year": str(current_year),
+                "YEAR": str(current_year),
+                "action": "all",
+                "ALLMAP": "All Display"
+            }
+            if HAS_CURL_CFFI:
+                response = cffi_requests.get(URL_DISP, params=get_params, headers={"User-Agent": headers["User-Agent"], "Referer": URL_PORTAL}, impersonate="chrome", timeout=30, verify=True)
+            else:
+                response = cffi_requests.get(URL_DISP, params=get_params, headers={"User-Agent": headers["User-Agent"], "Referer": URL_PORTAL}, timeout=30, verify=True)
+            response.raise_for_status()
+        except Exception as e:
+            print(f"⚠️ Direct JCG Kaiho HTTP request error: {e}")
+            return {}
+
+    if response is None:
+        return {}
+
+    try:
+        html = response.content.decode(JCG_ENCODING, errors="replace")
+    except Exception:
+        html = response.text
+
     return _parse_html_warnings(html)
 
 
@@ -252,7 +312,7 @@ def scrape_xi_warnings(output_filename="navareas/navarea_xi/navarea_xi_warnings.
     # 2. Seamless HTTP fallback if browser was unavailable or yielded zero results
     if not collected:
         try:
-            collected = fetch_direct_disp()
+            collected = fetch_direct_disp(year=year)
             if collected:
                 print(f"✅ Successfully harvested {len(collected)} bulletins directly via HTTP fallback.")
         except Exception as e:

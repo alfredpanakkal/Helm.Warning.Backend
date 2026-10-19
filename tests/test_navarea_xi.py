@@ -28,6 +28,79 @@ MARSHALL ISLANDS. GUNNERY EXERCISES."""
         self.assertEqual(nav_warn["category"], "military")
 
 
+    def test_flexible_date_parsing_with_minutes_and_hyphens(self):
+        header = "NAVAREA XI NO.26-0452"
+        raw = """NO.26-0452       Date: 2026-10-09 07:30 UTC
+NORTH PACIFIC, HONSHU.
+UNDERWATER CABLE OPERATION IN 35-12.0N 140-15.0E"""
+        raw_msg, nav_warn, spatial = parse_warning(raw, header)
+        self.assertEqual(nav_warn["warning_id"], "NAVAREA XI 0452/26")
+        self.assertEqual(nav_warn["issued_text"], "2026-10-09 07:30 UTC")
+        self.assertEqual(nav_warn["title"], "NORTH PACIFIC, HONSHU.")
+
+    def test_date_does_not_contaminate_title(self):
+        header = "NAVAREA XI NO.26-0453"
+        raw = """NO.26-0453
+Date: 2026/10/10 14:15 UTC
+EAST CHINA SEA.
+GUNNERY EXERCISES IN 29-30N 125-00E"""
+        raw_msg, nav_warn, spatial = parse_warning(raw, header)
+        self.assertEqual(nav_warn["warning_id"], "NAVAREA XI 0453/26")
+        self.assertEqual(nav_warn["issued_text"], "2026/10/10 14:15 UTC")
+        self.assertEqual(nav_warn["title"], "EAST CHINA SEA.")
+
+    def test_id_fallback_from_raw_block_if_header_lacks_number(self):
+        header = "NAVAREA XI"
+        raw = """NO.26-0789       Date:2026/10/11 08 UTC
+SOUTH CHINA SEA. SURVEY OPERATIONS."""
+        raw_msg, nav_warn, spatial = parse_warning(raw, header)
+        self.assertEqual(nav_warn["warning_id"], "NAVAREA XI 0789/26")
+        self.assertEqual(nav_warn["title"], "SOUTH CHINA SEA. SURVEY OPERATIONS.")
+
+    def test_spatial_geometry_preserved_in_parsed_warning(self):
+        header = "NAVAREA XI NO.26-0454"
+        raw = """NO.26-0454       Date:2026/10/09 07 UTC
+NORTH PACIFIC.
+GUNNERY FIRING WITHIN AREA BOUNDED BY:
+35-00N 140-00E, 35-00N 141-00E, 34-00N 141-00E, 34-00N 140-00E"""
+        raw_msg, nav_warn, spatial = parse_warning(raw, header)
+        self.assertIsNotNone(spatial)
+        self.assertIn("type", spatial)
+        self.assertEqual(nav_warn["spatial"], spatial)
+
+
+class TestNavareaXiScraperLeadingLines(unittest.TestCase):
+    def test_leading_anchor_or_header_does_not_drop_notice(self):
+        from scripts.navarea_xi_scraper import _collect_from_text_lines
+        html_blocks = [
+            """
+            <a name="warning_26_0500"></a>
+            JCG NAVIGATIONAL BULLETIN
+            NO.26-0500 Date:2026/10/12 09 UTC
+            SEA OF JAPAN.
+            LIGHT BUOY UNLIT IN 37-15.0N 136-40.0E
+            """
+        ]
+        collected = _collect_from_text_lines(html_blocks)
+        self.assertIn("NAVAREA XI NO.26-0500", collected)
+        warn = collected["NAVAREA XI NO.26-0500"]
+        self.assertIn("NO.26-0500", warn["date_line"])
+        self.assertIn("SEA OF JAPAN.", warn["body"])
+        # Ensure leading header artifact does not contaminate body
+        self.assertNotIn("JCG NAVIGATIONAL BULLETIN", warn["body"])
+
+
+class TestNavareaXiSpatialSync(unittest.TestCase):
+    def test_spatial_column_included_in_valid_sync_columns(self):
+        from scripts.navarea_xi_sync import VALID_NAV_COLUMNS as XI_COLUMNS
+        from scripts.navarea_1_sync import VALID_NAV_COLUMNS as UK_COLUMNS
+        from scripts.baltic_sync import VALID_NAV_COLUMNS as BALTIC_COLUMNS
+
+        self.assertIn("spatial", XI_COLUMNS)
+        self.assertIn("spatial", UK_COLUMNS)
+        self.assertIn("spatial", BALTIC_COLUMNS)
+
+
 class TestNavareaXiDifferentialSync(unittest.TestCase):
     def setUp(self):
         self.scraped_warnings = [

@@ -1,105 +1,338 @@
-# NAVAREA II S-124 SECOM Ingestion Pipeline with Gemini Flash-Lite Backup
+# Final Production Supabase Migration: Global Navigational Warnings (NAVAREA / AUSCOAST)
 
-Implements France's PING nautical service integration for NAVAREA II, ingesting IHO S-124 (Ed. 2.0) datasets packaged in S-100 Exchange Sets via IEC 63173-2 (SECOM) REST API, featuring high-speed local XML geometry extraction with intelligent Gemini 2.5 Flash-Lite fallback, adapted into the existing Supabase `nav_warnings` database and orchestrated via GitHub Actions.
-
-## User Review & Critical Decisions
-
-> [!IMPORTANT]
-> The following architectural decisions were confirmed during the requirements clarification phase:
-
-- **Confirmed Decision 1 (Database Strategy)**: Adapt S-124 records solely into the existing `nav_warnings` table (with standard columns: `warning_id`, `source_id`, `navarea`, `title`, `issued_text`, `coordinates`, `latitude`, `longitude`, `spatial`, `category`, `status`, `raw_text`, and triage columns). The script will also provide resilient fallback/dual-support for `navarea_warnings` and `navarea_sync_logs` if configured.
-- **Confirmed Decision 2 (Target Scope)**: Dedicated backend Python pipeline and GitHub Actions workflow only. No UI or frontend modifications are requested.
-- **Confirmed Decision 3 (Hybrid Extraction Architecture)**:
-  - **Primary Path**: Local zero-latency XML parser (`xml.etree.ElementTree`) extracting plain text, notice metadata, and converting GML `posList` / `pos` pairs (`lat lon`) into GeoJSON `[lon, lat]`.
-  - **Backup Path**: `gemini-2.5-flash-lite` via Google AI Studio (`google-genai` SDK) triggered if local parsing yields no valid geometry or suffers irregular formatting.
+Deploys the production PostgreSQL / PostGIS DDL for Supabase, incorporating all four mandatory architectural fixes:
+1. **UUID Foreign Key Standard**: Child tables reference `public.nav_warnings(id)` (UUID PK). Master table uses `canonical_id TEXT UNIQUE` for human-readable IDs.
+2. **Elimination of Redundant GeoJSON Storage**: Completely removed `geojson_blob` column from `nav_warning_geometries`.
+3. **Geography Type for Antimeridian Safety**: `geom_postgis geography(Geometry, 4326)` natively prevents Pacific/polar antimeridian wrapping distortions.
+4. **Corrected Spatial View**: Dynamically generates GeoJSON via `ST_AsGeoJSON(g.geom_postgis)::jsonb AS geojson_blob` and filters strictly by `w.status = 'active' AND w.triage_tier = 'A'`.
 
 ---
 
-## 1. Overview & Core Concept
-
-- **What It Does**: Connects to France's SHOM / PING nautical SECOM service (`/secom/navarea_ii_en/v1/object`), retrieves Base64-encoded S-100 Exchange Set zip archives, decompresses them in-memory to access S-124 GML XML files, extracts warning text and vector boundaries (Point, LineString, Polygon), normalizes attributes, and upserts active warnings into Supabase.
-- **Target Audience / Persona**: Hydrographic data engineers, maritime operators, and automated backend cron workers monitoring Atlantic and English Channel navigational hazards (NAVAREA II).
-- **Key Value**: Replaces brittle HTML scraping with authoritative, standardized IHO S-124 hydrographic data exchange, while maintaining 100% extraction reliability via the local + Gemini hybrid pipeline.
-
----
-
-## 2. Operator Experience & Workflow
-
-- **Scheduled Ingestion**: GitHub Actions cron runs every 30 minutes (`*/30 * * * *`), automatically polling active notices, decompressing Exchange Sets, and syncing differentials into Supabase.
-- **Manual Triggering (`workflow_dispatch`)**: Operators can trigger immediate on-demand synchronization directly from GitHub Actions or CLI (`python scrapers/navarea_ii.py`).
-- **Structured CLI & Log Output**: Clear visual feedback detailing exchange set count, dataset IDs processed, fallback invocations (if any), database upsert confirmations, and server audit warnings (`responseText`).
-
----
-
-## 3. Key Product Decisions & Trade-Offs
-
-- **Decision 1: Primary Local XML Extractor + Gemini 2.5 Flash-Lite Backup**
-  - *Chosen Approach*: Execute local GML tag parsing first. Only invoke `gemini-2.5-flash-lite` when local extraction produces empty geometries, unparseable GML topologies, or malformed notice clauses.
-  - *Why*: Delivers near-instantaneous execution and zero API cost for standard notices, while ensuring zero data loss when dealing with complex, nested, or edge-case S-124 structures.
-  - *Alternatives Considered*: Pure Gemini LLM parsing on every notice (unnecessary latency and quota usage) or pure regex/XML parsing (fails on non-standard nested GML topologies).
-
-- **Decision 2: Adaptation to Existing `nav_warnings` Schema**
-  - *Chosen Approach*: Map S-124 fields directly into existing `nav_warnings` table rows (`source_id: "shom-navarea-2"`, `navarea: "NAVAREA II"`), computing standard triage fields (`triage_tier: "A"`, `data_quality: "EXPLICIT"` when geometry exists), with `spatial` GeoJSON representation and coordinate tokens.
-  - *Why*: Keeps the entire system unified under the existing multi-area architecture and query models without requiring migration overhead.
-
----
-
-## 4. Technical Architecture & Data Strategy
+## 1. Relational Schema Architecture
 
 ```
-┌────────────────────────────────────────────────────────┐
-│               GitHub Actions (Cron Trigger)            │
-│         .github/workflows/navarea_ii.yml               │
-└──────────────────────────┬─────────────────────────────┘
-                           │ (1) Polling Request
-                           ▼
-┌────────────────────────────────────────────────────────┐
-│              PING SECOM REST API Endpoint              │
-│       GET /secom/navarea_ii_en/v1/object               │
-└──────────────────────────┬─────────────────────────────┘
-                           │ (2) 200 OK + JSON Payload
-                           ▼
-┌────────────────────────────────────────────────────────┐
-│            Ingestion & In-Memory Unpacking             │
-│  - Decode Base64 'data' to io.BytesIO ZIP              │
-│  - Extract S-100 Exchange Set (124FR*.gml)             │
-│  - Audit server responseText for missing notice IDs    │
-└──────────────────────────┬─────────────────────────────┘
-                           │ (3) Raw GML XML String
-                           ▼
-          ┌───────────────────────────────────┐
-          │     1. Local S-124 XML Parser     │
-          │  - Invert (lat, lon) -> [lon, lat]│
-          │  - Extract Point/Line/Polygon     │
-          └────────────────┬──────────────────┘
-                           │
-                 Valid geometry found?
-                  /             \
-               YES               NO / Missing
-                │                 │
-                │                 ▼
-                │   ┌───────────────────────────────────┐
-                │   │  2. Backup: Gemini 2.5 Flash-Lite │
-                │   │  - Structured Output via Pydantic │
-                │   │  - Extracts geometry & boundaries │
-                │   └─────────────┬─────────────────────┘
-                │                 │
-                └────────┬────────┘
-                         │ (4) Normalized Notice Object
-                         ▼
-┌────────────────────────────────────────────────────────┐
-│             Supabase Database (PostgreSQL)             │
-│  - UPSERT on public.nav_warnings (warning_id, source_id)
-│  - Optional audit entry in public.navarea_sync_logs   │
-└────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│                        public.nav_warnings                             │
+│ ────────────────────────────────────────────────────────────────────── │
+│  id UUID PRIMARY KEY DEFAULT gen_random_uuid()                         │
+│  canonical_id TEXT UNIQUE NOT NULL (e.g. 'NAVAREA IV 1042/26')         │
+│  navarea TEXT NOT NULL, source_id TEXT NOT NULL, series TEXT           │
+│  status TEXT NOT NULL ('active', 'cancelled', 'expired', 'superseded') │
+│  data_quality TEXT NOT NULL ('EXPLICIT','INFERRED','AMBIGUOUS','INVALID')│
+│  triage_tier TEXT NOT NULL ('A', 'B', 'C')                             │
+│  parsing_method TEXT NOT NULL ('RULE', 'AI')                           │
+│  cancels_ids TEXT[] DEFAULT '{}'                                       │
+│  qa_flags JSONB DEFAULT '[]'::jsonb                                    │
+│  span_edits JSONB DEFAULT '[]'::jsonb                                  │
+│  radio_communications JSONB DEFAULT '[]'::jsonb                        │
+│  radio_frequencies TEXT[] DEFAULT '{}'                                 │
+│  space_launch_mission TEXT, altitude_ceiling_fl INTEGER                 │
+│  shoal_depth_m DOUBLE PRECISION (Rule 31 sentinel-checked)             │
+│  raw_text TEXT NOT NULL (immutable provenance, Rule 125)               │
+│  title TEXT NOT NULL, area_text TEXT                                   │
+│  valid_from TIMESTAMPTZ, valid_to TIMESTAMPTZ                          │
+│  duplicate_of_id UUID REFERENCES public.nav_warnings(id)               │
+└───────┬──────────────┬──────────────┬──────────────┬───────────────────┘
+        │ 1:N          │ 1:N          │ 1:N          │ 1:N
+        ▼              ▼              ▼              ▼
+┌──────────────┐┌──────────────┐┌──────────────┐┌────────────────────────┐
+│  geometries  ││   entities   ││    charts    ││       schedules        │
+│ ──────────── ││ ──────────── ││ ──────────── ││ ────────────────────── │
+│ geom_id (PK) ││ entity_id(PK)││ chart_id(PK) ││ schedule_id (PK)       │
+│ warning_id FK││ warning_id FK││ warning_id FK││ warning_id FK          │
+│ zone_label   ││ entity_type  ││ authority    ││ window_start (TSTZ)    │
+│ feature_type ││ entity_name  ││ chart_number ││ window_end (TSTZ)      │
+│ geom_postgis ││ role         ││ int_equiv    ││ active_range (TSTZRANGE│
+│ (geography)  ││ callsign/mmsi││ is_intl_bool ││ is_alternate (BOOLEAN) │
+│ buffer_nm    ││ tow/streamers││ raw_citation ││ recurrence_rule (TEXT) │
+│ half_width_nm││ standoff_nm  │└──────────────┘│ days_of_week (INT[])   │
+│ altitude_fl  ││ depth_sound  │                └────────────────────────┘
+└──────────────┘└──────────────┘
+        │
+        │ 1:N
+        ▼
+┌────────────────────────────────────────┐
+│        nav_warning_cancellations       │
+│ ────────────────────────────────────── │
+│  id UUID PRIMARY KEY                   │
+│  cancelling_warning_id UUID (FK)       │
+│  target_canonical_id TEXT NOT NULL     │
+│  target_warning_id UUID (FK nullable)  │
+│  cancellation_type TEXT                │
+│  paragraph_ref TEXT                    │
+└────────────────────────────────────────┘
 ```
 
-### Module Structure
-- `scrapers/navarea_ii.py`: Core ingestion engine containing:
-  - `local_s124_extractor`: Fast XML element parser for S-124 nodes (`posList`, `Point`, `Curve`, `Surface`, `Polygon`, `textDescription`).
-  - `gemini_flash_lite_backup`: Intelligent fallback using `gemini-2.5-flash-lite` with Pydantic structured output.
-  - `adapt_to_nav_warnings`: Formats S-124 payloads into unified `nav_warnings` database rows.
-  - `run_navarea_ii_pipeline`: SECOM fetch, decompression, diffing, and Supabase upsert logic.
-- `.github/workflows/navarea_ii.yml`: Automated 30-minute cron and manual dispatch workflow.
-- `requirements.txt`: Updates dependencies (`requests`, `google-genai>=1.0.0`, `supabase>=2.4.0`, `pydantic>=2.6.0`).
-- `tests/test_navarea_ii.py`: Pytest suite verifying GML unpacking, coordinate inversion, fallback execution, and database schema transformation.
+---
+
+## 2. Complete Executable Supabase SQL Script
+
+```sql
+-- ============================================================================
+-- SUPABASE / POSTGRESQL PRODUCTION MIGRATION
+-- Project: Global Navigational Warnings (NAVAREA / AUSCOAST Pipeline)
+-- Version: 2026.10.19-Production-Final
+-- Compliance: Helm Rules H01–H13, Rules 1–125, PostGIS Antimeridian Safe
+-- ============================================================================
+
+-- Step 1: Enable Prerequisite Extensions
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "postgis";
+
+-- Step 2: Master Warning Envelope Table
+CREATE TABLE IF NOT EXISTS public.nav_warnings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    canonical_id TEXT UNIQUE NOT NULL, -- e.g. 'NAVAREA IV 1042/26', 'AUSCOAST 045/26'
+    navarea TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    publisher_id TEXT,
+    series TEXT,
+    warning_number INTEGER,
+    warning_year INTEGER,
+    title TEXT NOT NULL,
+    area_text TEXT,
+    raw_text TEXT NOT NULL, -- Immutable raw text provenance (Rule 125)
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'cancelled', 'expired', 'superseded', 'unverified')),
+    status_basis TEXT,
+    data_quality TEXT NOT NULL DEFAULT 'EXPLICIT' CHECK (data_quality IN ('EXPLICIT', 'INFERRED', 'AMBIGUOUS', 'INVALID')),
+    triage_tier TEXT NOT NULL DEFAULT 'C' CHECK (triage_tier IN ('A', 'B', 'C')),
+    parsing_method TEXT NOT NULL DEFAULT 'RULE' CHECK (parsing_method IN ('RULE', 'AI')),
+    unplotted_reason TEXT CHECK (unplotted_reason IS NULL OR unplotted_reason IN (
+        'no_coordinates', 'parse_failure', 'meta_list', 'text_unavailable',
+        'empty_stub', 'cancellation_only', 'truncated_clause', 'missing_hemisphere',
+        'duplicate_of', 'validation_failed', 'no_valid_geometry'
+    )),
+    cancels_ids TEXT[] NOT NULL DEFAULT '{}',
+    qa_flags JSONB NOT NULL DEFAULT '[]'::jsonb,
+    span_edits JSONB NOT NULL DEFAULT '[]'::jsonb,
+    radio_communications JSONB NOT NULL DEFAULT '[]'::jsonb,
+    radio_frequencies TEXT[] NOT NULL DEFAULT '{}',
+    space_launch_mission TEXT,
+    altitude_ceiling_fl INTEGER,
+    shoal_depth_m DOUBLE PRECISION,
+    is_depth_unknown BOOLEAN NOT NULL DEFAULT FALSE,
+    tow_length_m DOUBLE PRECISION,
+    tow_speed_kts DOUBLE PRECISION,
+    applicable_vessel_filter TEXT,
+    valid_from TIMESTAMPTZ,
+    valid_to TIMESTAMPTZ,
+    issued_at TIMESTAMPTZ,
+    duplicate_of_id UUID REFERENCES public.nav_warnings(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+
+    -- Helm Rule H02 Precedence Constraint: Tier A records CANNOT be invalid, ambiguous, or unplotted
+    CONSTRAINT chk_tier_a_invariants CHECK (
+        triage_tier != 'A' OR (
+            data_quality = 'EXPLICIT'
+            AND unplotted_reason IS NULL
+            AND parsing_method = 'RULE'
+            AND status != 'superseded'
+        )
+    ),
+
+    -- Rule 31 Bathymetry Sentinel Constraint: Exclude unmeasured -9999.0 sentinels
+    CONSTRAINT chk_shoal_depth_sentinel CHECK (
+        shoal_depth_m IS NULL OR (
+            shoal_depth_m > -50.0 
+            AND shoal_depth_m != -9999.0 
+            AND shoal_depth_m < 12000.0
+        )
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_nav_warnings_canonical_id ON public.nav_warnings(canonical_id);
+CREATE INDEX IF NOT EXISTS idx_nav_warnings_status ON public.nav_warnings(status);
+CREATE INDEX IF NOT EXISTS idx_nav_warnings_tier ON public.nav_warnings(triage_tier);
+CREATE INDEX IF NOT EXISTS idx_nav_warnings_navarea ON public.nav_warnings(navarea);
+CREATE INDEX IF NOT EXISTS idx_nav_warnings_valid_range ON public.nav_warnings(valid_from, valid_to);
+CREATE INDEX IF NOT EXISTS idx_nav_warnings_cancels_ids ON public.nav_warnings USING GIN (cancels_ids);
+CREATE INDEX IF NOT EXISTS idx_nav_warnings_qa_flags ON public.nav_warnings USING GIN (qa_flags);
+
+-- Step 3: Normalized Geometries Child Table
+-- Uses PostGIS geography(Geometry, 4326) for antimeridian safety.
+-- Redundant geojson_blob column completely removed; dynamically computed in views.
+CREATE TABLE IF NOT EXISTS public.nav_warning_geometries (
+    geom_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    warning_id UUID NOT NULL REFERENCES public.nav_warnings(id) ON DELETE CASCADE,
+    zone_label TEXT, -- e.g. 'AREA A', 'STAGE 1 RECOVERY', 'CORRIDOR BRAVO'
+    feature_type TEXT NOT NULL CHECK (feature_type IN ('POINT', 'LINE', 'POLYGON', 'CORRIDOR', 'SWEEP_ARC', 'BOUNDING_BOX')),
+    geom_postgis geography(Geometry, 4326) NOT NULL,
+    buffer_nm DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    corridor_half_width_nm DOUBLE PRECISION,
+    altitude_floor_m DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    altitude_ceiling_fl INTEGER,
+    sweep_start_azimuth DOUBLE PRECISION,
+    sweep_end_azimuth DOUBLE PRECISION,
+    sweep_radius_nm DOUBLE PRECISION,
+    snapping_rule TEXT NOT NULL DEFAULT 'NONE' CHECK (snapping_rule IN ('NONE', 'COASTAL_CONTOUR')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+
+CREATE INDEX IF NOT EXISTS idx_warning_geometries_postgis 
+  ON public.nav_warning_geometries USING GIST (geom_postgis);
+CREATE INDEX IF NOT EXISTS idx_warning_geometries_wid 
+  ON public.nav_warning_geometries (warning_id);
+
+-- Step 4: Maritime Entities Child Table (Vessels, Rigs, Flotillas, Depths)
+CREATE TABLE IF NOT EXISTS public.nav_warning_entities (
+    entity_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    warning_id UUID NOT NULL REFERENCES public.nav_warnings(id) ON DELETE CASCADE,
+    entity_type TEXT NOT NULL CHECK (entity_type IN ('VESSEL', 'OFFSHORE_RIG', 'BUOY', 'CABLE', 'PIPELINE', 'WRECK', 'OBSTRUCTION')),
+    entity_name TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'PRIMARY' CHECK (role IN (
+        'PRIMARY', 'LEAD_TUG', 'BRAKE_TUG', 'CHASE_BOAT', 'GUARD_VESSEL', 'CASUALTY', 'STANDBY', 'ATTENDANT'
+    )),
+    callsign TEXT,
+    mmsi TEXT,
+    tow_length_m DOUBLE PRECISION,
+    tow_speed_kts DOUBLE PRECISION,
+    streamer_count INTEGER,
+    streamer_length_m DOUBLE PRECISION,
+    streamer_breadth_m DOUBLE PRECISION,
+    streamer_depth_m DOUBLE PRECISION,
+    clearance_requested_nm DOUBLE PRECISION,
+    depth_m DOUBLE PRECISION,
+    depth_status TEXT CHECK (depth_status IN ('MEASURED', 'UNKNOWN', 'APPROXIMATE', 'DRYING')),
+    datum_ref TEXT DEFAULT 'LAT',
+    radio_channels JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+
+    CONSTRAINT chk_entity_depth_sentinel CHECK (
+        depth_m IS NULL OR (depth_m > -50.0 AND depth_m != -9999.0 AND depth_m < 12000.0)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_warning_entities_wid ON public.nav_warning_entities(warning_id);
+CREATE INDEX IF NOT EXISTS idx_warning_entities_type ON public.nav_warning_entities(entity_type);
+CREATE INDEX IF NOT EXISTS idx_warning_entities_mmsi ON public.nav_warning_entities(mmsi) WHERE mmsi IS NOT NULL;
+
+-- Step 5: Chart References Child Table
+CREATE TABLE IF NOT EXISTS public.nav_warning_charts (
+    chart_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    warning_id UUID NOT NULL REFERENCES public.nav_warnings(id) ON DELETE CASCADE,
+    authority TEXT, -- e.g. 'BA', 'SAN', 'JP', 'US'
+    chart_number TEXT NOT NULL,
+    int_equivalent TEXT,
+    is_international BOOLEAN NOT NULL DEFAULT FALSE,
+    raw_citation TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+
+CREATE INDEX IF NOT EXISTS idx_warning_charts_wid ON public.nav_warning_charts(warning_id);
+CREATE INDEX IF NOT EXISTS idx_warning_charts_number ON public.nav_warning_charts(chart_number);
+
+-- Step 6: Operational Schedules Child Table (Indexed Intervals)
+CREATE TABLE IF NOT EXISTS public.nav_warning_schedules (
+    schedule_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    warning_id UUID NOT NULL REFERENCES public.nav_warnings(id) ON DELETE CASCADE,
+    window_start TIMESTAMPTZ NOT NULL,
+    window_end TIMESTAMPTZ NOT NULL,
+    active_range TSTZRANGE GENERATED ALWAYS AS (tstzrange(window_start, window_end, '[)')) STORED,
+    is_alternate BOOLEAN NOT NULL DEFAULT FALSE,
+    recurrence_rule TEXT,
+    days_of_week INTEGER[], -- 0=Sunday..6=Saturday
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+
+    CONSTRAINT chk_schedule_window_order CHECK (window_start < window_end)
+);
+
+CREATE INDEX IF NOT EXISTS idx_warning_schedules_wid ON public.nav_warning_schedules(warning_id);
+CREATE INDEX IF NOT EXISTS idx_warning_schedules_active_range 
+  ON public.nav_warning_schedules USING GIST (active_range);
+
+-- Step 7: Compound Cancellation Child Table
+CREATE TABLE IF NOT EXISTS public.nav_warning_cancellations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    cancelling_warning_id UUID NOT NULL REFERENCES public.nav_warnings(id) ON DELETE CASCADE,
+    target_canonical_id TEXT NOT NULL, -- Human-readable reference e.g. '156/26' or 'NAVAREA I 206/26'
+    target_warning_id UUID REFERENCES public.nav_warnings(id) ON DELETE SET NULL, -- Resolved when target exists in DB
+    cancellation_type TEXT NOT NULL DEFAULT 'EXPLICIT_NOTICE' CHECK (
+        cancellation_type IN ('EXPLICIT_NOTICE', 'IN_FORCE_OMISSION', 'PARAGRAPH_SELF_CANCEL')
+    ),
+    paragraph_ref TEXT, -- e.g. 'THIS PARA', 'PARA 2'
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+
+CREATE INDEX IF NOT EXISTS idx_cancellations_source ON public.nav_warning_cancellations(cancelling_warning_id);
+CREATE INDEX IF NOT EXISTS idx_cancellations_target_canonical ON public.nav_warning_cancellations(target_canonical_id);
+CREATE INDEX IF NOT EXISTS idx_cancellations_target_uuid ON public.nav_warning_cancellations(target_warning_id);
+
+-- Step 8: Human Review Audit Log Table
+CREATE TABLE IF NOT EXISTS public.nav_warning_audits (
+    audit_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    warning_id UUID NOT NULL REFERENCES public.nav_warnings(id) ON DELETE CASCADE,
+    operator_id TEXT NOT NULL,
+    previous_tier TEXT NOT NULL,
+    new_tier TEXT NOT NULL,
+    action TEXT NOT NULL,
+    reason TEXT,
+    signature_hash TEXT NOT NULL,
+    diff_patch JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+
+CREATE INDEX IF NOT EXISTS idx_warning_audits_wid ON public.nav_warning_audits(warning_id);
+
+-- Step 9: Active Spatial GIS View (ECDIS / Leaflet)
+-- Antimeridian-Safe: Uses geography(Geometry, 4326)
+-- Eliminates redundant storage: Dynamically computes geojson_blob via ST_AsGeoJSON
+CREATE OR REPLACE VIEW public.nav_warnings_active_spatial AS
+  SELECT 
+    w.id AS warning_id,
+    w.canonical_id,
+    w.navarea,
+    w.title,
+    w.area_text,
+    w.status,
+    w.triage_tier,
+    w.data_quality,
+    w.valid_from,
+    w.valid_to,
+    w.radio_frequencies,
+    w.space_launch_mission,
+    g.geom_id,
+    g.zone_label,
+    g.feature_type,
+    g.buffer_nm,
+    g.corridor_half_width_nm,
+    g.altitude_floor_m,
+    g.altitude_ceiling_fl,
+    g.geom_postgis,
+    ST_AsGeoJSON(g.geom_postgis)::jsonb AS geojson_blob
+  FROM public.nav_warnings w
+  JOIN public.nav_warning_geometries g ON w.id = g.warning_id
+  WHERE w.status = 'active'
+    AND w.triage_tier = 'A';
+
+-- Step 10: Operator Review Queue View (Tier B Warnings Requiring Triage)
+CREATE OR REPLACE VIEW public.nav_warnings_review_queue AS
+  SELECT 
+    w.id AS warning_id,
+    w.canonical_id,
+    w.navarea,
+    w.title,
+    w.status,
+    w.triage_tier,
+    w.data_quality,
+    w.parsing_method,
+    w.qa_flags,
+    w.unplotted_reason,
+    w.raw_text,
+    w.span_edits,
+    w.issued_at,
+    w.created_at
+  FROM public.nav_warnings w
+  WHERE w.triage_tier = 'B'
+    AND w.status = 'active'
+  ORDER BY w.issued_at DESC NULLS LAST;
+```
+
+---
+
+## 3. Verification Plan
+
+1. **Schema Syntax Verification**: Execute migration in Supabase SQL editor; confirm all 6 core tables, 1 audit table, and 2 spatial/queue views create with zero errors.
+2. **Antimeridian Geography Check**: Insert a geography linestring crossing 180° into `nav_warning_geometries`; verify `ST_AsGeoJSON(g.geom_postgis)` produces valid GeoJSON without distortion.
+3. **Foreign Key Integrity Check**: Insert a master row into `nav_warnings`, insert linked rows in all child tables referencing `w.id`, delete the master row, and verify cascading deletion of all child records.
+4. **Constraint Enforcement**: Verify that `triage_tier = 'A'` with `data_quality = 'AMBIGUOUS'` is rejected by `chk_tier_a_invariants`, and `shoal_depth_m = -9999.0` is rejected by `chk_shoal_depth_sentinel`.

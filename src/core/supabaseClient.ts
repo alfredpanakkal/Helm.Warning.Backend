@@ -125,18 +125,73 @@ export async function fetchLiveNavWarnings(): Promise<{
   try {
     const { data, error } = await client
       .from('nav_warnings')
-      .select(
-        'id, warning_id, publisher_id, source_id, navarea, series, source_warning_id, warning_number, warning_year, issued_at, issued_date, issued_text, valid_from, valid_to, status, status_basis, area_text, raw_text, spatial, coordinates, latitude, longitude, risk_level, severity, category, is_verified, verified_at, created_at'
-      )
+      .select('*')
       .eq('status', 'active')
       .order('created_at', { ascending: false });
 
     if (error) {
       return { data: null, error: error.message };
     }
-    return { data: (data as NavWarning[]) || [], error: null };
+    const normalized = ((data as any[]) || []).map((w) => ({
+      ...w,
+      warning_id: w.warning_id || w.canonical_id,
+      canonical_id: w.canonical_id || w.warning_id
+    }));
+    return { data: (normalized as NavWarning[]), error: null };
   } catch (e: any) {
     return { data: null, error: e?.message || 'Failed to fetch live warnings' };
+  }
+}
+
+/**
+ * Fetch PostGIS-rendered active spatial warnings from the new spatial view
+ */
+export async function fetchActiveSpatialWarnings(): Promise<{
+  data: any[] | null;
+  error: string | null;
+}> {
+  const client = getSupabaseClient();
+  if (!client) {
+    return { data: null, error: 'No client initialized' };
+  }
+
+  try {
+    const { data, error } = await client
+      .from('nav_warnings_active_spatial')
+      .select('*');
+
+    if (error) {
+      return { data: null, error: error.message };
+    }
+    return { data: data || [], error: null };
+  } catch (e: any) {
+    return { data: null, error: e?.message || 'Failed to fetch spatial view' };
+  }
+}
+
+/**
+ * Fetch warnings requiring human triage from the new review queue view
+ */
+export async function fetchReviewQueueWarnings(): Promise<{
+  data: any[] | null;
+  error: string | null;
+}> {
+  const client = getSupabaseClient();
+  if (!client) {
+    return { data: null, error: 'No client initialized' };
+  }
+
+  try {
+    const { data, error } = await client
+      .from('nav_warnings_review_queue')
+      .select('*');
+
+    if (error) {
+      return { data: null, error: error.message };
+    }
+    return { data: data || [], error: null };
+  } catch (e: any) {
+    return { data: null, error: e?.message || 'Failed to fetch review queue' };
   }
 }
 
@@ -169,9 +224,6 @@ export async function fetchLiveSourcesRegistry(): Promise<{
   }
 }
 
-/**
- * Fetch ingestion audit generations matching frontend contract
- */
 export async function fetchLiveIngestionGenerations(): Promise<{
   data: IngestionGenerationRecord[] | null;
   error: string | null;
@@ -236,6 +288,7 @@ export async function upsertNavWarnings(
   try {
     const records = warnings.map((w) => ({
       warning_id: w.warning_id,
+      canonical_id: w.canonical_id || w.warning_id,
       publisher_id: w.publisher_id || null,
       source_id: w.source_id,
       navarea: w.navarea,
@@ -250,7 +303,10 @@ export async function upsertNavWarnings(
       valid_to: w.valid_to || null,
       status: w.status || 'active',
       status_basis: w.status_basis || 'official_notice',
+      data_quality: w.data_quality || 'EXPLICIT',
+      triage_tier: w.triage_tier || 'C',
       area_text: w.area_text || w.title || null,
+      title: w.title || w.warning_id,
       raw_text: w.raw_text,
       spatial: w.spatial || null,
       coordinates: w.coordinates || null,
@@ -259,6 +315,7 @@ export async function upsertNavWarnings(
       risk_level: w.risk_level || w.severity || 'moderate',
       severity: w.severity || 'moderate',
       category: w.category || 'general',
+      categories: w.categories || (w.category ? [w.category] : []),
       is_verified: w.is_verified ?? true,
       verified_at: w.verified_at || new Date().toISOString(),
       created_at: w.created_at || new Date().toISOString()
@@ -266,10 +323,17 @@ export async function upsertNavWarnings(
 
     const { error } = await client
       .from('nav_warnings')
-      .upsert(records, { onConflict: 'warning_id' });
+      .upsert(records, { onConflict: 'canonical_id' });
 
     if (error) {
-      return { success: false, count: 0, error: error.message };
+      // Fallback if schema uses warning_id as primary constraint
+      const { error: fallbackError } = await client
+        .from('nav_warnings')
+        .upsert(records, { onConflict: 'warning_id' });
+
+      if (fallbackError) {
+        return { success: false, count: 0, error: fallbackError.message };
+      }
     }
 
     return { success: true, count: records.length, error: null };

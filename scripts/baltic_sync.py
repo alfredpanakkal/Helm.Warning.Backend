@@ -29,7 +29,7 @@ VALID_RAW_COLUMNS = {
 VALID_NAV_COLUMNS = {
     "warning_id", "source_id", "navarea", "title",
     "issued_text", "coordinates", "latitude", "longitude",
-    "category", "status", "raw_text"
+    "category", "status", "raw_text", "spatial"
 }
 
 

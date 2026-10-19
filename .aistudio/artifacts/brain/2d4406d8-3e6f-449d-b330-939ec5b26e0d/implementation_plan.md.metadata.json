@@ -1,6 +1,6 @@
 {
-  "summary": "Implementation plan for NAVAREA II S-124 SECOM ingestion pipeline with local GML XML extraction, Gemini 2.5 Flash-Lite backup layer, Supabase nav_warnings adaptation, and GitHub Actions orchestration.",
-  "updatedAt": "2026-10-19T04:33:25.930400631Z",
+  "summary": "Updated production Supabase migration script adhering to the four specific architectural requirements: 1) canonical_id on master with UUID FKs on all child tables, 2) complete removal of geojson_blob storage column, 3) migration to geography(Geometry, 4326) for native antimeridian crossing safety, and 4) corrected spatial view query with dynamic ST_AsGeoJSON and status='active' filter.",
+  "updatedAt": "2026-10-19T13:06:51.127685887Z",
   "requestFeedback": true,
   "userFacing": true
 }

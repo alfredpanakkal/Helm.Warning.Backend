@@ -25,7 +25,7 @@ VALID_RAW_COLUMNS = {"warning_id", "source_id", "subject_header",
                      "full_raw_text", "received_timestamp", "checksum_sha256"}
 VALID_NAV_COLUMNS = {"warning_id", "source_id", "navarea", "title",
                     "issued_text", "coordinates", "latitude", "longitude",
-                    "category", "status", "raw_text"}
+                    "category", "status", "raw_text", "spatial"}
 
 
 def sync_to_supabase(json_file="navareas/navarea_xi/parsed_navarea_xi_warnings.json"):

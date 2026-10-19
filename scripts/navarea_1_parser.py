@@ -63,7 +63,8 @@ def parse_warning(raw_block, reference_header):
         "longitude": lon,
         "category": hazard,
         "status": "active",
-        "raw_text": raw_block
+        "raw_text": raw_block,
+        "spatial": spatial
     }
     return raw_message, nav_warning, spatial
 

@@ -28,20 +28,29 @@ NAVAREA_ID = "XI"
 
 def parse_warning(raw_block, reference_header):
     header_clean = reference_header.strip()
-    id_match = re.search(r'NO\.(\d{2})-(\d{4})', header_clean)
+    id_match = re.search(r'NO\.?\s*(\d{2})-(\d{4})', header_clean, re.IGNORECASE)
     if id_match:
         warning_id = f"NAVAREA XI {id_match.group(2)}/{id_match.group(1)}"
     else:
-        warning_id = header_clean.replace("NAVAREA XI ", "").strip()
+        raw_id_match = re.search(r'NO\.?\s*(\d{2})-(\d{4})', raw_block, re.IGNORECASE)
+        if raw_id_match:
+            warning_id = f"NAVAREA XI {raw_id_match.group(2)}/{raw_id_match.group(1)}"
+        else:
+            warning_id = header_clean.replace("NAVAREA XI ", "").strip()
     lines = [l.strip() for l in raw_block.split('\n') if l.strip()]
-    date_pattern = r'Date:(\d{4}/\d{2}/\d{2}\s+\d{2}\s+UTC)'
+    date_pattern = r'Date\s*:\s*(\d{4}[/.-]\d{1,2}[/.-]\d{1,2}(?:\s+\d{2}(?::?\d{2})?(?:\s*UTC)?)?)'
     issued_text = None
     title = ""
     for line in lines:
         d_match = re.search(date_pattern, line, re.IGNORECASE)
         if d_match and not issued_text:
-            issued_text = d_match.group(1)
-        elif not title and not d_match and "NO." not in line:
+            issued_text = d_match.group(1).strip()
+        is_date_line = bool(
+            re.search(r'Date\s*:', line, re.IGNORECASE) or
+            re.search(r'\b\d{4}[/.-]\d{1,2}[/.-]\d{1,2}\b', line)
+        )
+        is_id_line = bool(re.search(r'NO\.?\s*\d', line, re.IGNORECASE))
+        if not title and not is_date_line and not is_id_line:
             title = line
     coords_text, lat, lon, spatial = parse_coordinates(raw_block)
     hazard = classify_hazard(raw_block)
@@ -65,7 +74,8 @@ def parse_warning(raw_block, reference_header):
         "longitude": lon,
         "category": hazard,
         "status": "active",
-        "raw_text": raw_block
+        "raw_text": raw_block,
+        "spatial": spatial
     }
     return raw_message, nav_warning, spatial
 
