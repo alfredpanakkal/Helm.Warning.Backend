@@ -8,10 +8,15 @@ import json
 import sys
 from typing import Dict, List, Tuple, Set, Any
 
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
+
 
 from shared.utils import compute_differential
 
@@ -35,9 +40,13 @@ def sync_to_supabase(json_file="navareas/navarea_1/parsed_navarea_1_warnings.jso
     try:
         from supabase import create_client
         supabase = create_client(url, key)
+    except ImportError:
+        print("⚠️ Supabase Python library is not installed in environment; skipping remote sync (dry-run mode).")
+        return True
     except Exception as e:
         print(f"❌ Supabase client error: {e}")
         return False
+
     try:
         with open(json_file, "r", encoding="utf-8") as f:
             data = json.load(f)

@@ -35,8 +35,10 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PYTHONPATH: ${{ github.workspace }}
         run: |
-          python scripts/run_all.py
+          python -m scripts.run_all
 
       - name: Upload All Output Artifacts
         uses: actions/upload-artifact@v4
@@ -52,3 +54,4 @@ jobs:
             navareas/navarea_xi/parsed_navarea_xi_warnings.json
           retention-days: 7
           if-no-files-found: ignore
+

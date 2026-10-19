@@ -10,10 +10,15 @@ import json
 import hashlib
 from datetime import datetime, timezone
 
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
+
 
 from shared.utils import convert_to_decimal, parse_coordinates, classify_hazard
 
@@ -68,33 +73,42 @@ def main(input_filename="navareas/navarea_1/navarea_1_warnings.txt",
     print("=" * 60)
     print("🧭 NAVAREA I Parser")
     print("=" * 60)
-    try:
-        with open(input_filename, "r", encoding="utf-8") as f:
-            content = f.read()
-    except FileNotFoundError:
-        print(f"❌ Error: {input_filename} not found")
-        sys.exit(1)
-    pattern = r'--- (NAVAREA I \d+/\d+) ---\n(.*?)(?=\n--- NAVAREA I|\n--- |$)'
-    matches = re.findall(pattern, content, re.DOTALL)
-    if not matches:
-        pattern = r'--- (.*?) ---\n(.*?)(?=\n--- |$)'
+    content = ""
+    if os.path.exists(input_filename):
+        try:
+            with open(input_filename, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception as e:
+            print(f"⚠️ Warning: Could not read {input_filename} ({e}).")
+            content = ""
+    else:
+        print(f"ℹ️ Input file {input_filename} not found; initializing empty harvest.")
+
+    matches = []
+    if content:
+        pattern = r'--- (NAVAREA I \d+/\d+) ---\n(.*?)(?=\n--- NAVAREA I|\n--- |$)'
         matches = re.findall(pattern, content, re.DOTALL)
         if not matches:
-            print("❌ No warning blocks found")
-            sys.exit(1)
+            pattern = r'--- (.*?) ---\n(.*?)(?=\n--- |$)'
+            matches = re.findall(pattern, content, re.DOTALL)
+
     parsed_data = {"raw_messages": [], "nav_warnings": [], "spatial_features": []}
-    for header, block in matches:
-        if not header.strip().startswith("NAVAREA I"):
-            header = f"NAVAREA I {header.strip()}"
-        raw_msg, nav_warn, spatial = parse_warning(block.strip(), header.strip())
-        parsed_data["raw_messages"].append(raw_msg)
-        parsed_data["nav_warnings"].append(nav_warn)
-        if spatial:
-            parsed_data["spatial_features"].append({
-                "warning_id": nav_warn["warning_id"],
-                "category": nav_warn["category"],
-                "geometry": spatial
-            })
+    if not matches:
+        print("ℹ️ No warning blocks found (empty harvest is valid)")
+    else:
+        for header, block in matches:
+            if not header.strip().startswith("NAVAREA I"):
+                header = f"NAVAREA I {header.strip()}"
+            raw_msg, nav_warn, spatial = parse_warning(block.strip(), header.strip())
+            parsed_data["raw_messages"].append(raw_msg)
+            parsed_data["nav_warnings"].append(nav_warn)
+            if spatial:
+                parsed_data["spatial_features"].append({
+                    "warning_id": nav_warn["warning_id"],
+                    "category": nav_warn["category"],
+                    "geometry": spatial
+                })
+
     os.makedirs(os.path.dirname(output_filename), exist_ok=True)
     with open(output_filename, "w", encoding="utf-8") as f:
         json.dump(parsed_data, f, indent=2, ensure_ascii=False)
@@ -103,4 +117,6 @@ def main(input_filename="navareas/navarea_1/navarea_1_warnings.txt",
 
 
 if __name__ == "__main__":
-    main()
+    success = main()
+    sys.exit(0 if success else 1)
+

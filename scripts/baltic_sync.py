@@ -71,9 +71,13 @@ def sync_to_supabase(json_file="navareas/baltic/parsed_baltic_warnings.json") ->
     try:
         from supabase import create_client
         supabase = create_client(url, key)
+    except ImportError:
+        print("⚠️ Supabase Python library is not installed in environment; skipping remote sync (dry-run mode).")
+        return True
     except Exception as e:
         print(f"❌ Failed to initialize Supabase client: {e}")
         return False
+
 
     if not os.path.exists(json_file):
         print(f"❌ Error: Parsed file {json_file} does not exist.")

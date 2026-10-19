@@ -58,12 +58,13 @@ The system provides dual-surface operation:
 ├── scripts/                           # Scrapers, Parsers, and Ingestion Runners
 │   ├── run_all.py                     # Master synchronous pipeline runner with pre-flight checks
 │   ├── run_all_async.py               # Concurrent asynchronous pipeline runner
+│   ├── ai_parser.py                   # Hardened Gemini & deterministic fallback warning parser
 │   ├── async_scraper.py               # AsyncScraper with semaphore rate-limiting
 │   ├── baltic_scraper.py / _parser.py # Baltic regional ingestion
 │   ├── navarea_1_scraper.py / _parser.py # NAVAREA I ingestion
 │   └── navarea_xi_scraper.py / _parser.py# NAVAREA XI ingestion
 │
-└── tests/                             # Python Test Suites (55 unit & property-based tests)
+└── tests/                             # Python Test Suites (75 unit & property-based tests)
     ├── test_validation.py             # Input bounds, warning ID, and token validation
     ├── test_error_handling.py         # Exception hierarchy, context, and retry tests
     ├── test_circuit_breaker.py        # State transitions and rejection verification
@@ -74,7 +75,8 @@ The system provides dual-surface operation:
     ├── test_navarea_xi.py             # NAVAREA XI parser tests
     ├── test_repairs_and_triage.py     # Rules 18/19/20/93 and H02 triage precedence
     ├── test_golden_corpus.py          # Regression tests on golden sample corpus
-    └── test_ai_escalation.py          # Gemini coordinate grounding and safety assertions
+    ├── test_ai_escalation.py          # Gemini coordinate grounding and safety assertions
+    └── test_ai_parser.py              # DMS parsing, triage tiers, and AI fallback tests
 ```
 
 ---
@@ -177,19 +179,22 @@ python scripts/run_baltic.py
 
 PYTHONPATH=. python -m scripts.run_navarea_1
 PYTHONPATH=. python -m scripts.run_navarea_xi
+
+# Run AI and fallback parser standalone:
+python -m scripts.ai_parser
 ```
 
 #### Operational Safeguards & Repo Layout
-- **`scripts/`**: Executable scrapers, deterministic parsers, and regional sync runners.
+- **`scripts/`**: Executable scrapers, deterministic parsers, AI parser, and regional sync runners.
 - **`shared/`**: Common utilities, validation schemas, circuit breakers, and metrics.
 - **`navareas/`**: Generated raw bulletin text (`navarea_baltic_warnings.txt`) and parsed JSON (`parsed_baltic_warnings.json`).
 - **`tests/`**: Unit, integration, and fuzz testing suites.
 
-> **Environment Variables**: For live database synchronization, ensure `SUPABASE_URL` and `SUPABASE_KEY` are provided. When credentials are omitted, pipelines run in safe dry-run mode without failing.
+> **Environment Variables**: For live database synchronization, ensure `SUPABASE_URL` and `SUPABASE_KEY` are provided. When credentials are omitted, pipelines run in safe dry-run mode without failing. For AI coordinate extraction and grounding, provide `GEMINI_API_KEY`.
 
 ### 3. Running Test Suites
 
-The backend includes a comprehensive 66-test suite covering parsing, repair rules, triage gates, error handling, circuit breakers, caching, empty harvest resilience, and property-based fuzz testing:
+The backend includes a comprehensive 75-test suite covering parsing, repair rules, triage gates, error handling, circuit breakers, caching, empty harvest resilience, AI coordinate extraction, and property-based fuzz testing:
 
 ```bash
 # Run all unit and property-based tests:

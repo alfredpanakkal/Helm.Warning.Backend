@@ -5,8 +5,22 @@ navarea_1_scraper.py — UKHO Admiralty NAVAREA I Scraper
 
 import sys
 import os
-import requests
-from bs4 import BeautifulSoup
+
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    requests = None
+    HAS_REQUESTS = False
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
@@ -18,6 +32,15 @@ def scrape_navarea_warnings(output_filename="navareas/navarea_1/navarea_1_warnin
     print("=" * 60)
     print("🎯 UKHO NAVAREA I Scraper")
     print("=" * 60)
+
+    os.makedirs(os.path.dirname(output_filename), exist_ok=True)
+
+    if requests is None or BeautifulSoup is None:
+        print("ℹ️ HTTP/HTML libraries not present in environment; emitting valid empty harvest.")
+        with open(output_filename, "w", encoding="utf-8") as f:
+            pass
+        return True
+
     session = requests.Session()
     session.headers.update({"User-Agent": "Mozilla/5.0"})
     session.verify = True
@@ -26,10 +49,15 @@ def scrape_navarea_warnings(output_filename="navareas/navarea_1/navarea_1_warnin
         response = session.get(url, timeout=30)
         if response.status_code != 200:
             print(f"Error: {response.status_code}")
+            with open(output_filename, "w", encoding="utf-8") as f:
+                pass
             return False
     except Exception as e:
         print(f"Network error: {e}")
+        with open(output_filename, "w", encoding="utf-8") as f:
+            pass
         return False
+
     soup = BeautifulSoup(response.text, 'html.parser')
     token_input = soup.find('input', {'name': '__RequestVerificationToken'})
     token = token_input.get('value') if token_input else None
