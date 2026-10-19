@@ -3,33 +3,59 @@ name: NAVAREA II Sync
 on:
   schedule:
     - cron: '*/30 * * * *'
+  push:
+    branches:
+      - main
+    paths:
+      - 'scrapers/navarea_ii.py'
+      - 'tests/test_navarea_ii.py'
+      - 'requirements.txt'
+      - '.github/workflows/navarea_ii.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'scrapers/navarea_ii.py'
+      - 'tests/test_navarea_ii.py'
+      - 'requirements.txt'
   workflow_dispatch:
 
 concurrency:
   group: navarea-2-sync-engine
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   sync:
+    name: S-124 Ingestion & Sync
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    timeout-minutes: 15
 
-      - uses: actions/setup-python@v5
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: 'requirements.txt'
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Run Unit Tests for NAVAREA II
         run: |
-          python -m unittest tests.test_navarea_ii -v
+          PYTHONPATH=${{ github.workspace }} python -m unittest tests.test_navarea_ii -v
 
       - name: Run NAVAREA II Ingestion
+        # Only run database sync on scheduled runs, pushes to main, or manual dispatch (skip on PRs)
+        if: github.event_name != 'pull_request'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}

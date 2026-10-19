@@ -525,12 +525,30 @@ def run_navarea_ii_pipeline(
                     status_note = "[DRY-RUN]" if dry_run else "[NO-DB]"
                     print(f"  🔍 {status_note} Processed {adapted_warn['warning_id']} (Type: {warning_type}, Geom: {bool(final_geometry)})")
 
-    if server_errors:
-        print(f"⚠️ Server reported response notices: {server_errors}")
-
     print("\n" + "=" * 70)
     print(f"📊 Summary: Harvested {summary['harvested']} S-124 files | Synced: {summary['synced']} | Gemini Fallbacks: {summary['fallback_used']}")
     print("=" * 70)
+
+    # Write to GitHub Actions Step Summary if available
+    step_summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+    if step_summary_file:
+        try:
+            with open(step_summary_file, "a", encoding="utf-8") as sf:
+                sf.write(f"""### ⚓ NAVAREA II S-124 SECOM Ingestion Summary
+| Metric | Value |
+| :--- | :--- |
+| **Endpoint** | `{PING_OBJECT_URL}` |
+| **Total Items Reported** | `{summary['total_items']}` |
+| **S-124 GML Harvested** | `{summary['harvested']}` |
+| **Notices Synced** | `{summary['synced']}` |
+| **Gemini Flash-Lite Fallbacks** | `{summary['fallback_used']}` |
+| **Execution Mode** | `{"Dry-Run / Offline" if summary['dry_run'] else "Supabase Live"}` |
+""")
+                if server_errors:
+                    sf.write(f"\n> ⚠️ **Server Notice:** {server_errors}\n")
+        except Exception:
+            pass
+
     return summary
 
 
