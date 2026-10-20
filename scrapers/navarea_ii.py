@@ -23,6 +23,13 @@ try:
 except ImportError:
     HAS_REQUESTS = False
 
+# Scrapling Fetcher: stealthy HTTP client with retries/impersonation (https://github.com/D4Vinci/Scrapling)
+try:
+    from scrapling.fetchers import Fetcher
+    HAS_SCRAPLING = True
+except ImportError:
+    HAS_SCRAPLING = False
+
 try:
     from pydantic import BaseModel, Field
     HAS_PYDANTIC = True
@@ -123,6 +130,44 @@ if HAS_GENAI and GEMINI_API_KEY:
         ai_client = genai.Client(api_key=GEMINI_API_KEY)
     except Exception as e:
         print(f"⚠️ Google AI Studio client initialization warning: {e}")
+
+
+def fetch_ping_object_payload() -> Dict[str, Any]:
+    """
+    Fetches the PING SECOM /object JSON payload.
+
+    Primary path uses Scrapling's Fetcher (https://github.com/D4Vinci/Scrapling),
+    a stealthy HTTP client with built-in retries, TLS impersonation and adaptive
+    header generation. Falls back to plain `requests` if Scrapling is unavailable.
+    """
+    headers = {"accept": "application/json"}
+
+    if HAS_SCRAPLING:
+        try:
+            print("[1/4] Querying PING SECOM REST API via Scrapling Fetcher...")
+            page = Fetcher.get(
+                PING_OBJECT_URL,
+                headers=headers,
+                timeout=45,
+                retries=3,
+                stealthy_headers=True,
+            )
+            if getattr(page, "status", None) != 200:
+                raise RuntimeError(f"HTTP {page.status} from PING SECOM endpoint")
+            body = page.body
+            if isinstance(body, bytes):
+                return json.loads(body.decode("utf-8", errors="replace"))
+            return json.loads(str(body))
+        except Exception as e:
+            print(f"⚠️ Scrapling fetch failed ({e}); falling back to requests...")
+
+    if not HAS_REQUESTS:
+        raise RuntimeError("Neither Scrapling nor 'requests' is installed. Run: pip install -r requirements.txt")
+
+    print("[1/4] Querying PING SECOM REST API (requests fallback)...")
+    resp = requests.get(PING_OBJECT_URL, headers=headers, timeout=45)
+    resp.raise_for_status()
+    return resp.json()
 
 
 # --- Gemini Structured Output Schema ---
@@ -432,7 +477,7 @@ def run_navarea_ii_pipeline(
 ) -> Dict[str, Any]:
     """
     Executes the NAVAREA II ingestion pipeline:
-    1. Fetches or accepts PING SECOM /object responses
+    1. Fetches or accepts PING SECOM /object responses (Scrapling Fetcher primary, requests fallback)
     2. Decodes Base64 S-100 Exchange Sets and unzips in-memory GML
     3. Runs local extractor, falling back to Gemini Flash-Lite if geometry is missing
     4. Upserts normalized records into Supabase nav_warnings
@@ -440,6 +485,7 @@ def run_navarea_ii_pipeline(
     print("=" * 70)
     print("⚓ NAVAREA II S-124 SECOM Ingestion Pipeline")
     print(f"📡 Endpoint: {PING_OBJECT_URL}")
+    print(f"🔌 Fetcher: {'Scrapling' if HAS_SCRAPLING else ('requests' if HAS_REQUESTS else 'none')}")
     print("=" * 70)
 
     summary = {
@@ -454,19 +500,12 @@ def run_navarea_ii_pipeline(
 
     payload = mock_payload
     if payload is None:
-        if not HAS_REQUESTS:
-            print("❌ 'requests' library is not installed. Please run: pip install -r requirements.txt")
-            summary["server_errors"] = "requests library missing"
+        if not HAS_REQUESTS and not HAS_SCRAPLING:
+            print("❌ No HTTP client available. Please run: pip install -r requirements.txt")
+            summary["server_errors"] = "no HTTP client (requests/Scrapling) available"
             return summary
         try:
-            print("[1/4] Querying PING SECOM REST API for active notices...")
-            resp = requests.get(
-                PING_OBJECT_URL,
-                headers={"accept": "application/json"},
-                timeout=45,
-            )
-            resp.raise_for_status()
-            payload = resp.json()
+            payload = fetch_ping_object_payload()
         except Exception as e:
             print(f"❌ Failed to reach PING SECOM endpoint: {e}")
             summary["server_errors"] = str(e)
@@ -603,6 +642,7 @@ def run_navarea_ii_pipeline(
 | Metric | Value |
 | :--- | :--- |
 | **Endpoint** | `{PING_OBJECT_URL}` |
+| **HTTP Fetcher** | `{'Scrapling' if HAS_SCRAPLING else 'requests'}` |
 | **Total Items Reported** | `{summary['total_items']}` |
 | **S-124 GML Harvested** | `{summary['harvested']}` |
 | **Notices Synced** | `{summary['synced']}` |
