@@ -33,6 +33,12 @@ def get_supabase_client():
     key = os.environ.get("SUPABASE_KEY")
     allow_dry_run = os.environ.get("ALLOW_DRY_RUN", "").lower() in ("1", "true", "yes")
 
+    # Explicit dry-run request always wins, even with valid credentials present,
+    # so CI can validate the full pipeline without touching the database.
+    if allow_dry_run:
+        print("⚠️ ALLOW_DRY_RUN active: running in dry-run mode (no Supabase client).")
+        return None
+
     if not url or not key:
         if allow_dry_run:
             print("⚠️ SUPABASE_URL or SUPABASE_KEY missing in environment (ALLOW_DRY_RUN active).")
