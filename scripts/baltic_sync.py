@@ -22,6 +22,7 @@ from shared.sync_engine import run_differential_sync
 
 SOURCE_ID = "sma-baltic-subarea"
 
+
 def validate_raw_message(msg: Dict[str, Any]) -> bool:
     """Validate that required fields exist and are non-empty for raw_messages."""
     if not isinstance(msg, dict):
@@ -47,6 +48,14 @@ def validate_nav_warning(warn: Dict[str, Any]) -> bool:
 
 
 def sync_to_supabase(json_file="navareas/baltic/parsed_baltic_warnings.json") -> bool:
+    """Sync parsed Baltic warnings to Supabase, or do a no-op dry run when credentials are missing."""
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+
+    if not url or not key:
+        print("ℹ️ SUPABASE_URL or SUPABASE_KEY missing; skipping Baltic sync in dry-run mode.")
+        return True
+
     if not os.path.isabs(json_file):
         json_file = os.path.join(ROOT_DIR, json_file)
 
