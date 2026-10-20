@@ -176,3 +176,37 @@ class TestE2ESync(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_regional_sync_script_no_silent_success_without_credentials(self):
+        """Regression: regional sync scripts must NOT exit 0 when credentials
+        are absent and ALLOW_DRY_RUN is unset (the 'green CI, nothing saved' bug).
+        The shared engine pre-flight must exit with code 2."""
+        import subprocess
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("SUPABASE_URL", "SUPABASE_KEY", "ALLOW_DRY_RUN")}
+        for script in ("scripts/navarea_1_sync.py",
+                       "scripts/navarea_xi_sync.py",
+                       "scripts/baltic_sync.py"):
+            with self.subTest(script=script):
+                result = subprocess.run(
+                    [sys.executable, script],
+                    env=env, capture_output=True, timeout=120,
+                )
+                self.assertEqual(
+                    result.returncode, 2,
+                    f"{script} must exit 2 on missing credentials, got {result.returncode}"
+                )
+
+    def test_regional_sync_dry_run_is_explicit(self):
+        """With ALLOW_DRY_RUN=1 the engine prints an explicit dry-run banner
+        rather than pretending a sync happened."""
+        import subprocess
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("SUPABASE_URL", "SUPABASE_KEY")}
+        env["ALLOW_DRY_RUN"] = "1"
+        result = subprocess.run(
+            [sys.executable, "scripts/navarea_1_sync.py"],
+            env=env, capture_output=True, timeout=120,
+        )
+        self.assertIn(result.returncode, (0, 1))  # 1 acceptable if fixture file missing
+        self.assertIn(b"Dry-run", result.stdout + result.stderr)
