@@ -40,11 +40,17 @@ async def run_region_pipeline(name: str, run_fn) -> Dict[str, Any]:
         success = await loop.run_in_executor(None, run_fn)
         duration = loop.time() - start_t
         logger.info(f"Finished {name} pipeline in {duration:.2f}s (success={success})")
-        return {"region": name, "success": bool(success), "duration_seconds": duration, "error": None}
+        return {"region": name, "success": bool(success), "duration_seconds": duration, "error": None, "exit_code": 0}
+    except SystemExit as e:
+        # Credential pre-flight failures exit with code 2 (get_supabase_client)
+        duration = loop.time() - start_t
+        logger.error(f"{name} pipeline exited with code {e.code}")
+        return {"region": name, "success": False, "duration_seconds": duration,
+                "error": f"SystemExit({e.code})", "exit_code": int(e.code or 1)}
     except Exception as e:
         duration = loop.time() - start_t
         logger.error(f"Failed {name} pipeline in {duration:.2f}s: {e}", exc_info=True)
-        return {"region": name, "success": False, "duration_seconds": duration, "error": str(e)}
+        return {"region": name, "success": False, "duration_seconds": duration, "error": str(e), "exit_code": 3}
 
 
 async def main_async() -> int:
@@ -98,7 +104,12 @@ async def main_async() -> int:
         from scrapers.navarea_ii import run_navarea_ii_pipeline
         def run_nav2():
             summary = run_navarea_ii_pipeline()
-            return not bool(summary.get("server_errors")) or summary.get("synced", 0) > 0
+            return (
+                not bool(summary.get("server_errors"))
+                and not bool(summary.get("sync_errors"))
+                and summary.get("harvested", 0) > 0
+                and summary.get("synced", 0) == summary.get("harvested", 0)
+            )
     except Exception as e:
         err_nav2 = str(e)
         def run_nav2():
@@ -134,7 +145,11 @@ async def main_async() -> int:
     print("=" * 70)
 
     prom_server.stop()
-    return 0 if all_success else 1
+    if all_success:
+        return 0
+    if any(r.get("exit_code") == 2 for r in results):
+        return 2  # credentials/environment missing
+    return 3          # regional sync failure
 
 
 def main():

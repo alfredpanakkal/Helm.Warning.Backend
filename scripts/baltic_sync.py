@@ -18,19 +18,9 @@ if hasattr(sys.stdout, 'reconfigure'):
 if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
 
-from shared.sync_engine import run_differential_sync, VALID_RAW_COLUMNS
+from shared.sync_engine import run_differential_sync
 
 SOURCE_ID = "sma-baltic-subarea"
-
-VALID_NAV_COLUMNS = {
-    "warning_id", "canonical_id", "source_id", "navarea", "title",
-    "issued_text", "coordinates", "latitude", "longitude",
-    "category", "categories", "status", "raw_text", "spatial",
-    "data_quality", "triage_tier", "parsing_method", "qa_flags",
-    "unplotted_reason", "shoal_depth_m", "tow_length_m", "tow_speed_kts",
-    "applicable_vessel_filter"
-}
-
 
 def validate_raw_message(msg: Dict[str, Any]) -> bool:
     """Validate that required fields exist and are non-empty for raw_messages."""
@@ -57,16 +47,6 @@ def validate_nav_warning(warn: Dict[str, Any]) -> bool:
 
 
 def sync_to_supabase(json_file="navareas/baltic/parsed_baltic_warnings.json") -> bool:
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY")
-    if not url or not key:
-        strict = os.environ.get("STRICT_CREDENTIALS", "").lower() in ("1", "true", "yes")
-        if strict:
-            print("❌ FATAL: SUPABASE_URL or SUPABASE_KEY missing", file=sys.stderr)
-            return False
-        print("⚠️ SUPABASE_URL or SUPABASE_KEY missing in environment variables. Database sync skipped (dry-run mode).")
-        return True
-
     if not os.path.isabs(json_file):
         json_file = os.path.join(ROOT_DIR, json_file)
 
