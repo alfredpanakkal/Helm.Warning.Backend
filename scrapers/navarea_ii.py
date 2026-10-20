@@ -104,10 +104,12 @@ except ImportError:
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+PING_SECOM_API_KEY = os.environ.get("PING_SECOM_API_KEY", "")
 
 SERVICE_INSTANCE = "navarea_ii_en"
 PING_OBJECT_URL = f"https://services.ping-info-nautique.fr/secom/{SERVICE_INSTANCE}/v1/object"
 SOURCE_ID = "shom-navarea-2"
+MAX_PAGES = 20  # safety cap for pagination following
 
 # --- Client Initializations ---
 supabase: Optional[Any] = None
@@ -123,6 +125,89 @@ if HAS_GENAI and GEMINI_API_KEY:
         ai_client = genai.Client(api_key=GEMINI_API_KEY)
     except Exception as e:
         print(f"⚠️ Google AI Studio client initialization warning: {e}")
+
+
+# --- PING SECOM request helpers ---
+
+def build_ping_headers() -> Dict[str, str]:
+    """
+    Builds request headers for the PING SECOM REST API.
+    Sends the API key defensively as both an X-API-Key and an Authorization Bearer
+    header, since PING gateway deployments vary in which scheme they accept.
+    """
+    headers = {
+        "accept": "application/json",
+        "user-agent": "Helm.Warning.Backend/1.0 (NAVAREA II S-124 ingestion)",
+    }
+    if PING_SECOM_API_KEY:
+        headers["x-api-key"] = PING_SECOM_API_KEY
+        headers["authorization"] = f"Bearer {PING_SECOM_API_KEY}"
+    return headers
+
+
+def extract_next_link(payload: Dict[str, Any]) -> Optional[str]:
+    """Extracts the 'next' pagination href from a SECOM responseLink entry."""
+    links = payload.get("responseLink")
+    if isinstance(links, dict):
+        links = [links]
+    if not isinstance(links, list):
+        return None
+    for link in links:
+        if not isinstance(link, dict):
+            continue
+        href = link.get("href")
+        rel = str(link.get("rel") or "").lower()
+        if href and rel == "next":
+            return href
+    return None
+
+
+def fetch_ping_payloads() -> Tuple[List[Dict[str, Any]], str]:
+    """
+    Fetches all pages of the PING SECOM /object response, following
+    responseLink rel="next" pagination links when present.
+    Returns (list_of_payloads, server_notice_text).
+    On a hard failure, returns ([], error_description).
+    """
+    payloads: List[Dict[str, Any]] = []
+    server_notice = ""
+    next_url: Optional[str] = PING_OBJECT_URL
+    pages = 0
+
+    while next_url and pages < MAX_PAGES:
+        try:
+            resp = requests.get(next_url, headers=build_ping_headers(), timeout=45)
+        except Exception as e:
+            print(f"❌ Request to PING SECOM failed: {e}")
+            return payloads, f"request failed: {e}"
+
+        if resp.status_code != 200:
+            body_snippet = (resp.text or "")[:300].replace("\n", " ")
+            print(f"❌ PING SECOM returned HTTP {resp.status_code} for {next_url}")
+            print(f"   Response body (first 300 chars): {body_snippet}")
+            return payloads, f"HTTP {resp.status_code}: {body_snippet}"
+
+        try:
+            payload = resp.json()
+        except Exception as e:
+            print(f"❌ PING SECOM returned non-JSON body: {e}")
+            print(f"   Response body (first 300 chars): {(resp.text or '')[:300]}")
+            return payloads, f"invalid JSON response: {e}"
+
+        pages += 1
+        payloads.append(payload)
+        items = payload.get("dataResponseObject") or []
+        notice = payload.get("responseText") or ""
+        if notice:
+            server_notice = notice
+        print(f"  ↳ Page {pages}: {len(items)} Exchange Set(s){' (server: ' + notice + ')' if notice else ''}")
+
+        next_url = extract_next_link(payload)
+
+    if pages >= MAX_PAGES and next_url:
+        print(f"⚠️ Stopped after {MAX_PAGES} pages; more pages remain ({next_url})")
+
+    return payloads, server_notice
 
 
 # --- Gemini Structured Output Schema ---
@@ -425,14 +510,13 @@ def adapt_to_nav_warnings(
 
 
 
-
 def run_navarea_ii_pipeline(
     mock_payload: Optional[Dict[str, Any]] = None,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """
     Executes the NAVAREA II ingestion pipeline:
-    1. Fetches or accepts PING SECOM /object responses
+    1. Fetches or accepts PING SECOM /object responses (with API key + pagination)
     2. Decodes Base64 S-100 Exchange Sets and unzips in-memory GML
     3. Runs local extractor, falling back to Gemini Flash-Lite if geometry is missing
     4. Upserts normalized records into Supabase nav_warnings
@@ -440,6 +524,8 @@ def run_navarea_ii_pipeline(
     print("=" * 70)
     print("⚓ NAVAREA II S-124 SECOM Ingestion Pipeline")
     print(f"📡 Endpoint: {PING_OBJECT_URL}")
+    if mock_payload is None:
+        print(f"🔑 API key: {'configured' if PING_SECOM_API_KEY else 'NOT SET (PING may return an empty response without authentication)'}")
     print("=" * 70)
 
     summary = {
@@ -452,34 +538,53 @@ def run_navarea_ii_pipeline(
         "dry_run": dry_run or (supabase is None),
     }
 
-    payload = mock_payload
-    if payload is None:
+    payloads: List[Dict[str, Any]] = []
+    if mock_payload is not None:
+        payloads = [mock_payload]
+    else:
         if not HAS_REQUESTS:
             print("❌ 'requests' library is not installed. Please run: pip install -r requirements.txt")
             summary["server_errors"] = "requests library missing"
             return summary
-        try:
-            print("[1/4] Querying PING SECOM REST API for active notices...")
-            resp = requests.get(
-                PING_OBJECT_URL,
-                headers={"accept": "application/json"},
-                timeout=45,
-            )
-            resp.raise_for_status()
-            payload = resp.json()
-        except Exception as e:
-            print(f"❌ Failed to reach PING SECOM endpoint: {e}")
-            summary["server_errors"] = str(e)
+        if not PING_SECOM_API_KEY:
+            print("⚠️ PING_SECOM_API_KEY is not set. The PING SECOM API typically returns HTTP 200")
+            print("   with an EMPTY dataResponseObject for unauthenticated requests, which looks")
+            print("   like 'no data available' but actually means 'not authorized'.")
+
+        print("[1/4] Querying PING SECOM REST API for active notices...")
+        payloads, server_notice = fetch_ping_payloads()
+        if not payloads:
+            summary["server_errors"] = server_notice or "PING SECOM request failed"
             return summary
 
-    warning_objects = payload.get("dataResponseObject", [])
-    pagination_info = payload.get("pagination", {})
-    total_items = pagination_info.get("totalItems", len(warning_objects))
-    server_errors = payload.get("responseText", "")
+    # Merge paginated responses
+    warning_objects: List[Dict[str, Any]] = []
+    server_errors = ""
+    total_items = 0
+    for page in payloads:
+        warning_objects.extend(page.get("dataResponseObject") or [])
+        pagination_info = page.get("pagination", {}) or {}
+        total_items += pagination_info.get("totalItems", len(page.get("dataResponseObject") or []))
+        notice = page.get("responseText") or ""
+        if notice:
+            server_errors = notice
+
     summary["total_items"] = total_items
     summary["server_errors"] = server_errors
 
     print(f"[2/4] Retrieved {len(warning_objects)} Exchange Sets (Total reported: {total_items})")
+
+    # Loudly flag authenticated-but-empty harvests so the workflow fails visibly
+    # instead of exiting 0 with zero data. Mock payloads bypass this check.
+    if mock_payload is None and not warning_objects:
+        reason = "PING SECOM returned 0 Exchange Sets"
+        if not PING_SECOM_API_KEY:
+            reason += " (PING_SECOM_API_KEY not set — PING replies HTTP 200 with an empty payload to unauthenticated requests)"
+        elif server_errors:
+            reason += f" (server notice: {server_errors})"
+        print(f"❌ {reason}")
+        summary["server_errors"] = reason
+        return summary
 
 
     print("[3/4] Processing S-100 Exchange Sets...")
@@ -603,6 +708,7 @@ def run_navarea_ii_pipeline(
 | Metric | Value |
 | :--- | :--- |
 | **Endpoint** | `{PING_OBJECT_URL}` |
+| **API Key** | `{"Configured" if PING_SECOM_API_KEY or mock_payload is not None else "MISSING"}` |
 | **Total Items Reported** | `{summary['total_items']}` |
 | **S-124 GML Harvested** | `{summary['harvested']}` |
 | **Notices Synced** | `{summary['synced']}` |
