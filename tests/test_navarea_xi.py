@@ -91,14 +91,66 @@ class TestNavareaXiScraperLeadingLines(unittest.TestCase):
 
 
 class TestNavareaXiSpatialSync(unittest.TestCase):
-    def test_spatial_column_included_in_valid_sync_columns(self):
-        from scripts.navarea_xi_sync import VALID_NAV_COLUMNS as XI_COLUMNS
-        from scripts.navarea_1_sync import VALID_NAV_COLUMNS as UK_COLUMNS
-        from scripts.baltic_sync import VALID_NAV_COLUMNS as BALTIC_COLUMNS
+    """Schema 20261019/20: per-script VALID_NAV_COLUMNS was removed; all syncs now
+    delegate to shared.sync_engine, and spatial data flows into nav_warning_geometries
+    via shared.models.build_geometry_payloads."""
 
-        self.assertIn("spatial", XI_COLUMNS)
-        self.assertIn("spatial", UK_COLUMNS)
-        self.assertIn("spatial", BALTIC_COLUMNS)
+    def test_spatial_flows_into_geometry_payloads(self):
+        from shared.models import build_geometry_payloads
+        record = {
+            "title": "OKINOTORI SHIMA",
+            "spatial": {"type": "Point", "coordinates": [134.6583, 16.9017]},
+        }
+        geoms = build_geometry_payloads(record)
+        self.assertEqual(len(geoms), 1)
+        self.assertEqual(geoms[0]["feature_type"], "point")
+        self.assertEqual(geoms[0]["geojson"], record["spatial"])
+
+    def test_spatial_feature_geometry_preserved(self):
+        from shared.models import build_geometry_payloads
+        record = {
+            "title": "FIRING AREA",
+            "spatial": {
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [[[140.0, 35.0], [141.0, 35.0], [141.0, 34.0], [140.0, 34.0], [140.0, 35.0]]]},
+                "properties": {"buffer_nm": 3},
+            },
+        }
+        geoms = build_geometry_payloads(record)
+        self.assertEqual(len(geoms), 1)
+        self.assertEqual(geoms[0]["feature_type"], "polygon")
+        self.assertEqual(geoms[0]["buffer_nm"], 3.0)
+        self.assertEqual(geoms[0]["geojson"]["type"], "Polygon")
+
+    def test_legacy_flat_columns_stripped_from_master_payload(self):
+        from shared.models import build_master_payload
+        master = build_master_payload({
+            "navarea": "NAVAREA XI",
+            "warning_id": "NAVAREA XI 0451/26",
+            "title": "OKINOTORI",
+            "spatial": {"type": "Point", "coordinates": [134.6583, 16.9017]},
+            "latitude": 16.9017,
+            "longitude": 134.6583,
+            "issued_text": "2026/10/09 07 UTC",
+            "category": "drifting",
+        })
+        # Legacy flat columns are stripped; spatial lives only in geometry payloads
+        self.assertNotIn("spatial", master)
+        self.assertNotIn("latitude", master)
+        self.assertNotIn("longitude", master)
+        self.assertNotIn("issued_text", master)
+        self.assertNotIn("category", master)
+        self.assertIn("drifting", master["categories"])
+        self.assertEqual(master["triage_tier"], "A")
+
+    def test_all_sync_scripts_delegate_to_shared_engine(self):
+        import scripts.navarea_xi_sync as xi_sync
+        import scripts.navarea_1_sync as uk_sync
+        import scripts.baltic_sync as baltic_sync
+        from shared.sync_engine import run_differential_sync
+        self.assertIs(xi_sync.run_differential_sync, run_differential_sync)
+        self.assertIs(uk_sync.run_differential_sync, run_differential_sync)
+        self.assertIs(baltic_sync.run_differential_sync, run_differential_sync)
 
 
 class TestNavareaXiDifferentialSync(unittest.TestCase):
