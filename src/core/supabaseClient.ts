@@ -123,52 +123,46 @@ export async function fetchLiveNavWarnings(): Promise<{
   }
 
   try {
-    const { data, error } = await client
-      .from('nav_warnings')
-      .select('*')
-      .eq('status', 'active')
-      .order('created_at', { ascending: false });
+    // PRIMARY SOURCE: the spatial view is authoritative
+    // (INNER JOIN master + geometries; filters status='active' AND triage_tier='A')
+    const { data: viewData, error: viewError } = await client
+      .from('nav_warnings_active_spatial')
+      .select('*');
 
-    if (error) {
-      return { data: null, error: error.message };
-    }
-
-    // Attempt to enrich with active spatial view geometries
-    let spatialMap: Record<string, any> = {};
-    try {
-      const { data: spatialData } = await client
-        .from('nav_warnings_active_spatial')
-        .select('*');
-
-      if (spatialData && Array.isArray(spatialData)) {
-        spatialData.forEach((sp: any) => {
-          const key = sp.canonical_id || sp.warning_id;
-          if (key && sp.geojson_blob) {
-            spatialMap[key] = sp;
-          }
-        });
+    let rows: any[] = [];
+    if (!viewError && Array.isArray(viewData) && viewData.length > 0) {
+      rows = viewData;
+    } else {
+      // FALLBACK: base-table path for deployments predating the spatial view
+      if (viewError) {
+        console.warn('Spatial view unavailable, falling back to nav_warnings:', viewError.message);
       }
-    } catch {
-      // Spatial view enrichment optional fallback
+      const { data: baseData, error: baseError } = await client
+        .from('nav_warnings')
+        .select('*')
+        .eq('status', 'active')
+        .order('created_at', { ascending: false });
+      if (baseError) {
+        return { data: null, error: baseError.message };
+      }
+      rows = (baseData as any[]) || [];
     }
 
-    const normalized = ((data as any[]) || []).map((w) => {
+    const normalized = rows.map((w) => {
       const canonical = w.canonical_id || w.warning_id;
-      const sp = spatialMap[canonical] || spatialMap[w.id];
 
-      let spatial = w.spatial;
-      let lat = w.latitude;
-      let lon = w.longitude;
+      // View rows carry geojson_blob (jsonb produced by ST_AsGeoJSON)
+      const blob = w.geojson_blob ?? w.spatial;
+      let spatial = blob;
+      let lat: number | null = w.latitude ?? null;
+      let lon: number | null = w.longitude ?? null;
 
-      if (sp && sp.geojson_blob) {
-        spatial = sp.geojson_blob;
-        if (sp.geojson_blob.type === 'Point' && Array.isArray(sp.geojson_blob.coordinates)) {
-          lon = sp.geojson_blob.coordinates[0];
-          lat = sp.geojson_blob.coordinates[1];
-        } else if (sp.geojson_blob.type === 'Polygon' && sp.geojson_blob.coordinates?.[0]?.[0]) {
-          lon = sp.geojson_blob.coordinates[0][0][0];
-          lat = sp.geojson_blob.coordinates[0][0][1];
-        }
+      if (blob && blob.type === 'Point' && Array.isArray(blob.coordinates)) {
+        lon = blob.coordinates[0];
+        lat = blob.coordinates[1];
+      } else if (blob && blob.type === 'Polygon' && blob.coordinates?.[0]?.[0]) {
+        lon = blob.coordinates[0][0][0];
+        lat = blob.coordinates[0][0][1];
       }
 
       const categories =
@@ -189,10 +183,12 @@ export async function fetchLiveNavWarnings(): Promise<{
         longitude: lon,
         categories,
         category: categories[0] || 'general',
+        triage_tier: w.triage_tier || 'A',
+        status: w.status || 'active'
       };
     });
 
-    return { data: (normalized as NavWarning[]), error: null };
+    return { data: normalized as NavWarning[], error: null };
   } catch (e: any) {
     return { data: null, error: e?.message || 'Failed to fetch live warnings' };
   }
@@ -342,57 +338,38 @@ export async function upsertNavWarnings(
   }
 
   try {
-    const records = warnings.map((w) => ({
-      warning_id: w.warning_id,
-      canonical_id: w.canonical_id || w.warning_id,
-      publisher_id: w.publisher_id || null,
-      source_id: w.source_id,
-      navarea: w.navarea,
-      series: w.series || null,
-      source_warning_id: w.source_warning_id || w.warning_id,
-      warning_number: w.warning_number || null,
-      warning_year: w.warning_year || null,
-      issued_at: w.issued_at || (w.issued_date ? `${w.issued_date}T00:00:00Z` : null),
-      issued_date: w.issued_date || null,
-      issued_text: w.issued_text || null,
-      valid_from: w.valid_from || null,
-      valid_to: w.valid_to || null,
-      status: w.status || 'active',
-      status_basis: w.status_basis || 'official_notice',
-      data_quality: w.data_quality || 'EXPLICIT',
-      triage_tier: w.triage_tier || 'C',
-      area_text: w.area_text || w.title || null,
-      title: w.title || w.warning_id,
-      raw_text: w.raw_text,
-      spatial: w.spatial || null,
-      coordinates: w.coordinates || null,
-      latitude: w.latitude,
-      longitude: w.longitude,
-      risk_level: w.risk_level || w.severity || 'moderate',
-      severity: w.severity || 'moderate',
-      category: w.category || 'general',
-      categories: w.categories || (w.category ? [w.category] : []),
-      is_verified: w.is_verified ?? true,
-      verified_at: w.verified_at || new Date().toISOString(),
-      created_at: w.created_at || new Date().toISOString()
+    // Build schema-compliant payloads for the atomic upsert_nav_warning RPC.
+    // Writes only columns that exist in the 20261019/20261020 schema
+    // (no severity/latitude/longitude/spatial/issued_text/category).
+    const payloads = warnings.map((w) => ({
+      master: {
+        canonical_id: w.canonical_id || w.warning_id,
+        navarea: w.navarea || '',
+        title: w.title || w.warning_id,
+        area_text: w.area_text || w.title || null,
+        categories: w.categories || (w.category ? [w.category] : []),
+        status: w.status || 'active',
+        triage_tier: w.triage_tier || 'C',
+        data_quality: w.data_quality || 'EXPLICIT',
+        parsing_method: 'RULE',
+        qa_flags: [],
+        valid_from: w.valid_from || null,
+        valid_to: w.valid_to || null,
+        raw_text: w.raw_text || '',
+        source_id: w.source_id || 'frontend-manual',
+        unplotted_reason: null
+      },
+      geometries: [] // manual frontend entries carry no geometry unless drawn
     }));
 
-    const { error } = await client
-      .from('nav_warnings')
-      .upsert(records, { onConflict: 'canonical_id' });
-
-    if (error) {
-      // Fallback if schema uses warning_id as primary constraint
-      const { error: fallbackError } = await client
-        .from('nav_warnings')
-        .upsert(records, { onConflict: 'warning_id' });
-
-      if (fallbackError) {
-        return { success: false, count: 0, error: fallbackError.message };
+    for (const p of payloads) {
+      const { error } = await client.rpc('upsert_nav_warning', { p_payload: p });
+      if (error) {
+        return { success: false, count: 0, error: error.message };
       }
     }
 
-    return { success: true, count: records.length, error: null };
+    return { success: true, count: payloads.length, error: null };
   } catch (e: any) {
     return { success: false, count: 0, error: e?.message || 'Upsert failed' };
   }
