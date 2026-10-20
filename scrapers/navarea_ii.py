@@ -289,8 +289,8 @@ def parse_nw_exchange_set(gml_content: str) -> List[Dict[str, Any]]:
         warning_number = find_text(dataset, "warningNumber")
         year = find_text(dataset, "year")
         warning_type = find_text(dataset, "warningType")
-        general_area = find_text(dataset, "locationName") or find_text(dataset, "text")
-        # Prefer preamble locationName; avoid overwriting with information text below
+        # General area comes only from the preamble locationName
+        general_area = find_text(dataset, "locationName")
 
         pub_time = find_text(dataset, "publicationTime")
         cancel_time = find_text(dataset, "cancellationDate")
