@@ -19,6 +19,8 @@ from scrapers.navarea_ii import (
     adapt_to_nav_warnings,
     S124BackupSchema,
     run_navarea_ii_pipeline,
+    NW_MESSAGES_URL,
+    parse_nw_datasets,
 )
 
 
@@ -134,6 +136,27 @@ class TestNavareaIIExtractor(unittest.TestCase):
         self.assertEqual(parsed.geometry_type, "Point")
         self.assertEqual(parsed.coordinates[0].longitude, -8.1667)
         self.assertEqual(parsed.coordinates[0].latitude, 45.3333)
+
+    def test_nw_messages_url_is_filtered_english_series(self):
+        # The public ExchangeSet endpoint must request the NAVAREA II series in English
+        self.assertIn("Get_NW_Messages", NW_MESSAGES_URL)
+        self.assertIn("nameOfSeries=NAVAREA%20II", NW_MESSAGES_URL)
+        self.assertIn("lang=en", NW_MESSAGES_URL)
+
+    def test_parse_nw_datasets_filters_navarea_ii(self):
+        xml_text = (
+            '<S124:ExchangeSet xmlns:S124="http://www.iho.int/S124/gml/2.0" xmlns:gml="http://www.opengis.net/gml/3.2">'
+            '<S124:Dataset gml:id="NW.NAVAREA_II.360.2026.eng"><S124:members></S124:members></S124:Dataset>'
+            '<S124:Dataset gml:id="NW.NAVAREA_I.12.2026.eng"><S124:members></S124:members></S124:Dataset>'
+            '<S124:Dataset gml:id="NW.NAVAREA_II.358.2026.eng"><S124:members></S124:members></S124:Dataset>'
+            '</S124:ExchangeSet>'
+        )
+        datasets, err = parse_nw_datasets(xml_text)
+        self.assertEqual(err, "")
+        self.assertEqual(len(datasets), 2)
+        gml_ids = [gml_id for gml_id, _ in datasets]
+        self.assertIn("NW.NAVAREA_II.360.2026.eng", gml_ids)
+        self.assertNotIn("NW.NAVAREA_I.12.2026.eng", gml_ids)
 
     def test_pipeline_dry_run_with_mock_exchange_set(self):
         # Create an in-memory ZIP containing a sample S-124 GML

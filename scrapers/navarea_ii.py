@@ -24,6 +24,13 @@ try:
 except ImportError:
     HAS_REQUESTS = False
 
+# Scrapling Fetcher: stealthy HTTP client with retries/impersonation (https://github.com/D4Vinci/Scrapling)
+try:
+    from scrapling.fetchers import Fetcher
+    HAS_SCRAPLING = True
+except ImportError:
+    HAS_SCRAPLING = False
+
 try:
     from pydantic import BaseModel, Field
     HAS_PYDANTIC = True
@@ -112,9 +119,9 @@ PING_OBJECT_URL = f"https://services.ping-info-nautique.fr/secom/{SERVICE_INSTAN
 SOURCE_ID = "shom-navarea-2"
 MAX_PAGES = 20  # safety cap for pagination following
 
-# Public (unauthenticated) NAVAREA S-124 Exchange Set endpoint. Serves the same
-# S-124 GML warnings as the keyed SECOM API, as a single XML document.
-NW_MESSAGES_URL = "https://services.ping-info-nautique.fr/nw/v2/Get_NW_Messages?nameOfSeries=NAVAREA"
+# Public (unauthenticated) NAVAREA II S-124 Exchange Set endpoint (English series).
+# Serves the same S-124 GML warnings as the keyed SECOM API, as a single XML document.
+NW_MESSAGES_URL = "https://services.ping-info-nautique.fr/nw/v2/Get_NW_Messages?nameOfSeries=NAVAREA%20II&lang=en"
 NW_SERIES_FILTER = "NAVAREA_II"  # keep only NAVAREA II datasets from the exchange set
 NW_BROWSER_HEADERS = {
     "accept": "text/xml,application/xml;q=0.9,*/*;q=0.8",
@@ -226,20 +233,47 @@ def fetch_ping_payloads() -> Tuple[List[Dict[str, Any]], str]:
 
 def fetch_nw_exchange_set() -> Tuple[Optional[str], str]:
     """
-    Fetches the public NAVAREA S-124 Exchange Set XML (Get_NW_Messages).
+    Fetches the public NAVAREA II S-124 Exchange Set XML (Get_NW_Messages, English).
+    Uses Scrapling's stealthy Fetcher when available, plain requests otherwise.
     Returns (xml_text, error). xml_text is None on failure.
     """
-    try:
-        resp = requests.get(NW_MESSAGES_URL, headers=NW_BROWSER_HEADERS, timeout=45)
-    except Exception as e:
-        return None, f"request failed: {e}"
+    text = ""
 
-    if resp.status_code != 200:
-        snippet = (resp.text or "")[:200].replace("\n", " ")
-        print(f"⚠️ Get_NW_Messages returned HTTP {resp.status_code}: {snippet}")
-        return None, f"HTTP {resp.status_code}: {snippet}"
+    if HAS_SCRAPLING:
+        try:
+            page = Fetcher.get(
+                NW_MESSAGES_URL,
+                headers=NW_BROWSER_HEADERS,
+                timeout=45,
+                retries=3,
+                stealthy_headers=True,
+            )
+            status = getattr(page, "status", None)
+            body = page.body
+            if isinstance(body, bytes):
+                body = body.decode("utf-8", errors="replace")
+            text = str(body or "")
+            if status != 200:
+                snippet = text[:200].replace("\n", " ")
+                print(f"⚠️ Get_NW_Messages returned HTTP {status}: {snippet}")
+                return None, f"HTTP {status}: {snippet}"
+        except Exception as e:
+            print(f"⚠️ Scrapling fetch failed ({e}); falling back to requests...")
+            text = ""
 
-    text = resp.text or ""
+    if not text:
+        try:
+            resp = requests.get(NW_MESSAGES_URL, headers=NW_BROWSER_HEADERS, timeout=45)
+        except Exception as e:
+            return None, f"request failed: {e}"
+
+        if resp.status_code != 200:
+            snippet = (resp.text or "")[:200].replace("\n", " ")
+            print(f"⚠️ Get_NW_Messages returned HTTP {resp.status_code}: {snippet}")
+            return None, f"HTTP {resp.status_code}: {snippet}"
+
+        text = resp.text or ""
+
     if "ExchangeSet" not in text:
         print(f"⚠️ Get_NW_Messages response did not contain an S-124 ExchangeSet: {text[:200]}")
         return None, "response did not contain an S-124 ExchangeSet"
@@ -620,9 +654,9 @@ def run_navarea_ii_pipeline(
         payloads = [mock_payload]
         summary["source_used"] = "mock"
     else:
-        if not HAS_REQUESTS:
-            print("❌ 'requests' library is not installed. Please run: pip install -r requirements.txt")
-            summary["server_errors"] = "requests library missing"
+        if not HAS_REQUESTS and not HAS_SCRAPLING:
+            print("❌ No HTTP client available. Please run: pip install -r requirements.txt")
+            summary["server_errors"] = "no HTTP client (requests/Scrapling) available"
             return summary
 
         # --- Primary source: public Get_NW_Messages XML Exchange Set (no API key) ---
@@ -818,7 +852,8 @@ def run_navarea_ii_pipeline(
 | Metric | Value |
 | :--- | :--- |
 | **Source Used** | `{summary['source_used']}` |
-| **Primary Endpoint** | `Get_NW_Messages` (public XML Exchange Set) |
+| **Primary Endpoint** | `{NW_MESSAGES_URL}` |
+| **HTTP Fetcher** | `{'Scrapling' if HAS_SCRAPLING else 'requests'}` |
 | **Fallback Endpoint** | `{PING_OBJECT_URL}` |
 | **API Key** | `{"Configured" if PING_SECOM_API_KEY or mock_payload is not None else "not set (public XML source used)"}` |
 | **Total Items Reported** | `{summary['total_items']}` |
