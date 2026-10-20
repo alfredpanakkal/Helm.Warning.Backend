@@ -2,8 +2,9 @@
 """
 scrapers/navarea_ii.py — NAVAREA II S-124 SECOM Ingestion Pipeline
 Ingests S-124 (Ed. 2.0) nautical datasets packaged inside S-100 Exchange Sets
-via IEC 63173-2 (SECOM) REST API, using local XML extraction with Gemini 2.5 Flash-Lite
-backup for robust geometry recovery, and adapts notices into Supabase nav_warnings.
+via IEC 63173-2 (SECOM) REST API or the public Get_NW_Messages XML endpoint,
+using local XML extraction with Gemini 2.5 Flash-Lite backup for robust geometry
+recovery, and adapts notices into Supabase nav_warnings.
 """
 
 import os
@@ -111,6 +112,17 @@ PING_OBJECT_URL = f"https://services.ping-info-nautique.fr/secom/{SERVICE_INSTAN
 SOURCE_ID = "shom-navarea-2"
 MAX_PAGES = 20  # safety cap for pagination following
 
+# Public (unauthenticated) NAVAREA S-124 Exchange Set endpoint. Serves the same
+# S-124 GML warnings as the keyed SECOM API, as a single XML document.
+NW_MESSAGES_URL = "https://services.ping-info-nautique.fr/nw/v2/Get_NW_Messages?nameOfSeries=NAVAREA"
+NW_SERIES_FILTER = "NAVAREA_II"  # keep only NAVAREA II datasets from the exchange set
+NW_BROWSER_HEADERS = {
+    "accept": "text/xml,application/xml;q=0.9,*/*;q=0.8",
+    "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "referer": "https://portail.ping-info-nautique.fr/",
+    "accept-language": "en,fr;q=0.8",
+}
+
 # --- Client Initializations ---
 supabase: Optional[Any] = None
 if HAS_SUPABASE and SUPABASE_URL and SUPABASE_KEY:
@@ -208,6 +220,70 @@ def fetch_ping_payloads() -> Tuple[List[Dict[str, Any]], str]:
         print(f"⚠️ Stopped after {MAX_PAGES} pages; more pages remain ({next_url})")
 
     return payloads, server_notice
+
+
+# --- Public Get_NW_Messages XML exchange set helpers ---
+
+def fetch_nw_exchange_set() -> Tuple[Optional[str], str]:
+    """
+    Fetches the public NAVAREA S-124 Exchange Set XML (Get_NW_Messages).
+    Returns (xml_text, error). xml_text is None on failure.
+    """
+    try:
+        resp = requests.get(NW_MESSAGES_URL, headers=NW_BROWSER_HEADERS, timeout=45)
+    except Exception as e:
+        return None, f"request failed: {e}"
+
+    if resp.status_code != 200:
+        snippet = (resp.text or "")[:200].replace("\n", " ")
+        print(f"⚠️ Get_NW_Messages returned HTTP {resp.status_code}: {snippet}")
+        return None, f"HTTP {resp.status_code}: {snippet}"
+
+    text = resp.text or ""
+    if "ExchangeSet" not in text:
+        print(f"⚠️ Get_NW_Messages response did not contain an S-124 ExchangeSet: {text[:200]}")
+        return None, "response did not contain an S-124 ExchangeSet"
+
+    return text, ""
+
+
+def parse_nw_datasets(xml_text: str) -> Tuple[List[Tuple[str, str]], str]:
+    """
+    Splits an S-124 ExchangeSet document into individual warning datasets,
+    keeping only NAVAREA II ones.
+    Returns (list_of_(gml_id, dataset_xml), error).
+    """
+    results: List[Tuple[str, str]] = []
+    try:
+        root = ET.fromstring(xml_text)
+    except Exception as e:
+        return results, f"XML parse error: {e}"
+
+    for child in root:
+        if strip_ns(child.tag) != "Dataset":
+            continue
+        gml_id = child.attrib.get("{http://www.opengis.net/gml/3.2}id", "")
+        if NW_SERIES_FILTER not in gml_id:
+            continue  # skip other NAVAREA series if present
+        dataset_xml = ET.tostring(child, encoding="unicode")
+        results.append((gml_id or "NW.NAVAREA_II.DATASET", dataset_xml))
+
+    return results, ""
+
+
+def exchange_set_to_payload_items(datasets: List[Tuple[str, str]]) -> List[Dict[str, Any]]:
+    """
+    Packages each parsed dataset as a base64-encoded, single-entry ZIP archive —
+    the exact payload shape the SECOM /object endpoint delivers — so the
+    downstream decode/unzip/extract pipeline is fully reused.
+    """
+    items: List[Dict[str, Any]] = []
+    for gml_id, xml_text in datasets:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(f"{gml_id.replace('/', '_')}.gml", xml_text)
+        items.append({"data": base64.b64encode(buf.getvalue()).decode("ascii")})
+    return items
 
 
 # --- Gemini Structured Output Schema ---
@@ -516,16 +592,16 @@ def run_navarea_ii_pipeline(
 ) -> Dict[str, Any]:
     """
     Executes the NAVAREA II ingestion pipeline:
-    1. Fetches or accepts PING SECOM /object responses (with API key + pagination)
+    1. Fetches the public Get_NW_Messages S-124 Exchange Set (primary, no key),
+       falling back to the keyed PING SECOM /object REST API
     2. Decodes Base64 S-100 Exchange Sets and unzips in-memory GML
     3. Runs local extractor, falling back to Gemini Flash-Lite if geometry is missing
     4. Upserts normalized records into Supabase nav_warnings
     """
     print("=" * 70)
     print("⚓ NAVAREA II S-124 SECOM Ingestion Pipeline")
-    print(f"📡 Endpoint: {PING_OBJECT_URL}")
-    if mock_payload is None:
-        print(f"🔑 API key: {'configured' if PING_SECOM_API_KEY else 'NOT SET (PING may return an empty response without authentication)'}")
+    print(f"📡 Primary endpoint: {NW_MESSAGES_URL}")
+    print(f"📡 Fallback endpoint: {PING_OBJECT_URL}")
     print("=" * 70)
 
     summary = {
@@ -535,27 +611,53 @@ def run_navarea_ii_pipeline(
         "sync_errors": 0,
         "fallback_used": 0,
         "server_errors": "",
+        "source_used": "",
         "dry_run": dry_run or (supabase is None),
     }
 
     payloads: List[Dict[str, Any]] = []
     if mock_payload is not None:
         payloads = [mock_payload]
+        summary["source_used"] = "mock"
     else:
         if not HAS_REQUESTS:
             print("❌ 'requests' library is not installed. Please run: pip install -r requirements.txt")
             summary["server_errors"] = "requests library missing"
             return summary
-        if not PING_SECOM_API_KEY:
-            print("⚠️ PING_SECOM_API_KEY is not set. The PING SECOM API typically returns HTTP 200")
-            print("   with an EMPTY dataResponseObject for unauthenticated requests, which looks")
-            print("   like 'no data available' but actually means 'not authorized'.")
 
-        print("[1/4] Querying PING SECOM REST API for active notices...")
-        payloads, server_notice = fetch_ping_payloads()
+        # --- Primary source: public Get_NW_Messages XML Exchange Set (no API key) ---
+        print("[1/4] Fetching public NAVAREA S-124 Exchange Set (Get_NW_Messages)...")
+        xml_text, nw_err = fetch_nw_exchange_set()
+        if xml_text is not None:
+            datasets, parse_err = parse_nw_datasets(xml_text)
+            if parse_err:
+                print(f"⚠️ ExchangeSet split failed: {parse_err}; falling back to SECOM API")
+            else:
+                print(f"  ↳ Parsed {len(datasets)} NAVAREA II dataset(s) from public ExchangeSet")
+                payloads = [{
+                    "dataResponseObject": exchange_set_to_payload_items(datasets),
+                    "pagination": {"totalItems": len(datasets)},
+                    "responseText": "",
+                }]
+                summary["source_used"] = "nw-xml"
+        else:
+            print(f"⚠️ Public ExchangeSet unavailable ({nw_err})")
+
+        # --- Fallback source: keyed PING SECOM REST API ---
         if not payloads:
-            summary["server_errors"] = server_notice or "PING SECOM request failed"
-            return summary
+            print("[1/4] Falling back to PING SECOM REST API for active notices...")
+            if not PING_SECOM_API_KEY:
+                print("⚠️ PING_SECOM_API_KEY is not set. The PING SECOM API typically returns HTTP 200")
+                print("   with an empty dataResponseObject for unauthenticated requests, which looks")
+                print("   like 'no data available' but actually means 'not authorized'.")
+            sec_payloads, server_notice = fetch_ping_payloads()
+            if sec_payloads:
+                payloads = sec_payloads
+                summary["source_used"] = "secom-api"
+                summary["server_errors"] = server_notice
+            else:
+                summary["server_errors"] = f"public ExchangeSet failed ({nw_err}); SECOM API failed ({server_notice})"
+                return summary
 
     # Merge paginated responses
     warning_objects: List[Dict[str, Any]] = []
@@ -570,16 +672,17 @@ def run_navarea_ii_pipeline(
             server_errors = notice
 
     summary["total_items"] = total_items
-    summary["server_errors"] = server_errors
+    if server_errors and not summary["server_errors"]:
+        summary["server_errors"] = server_errors
 
-    print(f"[2/4] Retrieved {len(warning_objects)} Exchange Sets (Total reported: {total_items})")
+    print(f"[2/4] Retrieved {len(warning_objects)} Exchange Sets via '{summary['source_used']}' (Total reported: {total_items})")
 
-    # Loudly flag authenticated-but-empty harvests so the workflow fails visibly
+    # Loudly flag live-but-empty harvests so the workflow fails visibly
     # instead of exiting 0 with zero data. Mock payloads bypass this check.
     if mock_payload is None and not warning_objects:
-        reason = "PING SECOM returned 0 Exchange Sets"
+        reason = "both NAVAREA II sources returned 0 Exchange Sets"
         if not PING_SECOM_API_KEY:
-            reason += " (PING_SECOM_API_KEY not set — PING replies HTTP 200 with an empty payload to unauthenticated requests)"
+            reason += " (PING_SECOM_API_KEY also not set for the SECOM fallback)"
         elif server_errors:
             reason += f" (server notice: {server_errors})"
         print(f"❌ {reason}")
@@ -627,6 +730,13 @@ def run_navarea_ii_pipeline(
                 pub_time = local_data.get("publication_time")
                 cancel_time = local_data.get("cancellation_date")
                 dataset_id = local_data.get("dataset_id")
+
+                # Normalize "360"-style warning numbers to "360/26" via dataset id
+                if warning_no and "/" not in warning_no and dataset_id:
+                    import re as _re
+                    m = _re.search(r"NW\.NAVAREA_II\.(\d+)\.(\d{4})", dataset_id)
+                    if m:
+                        warning_no = f"{int(m.group(1))}/{m.group(2)[-2:]}"
 
                 used_ai = False
                 # 2. Backup Trigger: If no coordinates or critical text found, invoke Gemini Flash-Lite
@@ -707,8 +817,10 @@ def run_navarea_ii_pipeline(
                 sf.write(f"""### ⚓ NAVAREA II S-124 SECOM Ingestion Summary
 | Metric | Value |
 | :--- | :--- |
-| **Endpoint** | `{PING_OBJECT_URL}` |
-| **API Key** | `{"Configured" if PING_SECOM_API_KEY or mock_payload is not None else "MISSING"}` |
+| **Source Used** | `{summary['source_used']}` |
+| **Primary Endpoint** | `Get_NW_Messages` (public XML Exchange Set) |
+| **Fallback Endpoint** | `{PING_OBJECT_URL}` |
+| **API Key** | `{"Configured" if PING_SECOM_API_KEY or mock_payload is not None else "not set (public XML source used)"}` |
 | **Total Items Reported** | `{summary['total_items']}` |
 | **S-124 GML Harvested** | `{summary['harvested']}` |
 | **Notices Synced** | `{summary['synced']}` |
