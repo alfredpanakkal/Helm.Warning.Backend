@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { NavWarning, RawMessage } from '../types/maritime';
+import { NavWarning, RawMessage, HazardCategory } from '../types/maritime';
 import { getCategoryBadgeStyle } from '../core/classification';
 import {
   X,
@@ -51,11 +51,21 @@ export const WarningDetailModal: React.FC<WarningDetailModalProps> = ({
             <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
               NAVAREA {warning.navarea}
             </span>
-            <span
-              className={`text-xs px-2.5 py-0.5 rounded-full border ${badge.badgeBg} ${badge.badgeText} ${badge.borderColor}`}
-            >
-              {badge.label}
-            </span>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {((warning.categories && warning.categories.length > 0
+                ? warning.categories
+                : [warning.category]) as HazardCategory[]).map((cat, idx) => {
+                const b = getCategoryBadgeStyle(cat);
+                return (
+                  <span
+                    key={`${warning.warning_id}-modal-cat-${idx}`}
+                    className={`text-xs px-2.5 py-0.5 rounded-md border ${b.badgeBg} ${b.badgeText} ${b.borderColor}`}
+                  >
+                    {b.label}
+                  </span>
+                );
+              })}
+            </div>
           </div>
 
           <button

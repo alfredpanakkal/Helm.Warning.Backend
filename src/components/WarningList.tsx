@@ -33,15 +33,34 @@ export const WarningList: React.FC<WarningListProps> = ({
   onOpenDetailModal
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState<HazardCategory | 'ALL'>('ALL');
+  const [selectedCategories, setSelectedCategories] = useState<HazardCategory[]>([]);
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'active' | 'cancelled'>('active');
+
+  const toggleCategory = (cat: HazardCategory) => {
+    setSelectedCategories((prev) =>
+      prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat]
+    );
+  };
+
+  const clearCategories = () => {
+    setSelectedCategories([]);
+  };
 
   const filteredWarnings = useMemo(() => {
     return warnings.filter((item) => {
       // Region
       if (activeNavarea !== 'ALL' && item.navarea !== activeNavarea) return false;
-      // Category
-      if (selectedCategory !== 'ALL' && item.category !== selectedCategory) return false;
+      // Multi-Category Filter
+      if (selectedCategories.length > 0) {
+        const itemCats =
+          item.categories && item.categories.length > 0
+            ? item.categories
+            : [item.category];
+        const hasOverlap = itemCats.some((c) =>
+          selectedCategories.includes(c as HazardCategory)
+        );
+        if (!hasOverlap) return false;
+      }
       // Status
       if (statusFilter !== 'ALL' && item.status !== statusFilter) return false;
       // Search
@@ -57,7 +76,7 @@ export const WarningList: React.FC<WarningListProps> = ({
       }
       return true;
     });
-  }, [warnings, activeNavarea, selectedCategory, statusFilter, searchQuery]);
+  }, [warnings, activeNavarea, selectedCategories, statusFilter, searchQuery]);
 
   const handleExportGeoJSON = () => {
     const features = filteredWarnings
@@ -67,10 +86,12 @@ export const WarningList: React.FC<WarningListProps> = ({
         geometry: w.spatial,
         properties: {
           warning_id: w.warning_id,
+          canonical_id: w.canonical_id || w.warning_id,
           source_id: w.source_id,
           navarea: w.navarea,
           title: w.title,
           category: w.category,
+          categories: w.categories || [w.category],
           status: w.status,
           issued_text: w.issued_text,
           coordinates: w.coordinates
@@ -171,40 +192,85 @@ export const WarningList: React.FC<WarningListProps> = ({
           </button>
         </div>
 
-        {/* Hazard Category Filter & Status Row */}
-        <div className="flex items-center justify-between gap-2 pt-1 text-xs text-slate-400">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <SlidersHorizontal className="w-3.5 h-3.5 text-slate-400" />
-            <select
-              value={selectedCategory}
-              onChange={(e) => setSelectedCategory(e.target.value as any)}
-              className="bg-slate-950 border border-slate-700 text-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:border-cyan-500"
-            >
-              <option value="ALL">All Categories</option>
-              {ALL_HAZARD_CATEGORIES.map((cat) => (
-                <option key={cat} value={cat}>
-                  {cat.toUpperCase()} ({warnings.filter((w) => w.category === cat).length})
-                </option>
-              ))}
-            </select>
-
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as any)}
-              className="bg-slate-950 border border-slate-700 text-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:border-cyan-500"
-            >
-              <option value="ALL">All Status</option>
-              <option value="active">Active Only</option>
-              <option value="cancelled">Cancelled</option>
-            </select>
+        {/* Multi-Select Hazard Category Filter Bar */}
+        <div className="space-y-1.5 pt-0.5">
+          <div className="flex items-center justify-between text-[11px] text-slate-400">
+            <span className="flex items-center gap-1 font-medium text-slate-300">
+              <SlidersHorizontal className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Filter by Hazard Category</span>
+              {selectedCategories.length > 0 && (
+                <span className="text-cyan-400 text-[10px]">({selectedCategories.length} selected)</span>
+              )}
+            </span>
+            <div className="flex items-center gap-2">
+              {selectedCategories.length > 0 && (
+                <button
+                  onClick={clearCategories}
+                  className="text-cyan-400 hover:text-cyan-300 transition text-[11px] underline"
+                >
+                  Reset
+                </button>
+              )}
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value as any)}
+                className="bg-slate-950 border border-slate-700 text-slate-200 rounded px-2 py-0.5 text-xs focus:outline-none focus:border-cyan-500"
+              >
+                <option value="ALL">All Status</option>
+                <option value="active">Active Only</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+            </div>
           </div>
 
-          {/* Export Dropdown / Buttons */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <button
+              onClick={clearCategories}
+              className={`px-2 py-0.5 rounded text-[11px] font-medium transition ${
+                selectedCategories.length === 0
+                  ? 'bg-cyan-600 text-white shadow-sm'
+                  : 'bg-slate-950/80 text-slate-400 hover:text-slate-200 border border-slate-800'
+              }`}
+            >
+              All Categories
+            </button>
+            {ALL_HAZARD_CATEGORIES.map((cat) => {
+              const isSelected = selectedCategories.includes(cat);
+              const badge = getCategoryBadgeStyle(cat);
+              const count = warnings.filter((w) => {
+                const cats = w.categories && w.categories.length > 0 ? w.categories : [w.category];
+                return cats.includes(cat);
+              }).length;
+
+              return (
+                <button
+                  key={cat}
+                  onClick={() => toggleCategory(cat)}
+                  className={`px-2 py-0.5 rounded text-[11px] font-medium transition flex items-center gap-1 border ${
+                    isSelected
+                      ? `${badge.badgeBg} ${badge.badgeText} ${badge.borderColor} ring-1 ring-cyan-400/50 shadow-sm`
+                      : 'bg-slate-950/80 text-slate-400 hover:text-slate-200 border-slate-800'
+                  }`}
+                >
+                  <span>{badge.label}</span>
+                  <span className="text-[10px] opacity-75 tabular-nums">({count})</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Action Row: Export Buttons */}
+        <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-800/60 text-xs text-slate-400">
+          <span className="text-[11px]">
+            Showing <strong className="text-slate-200 font-semibold">{filteredWarnings.length}</strong> of{' '}
+            {warnings.length} warnings
+          </span>
           <div className="flex items-center gap-1">
             <button
               onClick={handleExportGeoJSON}
               title="Download filtered items as GeoJSON"
-              className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-cyan-400 border border-slate-800 flex items-center gap-1 text-[11px]"
+              className="px-2 py-1 rounded hover:bg-slate-800 text-slate-300 hover:text-cyan-400 border border-slate-800 flex items-center gap-1 text-[11px]"
             >
               <Download className="w-3 h-3" />
               <span>GeoJSON</span>
@@ -212,7 +278,7 @@ export const WarningList: React.FC<WarningListProps> = ({
             <button
               onClick={handleExportJson}
               title="Download table json"
-              className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-cyan-400 border border-slate-800 flex items-center gap-1 text-[11px]"
+              className="px-2 py-1 rounded hover:bg-slate-800 text-slate-300 hover:text-cyan-400 border border-slate-800 flex items-center gap-1 text-[11px]"
             >
               <FileText className="w-3 h-3" />
               <span>JSON</span>
@@ -232,7 +298,11 @@ export const WarningList: React.FC<WarningListProps> = ({
         ) : (
           filteredWarnings.map((warning) => {
             const isSelected = selectedWarning?.warning_id === warning.warning_id;
-            const badge = getCategoryBadgeStyle(warning.category);
+            const itemCats: HazardCategory[] = (
+              warning.categories && warning.categories.length > 0
+                ? warning.categories
+                : [warning.category]
+            ) as HazardCategory[];
 
             return (
               <div
@@ -246,9 +316,9 @@ export const WarningList: React.FC<WarningListProps> = ({
                     : 'bg-slate-950/60 hover:bg-slate-800/50 border-slate-800/80 hover:border-slate-700'
                 }`}
               >
-                {/* Header: Warning ID + NAVAREA tag + Category */}
-                <div className="flex items-center justify-between gap-2 mb-1.5">
-                  <div className="flex items-center gap-2">
+                {/* Header: Warning ID + NAVAREA tag + Multi-Badge Categories */}
+                <div className="flex items-start justify-between gap-2 mb-1.5 flex-wrap">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-mono font-bold text-sm text-cyan-300">
                       {warning.warning_id}
                     </span>
@@ -262,11 +332,20 @@ export const WarningList: React.FC<WarningListProps> = ({
                     )}
                   </div>
 
-                  <span
-                    className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${badge.badgeBg} ${badge.badgeText} ${badge.borderColor}`}
-                  >
-                    {badge.label}
-                  </span>
+                  {/* Multi-Badge Row */}
+                  <div className="flex items-center gap-1 flex-wrap justify-end">
+                    {itemCats.map((cat, idx) => {
+                      const badge = getCategoryBadgeStyle(cat);
+                      return (
+                        <span
+                          key={`${warning.warning_id}-cat-${idx}`}
+                          className={`text-[10px] font-medium px-2 py-0.5 rounded-md border ${badge.badgeBg} ${badge.badgeText} ${badge.borderColor}`}
+                        >
+                          {badge.label}
+                        </span>
+                      );
+                    })}
+                  </div>
                 </div>
 
                 {/* Title */}

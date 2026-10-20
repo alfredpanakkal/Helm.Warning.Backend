@@ -94,6 +94,17 @@ async def main_async() -> int:
             logger.error(f"Cannot run NAVAREA XI pipeline: {err_xi}")
             return False
 
+    try:
+        from scrapers.navarea_ii import run_navarea_ii_pipeline
+        def run_nav2():
+            summary = run_navarea_ii_pipeline()
+            return not bool(summary.get("server_errors")) or summary.get("synced", 0) > 0
+    except Exception as e:
+        err_nav2 = str(e)
+        def run_nav2():
+            logger.error(f"Cannot run NAVAREA II pipeline: {err_nav2}")
+            return False
+
     start_total = time.time()
 
     # Concurrent regional tasks
@@ -101,6 +112,7 @@ async def main_async() -> int:
         run_region_pipeline("Baltic", run_baltic),
         run_region_pipeline("NAVAREA I", run_nav1),
         run_region_pipeline("NAVAREA XI", run_xi),
+        run_region_pipeline("NAVAREA II", run_nav2),
     ]
 
     results = await asyncio.gather(*tasks, return_exceptions=False)

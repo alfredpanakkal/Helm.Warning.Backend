@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 navarea_1_sync.py — Differential Sync Engine for NAVAREA I Warnings
+Conforms to 20261019/20261020 Schema & Atomic RPC Upsert
 """
 
 import os
 import json
 import sys
-from typing import Dict, List, Tuple, Set, Any
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT_DIR not in sys.path:
@@ -17,100 +17,54 @@ if hasattr(sys.stdout, 'reconfigure'):
 if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
 
-
-from shared.utils import compute_differential
+from shared.sync_engine import run_differential_sync, VALID_RAW_COLUMNS
 
 SOURCE_ID = "ukho-navarea-1"
-VALID_RAW_COLUMNS = {"warning_id", "source_id", "subject_header",
-                     "full_raw_text", "received_timestamp", "checksum_sha256"}
-VALID_NAV_COLUMNS = {"warning_id", "source_id", "navarea", "title",
-                    "issued_text", "coordinates", "latitude", "longitude",
-                    "category", "status", "raw_text", "spatial"}
+
+VALID_NAV_COLUMNS = {
+    "warning_id", "canonical_id", "source_id", "navarea", "title",
+    "issued_text", "coordinates", "latitude", "longitude",
+    "category", "categories", "status", "raw_text", "spatial",
+    "data_quality", "triage_tier", "parsing_method", "qa_flags",
+    "unplotted_reason", "shoal_depth_m", "tow_length_m", "tow_speed_kts",
+    "applicable_vessel_filter"
+}
 
 
-def sync_to_supabase(json_file="navareas/navarea_1/parsed_navarea_1_warnings.json"):
-    print("=" * 65)
-    print("⚡ NAVAREA I Differential Sync Engine")
-    print("=" * 65)
+def sync_to_supabase(json_file="navareas/navarea_1/parsed_navarea_1_warnings.json") -> bool:
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")
     if not url or not key:
-        print("⚠️ SUPABASE_URL or SUPABASE_KEY missing, skipping sync")
+        strict = os.environ.get("STRICT_CREDENTIALS", "").lower() in ("1", "true", "yes")
+        if strict:
+            print("❌ FATAL: SUPABASE_URL or SUPABASE_KEY missing", file=sys.stderr)
+            return False
+        print("⚠️ SUPABASE_URL or SUPABASE_KEY missing; skipping database sync (dry-run mode).")
         return True
-    try:
-        from supabase import create_client
-        supabase = create_client(url, key)
-    except ImportError:
-        print("⚠️ Supabase Python library is not installed in environment; skipping remote sync (dry-run mode).")
-        return True
-    except Exception as e:
-        print(f"❌ Supabase client error: {e}")
+
+    if not os.path.isabs(json_file):
+        json_file = os.path.join(ROOT_DIR, json_file)
+
+    if not os.path.exists(json_file):
+        print(f"❌ Error: {json_file} not found", file=sys.stderr)
         return False
 
     try:
         with open(json_file, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except FileNotFoundError:
-        print(f"❌ Error: {json_file} not found")
+    except Exception as e:
+        print(f"❌ Error reading {json_file}: {e}", file=sys.stderr)
         return False
+
     scraped_messages = data.get("raw_messages", [])
     scraped_warnings = data.get("nav_warnings", [])
-    if not scraped_warnings:
-        print("❓ No warnings to sync")
-        return True
-    print("\n[1/4] Checking database state...")
-    try:
-        res_warn = supabase.table("nav_warnings").select("warning_id, status, raw_text").eq("source_id", SOURCE_ID).execute()
-        existing_warnings = {r["warning_id"]: r for r in (res_warn.data or [])}
-    except Exception as e:
-        print(f"❌ Query error: {e}")
-        return False
-    try:
-        res_raw = supabase.table("raw_messages").select("warning_id, checksum_sha256").eq("source_id", SOURCE_ID).execute()
-        existing_checksums = {(r["warning_id"], r["checksum_sha256"]) for r in (res_raw.data or [])}
-    except Exception as e:
-        print(f"❌ Query error: {e}")
-        return False
-    print(f"  ✔ Found {len(existing_warnings)} existing warnings")
-    print(f"  ✔ Found {len(existing_checksums)} existing checksums")
-    diff = compute_differential(scraped_warnings, scraped_messages, existing_warnings, existing_checksums)
-    print(f"\n[2/4] Differential: {len(diff['skip'])} skip, {len(diff['new'])} new, {len(diff['update'])} update, {len(diff['cancel'])} cancel")
-    has_errors = False
-    to_write = diff["new"] + diff["update"]
-    if to_write:
-        print(f"\n[3/4] Syncing {len(to_write)} records...")
-        for warn, msg in to_write:
-            wid = warn["warning_id"]
-            if msg:
-                clean_msg = {k: v for k, v in msg.items() if k in VALID_RAW_COLUMNS}
-                try:
-                    supabase.table("raw_messages").insert(clean_msg).execute()
-                    print(f"  ✅ [raw_messages] {wid}")
-                except Exception as e:
-                    print(f"  ❓ [raw_messages] {wid}: {e}")
-            clean_warn = {k: v for k, v in warn.items() if k in VALID_NAV_COLUMNS}
-            try:
-                supabase.table("nav_warnings").upsert(clean_warn, on_conflict="warning_id,source_id").execute()
-                print(f"  ✨ {wid}")
-            except Exception as e:
-                print(f"  ❌ {wid}: {e}")
-                has_errors = True
-    if diff["cancel"]:
-        print(f"\n[4/4] Canceling {len(diff['cancel'])} warnings...")
-        for wid in diff["cancel"]:
-            try:
-                supabase.table("nav_warnings").update({"status": "cancelled"}).eq("source_id", SOURCE_ID).eq("warning_id", wid).execute()
-                print(f"  🗑️ {wid}")
-            except Exception as e:
-                print(f"  ❌ {wid}: {e}")
-                has_errors = True
-    print("\n" + "=" * 65)
-    print(f"📊 Summary: {len(scraped_warnings)} harvested, {len(diff['skip'])} skip, {len(diff['new'])} new, {len(diff['update'])} update, {len(diff['cancel'])} cancel")
-    print("=" * 65)
-    if has_errors:
-        return False
-    print("🎉 Sync completed!")
-    return True
+
+    return run_differential_sync(
+        source_id=SOURCE_ID,
+        navarea_name="NAVAREA I",
+        scraped_warnings=scraped_warnings,
+        scraped_messages=scraped_messages
+    )
 
 
 if __name__ == "__main__":

@@ -13,8 +13,9 @@ import { HazardCategory } from '../types/maritime';
  * 6. offshore - Rig, platform, jack-up
  * 7. general - All other warnings
  */
-export function classifyHazard(rawText: string): HazardCategory {
+export function classifyHazardCategories(rawText: string): HazardCategory[] {
   const text = (rawText || '').toUpperCase();
+  const categories: HazardCategory[] = [];
 
   // 1. Electronic / GNSS interference
   const electronicKeywords = [
@@ -27,13 +28,13 @@ export function classifyHazard(rawText: string): HazardCategory {
     'SPOOFING'
   ];
   if (electronicKeywords.some((k) => text.includes(k))) {
-    return 'electronic';
+    categories.push('electronic');
   }
 
   // 2. Military / Naval operations
   const militaryPattern = /\b(DETONATION|DETONATIONS|FIRING|FIRINGS|GUNNERY|MISSILE|WEAPONS?|ARMED FORCES|NAVAL EXERCISE|NAVAL EXERCISES|MILITARY EXERCISE)\b/i;
   if (militaryPattern.test(text)) {
-    return 'military';
+    categories.push('military');
   }
 
   // 3. Aids to Navigation (AtoN)
@@ -49,7 +50,7 @@ export function classifyHazard(rawText: string): HazardCategory {
     'OFF AIR'
   ];
   if (atonKeywords.some((k) => text.includes(k))) {
-    return 'aton';
+    categories.push('aton');
   }
 
   // 4. Subsea / Obstruction
@@ -65,7 +66,7 @@ export function classifyHazard(rawText: string): HazardCategory {
     'SUNKEN WRECK'
   ];
   if (subseaKeywords.some((k) => text.includes(k))) {
-    return 'subsea';
+    categories.push('subsea');
   }
 
   // 5. Drifting hazards
@@ -78,17 +79,21 @@ export function classifyHazard(rawText: string): HazardCategory {
     'SPACE DEBRIS'
   ];
   if (driftingKeywords.some((k) => text.includes(k))) {
-    return 'drifting';
+    categories.push('drifting');
   }
 
   // 6. Offshore operations
   const offshoreKeywords = ['RIG', 'PLATFORM', 'JACK-UP'];
   if (offshoreKeywords.some((k) => text.includes(k))) {
-    return 'offshore';
+    categories.push('offshore');
   }
 
-  // 7. General (default)
-  return 'general';
+  return categories.length > 0 ? categories : ['general'];
+}
+
+export function classifyHazard(rawText: string): HazardCategory {
+  const cats = classifyHazardCategories(rawText);
+  return cats[0] || 'general';
 }
 
 export function getHazardKeywords(category: HazardCategory): string[] {

@@ -82,6 +82,7 @@ class CoordinateProvenance(BaseModel):
 class TriageRecord(BaseModel):
     triage_tier: int = Field(ge=1, le=3, description="1 immediate danger, 2 navigational hazard, 3 general info")
     category: str = Field(description="Example: Drifting Hazard, Search and Rescue, Cable Laying")
+    categories: list[str] = Field(default_factory=list, description="All matching hazard categories")
     coordinates: list[CoordinateProvenance] = Field(default_factory=list)
 
 
@@ -193,6 +194,7 @@ def fallback_parse_warning(raw_warning: str) -> dict:
     return {
         "triage_tier": triage_tier,
         "category": category,
+        "categories": ["drifting"],
         "coordinates": [
             {
                 "original_text": pair,
@@ -230,8 +232,9 @@ def process_warning_with_ai(raw_warning_text: str) -> dict | None:
         "Extract coordinates from the provided NAVAREA warning, converting degrees/minutes/seconds "
         "or non-standard formats into decimal degrees. "
         "Assign a triage tier based on the hazard level (1: danger, 2: hazard, 3: info). "
+        "Extract all applicable hazard categories (e.g. 'electronic', 'military', 'aton', 'subsea', 'drifting', 'offshore', 'general'). "
         "Return valid JSON only matching the schema: "
-        "{\"triage_tier\": int, \"category\": str, \"coordinates\": [{\"original_text\": str, \"repaired_lat\": float, \"repaired_lon\": float, \"repair_method\": str}]}."
+        "{\"triage_tier\": int, \"category\": str, \"categories\": [str], \"coordinates\": [{\"original_text\": str, \"repaired_lat\": float, \"repaired_lon\": float, \"repair_method\": str}]}."
     )
 
     try:

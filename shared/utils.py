@@ -272,40 +272,56 @@ def parse_coordinates(raw_text: str):
     return parsed_coords, primary_lat, primary_lon, spatial
 
 
-def classify_hazard(raw_text: str) -> str:
-    """Classifies maritime hazard category based on terminology."""
+def classify_hazard_categories(raw_text: str) -> list[str]:
+    """Classifies all matching maritime hazard categories based on terminology."""
     if not raw_text or not isinstance(raw_text, str):
-        return "general"
+        return ["general"]
 
     text = raw_text.upper()
+    categories: list[str] = []
+
     if any(k in text for k in ["GNSS", "DGPS", "AIS INTERFERENCE", "RADAR INTERFERENCE",
             "INTERFERENCE OBSERVED", "JAMMING", "SPOOFING"]):
-        return "electronic"
+        categories.append("electronic")
+
     military_pattern = r'\b(DETONATION|DETONATIONS|FIRING|FIRINGS|GUNNERY|MISSILE|WEAPONS?|ARMED FORCES|NAVAL EXERCISE|NAVAL EXERCISES|MILITARY EXERCISE)\b'
     if re.search(military_pattern, text):
-        return "military"
+        categories.append("military")
+
     if any(k in text for k in ["LIGHT", "LIGHTS", "BUOY", "BUOYS", "RACON", "BEACON",
             "UNLIT", "EXTINGUISHED", "OFF AIR"]):
-        return "aton"
+        categories.append("aton")
+
     if any(k in text for k in ["SEISMIC", "CABLE", "PIPELINE", "ROV", "TOWING",
             "DREDGING", "ANCHOR", "CHAIN LOST", "SUNKEN WRECK"]):
-        return "subsea"
+        categories.append("subsea")
+
     if any(k in text for k in ["DRIFTING", "DERELICT", "MINE", "CONTAINER",
             "ADRIFT", "SPACE DEBRIS"]):
-        return "drifting"
+        categories.append("drifting")
+
     if any(k in text for k in ["RIG", "PLATFORM", "JACK-UP"]):
-        return "offshore"
-    return "general"
+        categories.append("offshore")
+
+    return categories if categories else ["general"]
+
+
+def classify_hazard(raw_text: str) -> str:
+    """Classifies primary maritime hazard category (first matched category)."""
+    cats = classify_hazard_categories(raw_text)
+    return cats[0] if cats else "general"
 
 
 def compute_differential(
     scraped_warnings: List[Dict[str, Any]],
     scraped_messages: List[Dict[str, Any]],
     existing_warnings: Dict[str, Dict[str, Any]],
-    existing_checksums: Set[Tuple[str, str]]
+    existing_checksums: Set[Tuple[str, str]],
+    key_fn: Optional[Any] = None
 ) -> Dict[str, Any]:
     """
     Deterministically computes differential actions between scraped data and current database state.
+    Supports canonical_id and custom key function.
     Returns: {'skip': [...], 'new': [...], 'update': [...], 'cancel': [...]}
     """
     scraped_warnings = scraped_warnings if scraped_warnings is not None else []
@@ -313,7 +329,13 @@ def compute_differential(
     existing_warnings = existing_warnings if existing_warnings is not None else {}
     existing_checksums = existing_checksums if existing_checksums is not None else set()
 
-    msg_map = {m.get("warning_id", ""): m for m in scraped_messages if isinstance(m, dict)}
+    msg_map: Dict[str, Dict[str, Any]] = {}
+    for m in scraped_messages:
+        if isinstance(m, dict):
+            if m.get("warning_id"):
+                msg_map[str(m["warning_id"])] = m
+            if m.get("canonical_id"):
+                msg_map[str(m["canonical_id"])] = m
 
     to_skip = []
     to_insert_new = []
@@ -324,18 +346,25 @@ def compute_differential(
     for warn in scraped_warnings:
         if not isinstance(warn, dict):
             continue
-        wid = warn.get("warning_id")
+        if key_fn is not None:
+            wid = key_fn(warn)
+        else:
+            wid = warn.get("canonical_id") or warn.get("warning_id")
         if not wid:
             continue
         seen_ids.add(wid)
-        raw_msg = msg_map.get(wid, {})
+
+        raw_msg = msg_map.get(wid) or msg_map.get(warn.get("warning_id", "")) or {}
         chk = raw_msg.get("checksum_sha256", "")
 
         existing_record = existing_warnings.get(wid)
 
         if existing_record:
             is_active = existing_record.get("status") == "active"
-            checksum_matches = (wid, chk) in existing_checksums
+            checksum_matches = (
+                (wid, chk) in existing_checksums or
+                (warn.get("warning_id", ""), chk) in existing_checksums
+            )
 
             if is_active and checksum_matches:
                 to_skip.append(wid)
@@ -355,3 +384,4 @@ def compute_differential(
         "update": to_update,
         "cancel": to_cancel
     }
+

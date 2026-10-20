@@ -7,7 +7,8 @@ import { getInitialSeedData } from './data/seedWarnings';
 import {
   testSupabaseConnection,
   fetchLiveNavWarnings,
-  fetchLiveRawMessages
+  fetchLiveRawMessages,
+  subscribeToNavWarningChanges
 } from './core/supabaseClient';
 import { Header, AppMode, PublicTab, AdminTab } from './components/Header';
 import { PublicPortal } from './components/public/PublicPortal';
@@ -100,7 +101,32 @@ export function App() {
     };
 
     initializeData();
+
+    // Subscribe to Realtime Postgres Changes on nav_warnings and nav_warning_geometries
+    const unsubscribe = subscribeToNavWarningChanges(async () => {
+      const liveRes = await fetchLiveNavWarnings();
+      if (liveRes.data) {
+        setWarnings(liveRes.data);
+        localStorage.setItem('HELM_NAV_WARNINGS', JSON.stringify(liveRes.data));
+        showToast('Realtime update: navigation warnings refreshed');
+      }
+    });
+
+    // 60-second fallback polling cycle for intermittent connections
+    const pollingInterval = setInterval(async () => {
+      const liveRes = await fetchLiveNavWarnings();
+      if (liveRes.data) {
+        setWarnings(liveRes.data);
+        localStorage.setItem('HELM_NAV_WARNINGS', JSON.stringify(liveRes.data));
+      }
+    }, 60000);
+
+    return () => {
+      unsubscribe();
+      clearInterval(pollingInterval);
+    };
   }, []);
+
 
   // Refresh handler
   const handleRefreshData = async () => {

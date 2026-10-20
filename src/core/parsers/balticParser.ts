@@ -1,6 +1,6 @@
 import { RawMessage, NavWarning, GeoJsonGeometry, ParsedData } from '../../types/maritime';
 import { parseCoordinates, validateNavareaBounds } from '../coordinates';
-import { classifyHazard, determineSeverity } from '../classification';
+import { classifyHazard, classifyHazardCategories, determineSeverity } from '../classification';
 import { calculateSha256, parseMaritimeIssuedDate, extractCancellationDirectives } from '../utils';
 import { sanitizeMessageText } from './sanitizer';
 
@@ -34,6 +34,7 @@ export function parseBalticWarning(
   } else {
     warningId = headerNoArea;
   }
+  const canonicalId = warningId;
 
   const lines = cleanText
     .split('\n')
@@ -71,7 +72,8 @@ export function parseBalticWarning(
   } = parseCoordinates(cleanText);
 
   const allQaFlags = Array.from(new Set([...sanitizeFlags, ...coordFlags]));
-  const hazard = classifyHazard(cleanText);
+  const categories = classifyHazardCategories(cleanText);
+  const hazard = categories[0] || 'general';
   const severity = determineSeverity(hazard, cleanText);
   const checksum = calculateSha256(rawBlock);
   const { cancelsIds, selfCancelsAt } = extractCancellationDirectives(cleanText);
@@ -109,6 +111,7 @@ export function parseBalticWarning(
 
   const navWarning: NavWarning = {
     id: `baltic-${warningId.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+    canonical_id: canonicalId,
     warning_id: warningId,
     publisher_id: BALTIC_CONFIG.AUTHORITY,
     source_id: BALTIC_CONFIG.SOURCE_ID,
@@ -122,6 +125,7 @@ export function parseBalticWarning(
     latitude: primaryLat,
     longitude: primaryLon,
     category: hazard,
+    categories: categories,
     severity: severity,
     status: 'active',
     data_quality: coordQuality,

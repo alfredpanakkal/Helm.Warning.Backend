@@ -1,6 +1,6 @@
 import { RawMessage, NavWarning, GeoJsonGeometry, ParsedData } from '../../types/maritime';
 import { parseCoordinates, validateNavareaBounds } from '../coordinates';
-import { classifyHazard, determineSeverity } from '../classification';
+import { classifyHazard, classifyHazardCategories, determineSeverity } from '../classification';
 import { calculateSha256, parseMaritimeIssuedDate, extractCancellationDirectives } from '../utils';
 import { sanitizeMessageText } from './sanitizer';
 
@@ -48,10 +48,12 @@ export function parseNavarea1Warning(
   const issuedText = dateMatch ? dateMatch[1] : null;
 
   const allQaFlags = Array.from(new Set([...sanitizeFlags, ...coordFlags]));
-  const hazard = classifyHazard(cleanText);
+  const categories = classifyHazardCategories(cleanText);
+  const hazard = categories[0] || 'general';
   const severity = determineSeverity(hazard, cleanText);
   const checksum = calculateSha256(rawBlock);
   const { cancelsIds, selfCancelsAt } = extractCancellationDirectives(cleanText);
+  const canonicalId = `NAVAREA I ${warningId}`;
 
   const boundsCheck =
     primaryLat !== null && primaryLon !== null
@@ -85,6 +87,7 @@ export function parseNavarea1Warning(
 
   const navWarning: NavWarning = {
     id: `nav1-${warningId.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+    canonical_id: canonicalId,
     warning_id: warningId,
     publisher_id: NAVAREA_1_CONFIG.AUTHORITY,
     source_id: NAVAREA_1_CONFIG.SOURCE_ID,
@@ -98,6 +101,7 @@ export function parseNavarea1Warning(
     latitude: primaryLat,
     longitude: primaryLon,
     category: hazard,
+    categories: categories,
     severity: severity,
     status: 'active',
     data_quality: coordQuality,

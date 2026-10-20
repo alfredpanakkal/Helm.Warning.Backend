@@ -132,16 +132,72 @@ export async function fetchLiveNavWarnings(): Promise<{
     if (error) {
       return { data: null, error: error.message };
     }
-    const normalized = ((data as any[]) || []).map((w) => ({
-      ...w,
-      warning_id: w.warning_id || w.canonical_id,
-      canonical_id: w.canonical_id || w.warning_id
-    }));
+
+    // Attempt to enrich with active spatial view geometries
+    let spatialMap: Record<string, any> = {};
+    try {
+      const { data: spatialData } = await client
+        .from('nav_warnings_active_spatial')
+        .select('*');
+
+      if (spatialData && Array.isArray(spatialData)) {
+        spatialData.forEach((sp: any) => {
+          const key = sp.canonical_id || sp.warning_id;
+          if (key && sp.geojson_blob) {
+            spatialMap[key] = sp;
+          }
+        });
+      }
+    } catch {
+      // Spatial view enrichment optional fallback
+    }
+
+    const normalized = ((data as any[]) || []).map((w) => {
+      const canonical = w.canonical_id || w.warning_id;
+      const sp = spatialMap[canonical] || spatialMap[w.id];
+
+      let spatial = w.spatial;
+      let lat = w.latitude;
+      let lon = w.longitude;
+
+      if (sp && sp.geojson_blob) {
+        spatial = sp.geojson_blob;
+        if (sp.geojson_blob.type === 'Point' && Array.isArray(sp.geojson_blob.coordinates)) {
+          lon = sp.geojson_blob.coordinates[0];
+          lat = sp.geojson_blob.coordinates[1];
+        } else if (sp.geojson_blob.type === 'Polygon' && sp.geojson_blob.coordinates?.[0]?.[0]) {
+          lon = sp.geojson_blob.coordinates[0][0][0];
+          lat = sp.geojson_blob.coordinates[0][0][1];
+        }
+      }
+
+      const categories =
+        Array.isArray(w.categories) && w.categories.length > 0
+          ? w.categories
+          : w.category
+          ? [w.category]
+          : ['general'];
+
+      return {
+        ...w,
+        warning_id: canonical || w.warning_id,
+        canonical_id: canonical,
+        title: w.title || canonical,
+        area_text: w.area_text || w.title,
+        spatial,
+        latitude: lat,
+        longitude: lon,
+        categories,
+        category: categories[0] || 'general',
+      };
+    });
+
     return { data: (normalized as NavWarning[]), error: null };
   } catch (e: any) {
     return { data: null, error: e?.message || 'Failed to fetch live warnings' };
   }
 }
+
 
 /**
  * Fetch PostGIS-rendered active spatial warnings from the new spatial view
@@ -341,3 +397,44 @@ export async function upsertNavWarnings(
     return { success: false, count: 0, error: e?.message || 'Upsert failed' };
   }
 }
+
+/**
+ * Subscribe to realtime changes on nav_warnings and nav_warning_geometries base tables.
+ * Dispatches callback when records are inserted, updated, or deleted.
+ * Returns unsubscribe cleanup function.
+ */
+export function subscribeToNavWarningChanges(onChange: () => void): () => void {
+  const client = getSupabaseClient();
+  if (!client) return () => {};
+
+  try {
+    const channel = client
+      .channel('nav_warnings_realtime_dual')
+      .on(
+        'postgres_changes' as any,
+        { event: '*', schema: 'public', table: 'nav_warnings' },
+        () => {
+          onChange();
+        }
+      )
+      .on(
+        'postgres_changes' as any,
+        { event: '*', schema: 'public', table: 'nav_warning_geometries' },
+        () => {
+          onChange();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      try {
+        client.removeChannel(channel);
+      } catch {
+        // channel teardown
+      }
+    };
+  } catch {
+    return () => {};
+  }
+}
+

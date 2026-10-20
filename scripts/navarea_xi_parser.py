@@ -20,7 +20,7 @@ if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
 
 
-from shared.utils import convert_to_decimal, parse_coordinates, classify_hazard
+from shared.utils import convert_to_decimal, parse_coordinates, classify_hazard, classify_hazard_categories
 
 SOURCE_ID = "kaiho-navarea-xi"
 NAVAREA_ID = "XI"
@@ -37,6 +37,7 @@ def parse_warning(raw_block, reference_header):
             warning_id = f"NAVAREA XI {raw_id_match.group(2)}/{raw_id_match.group(1)}"
         else:
             warning_id = header_clean.replace("NAVAREA XI ", "").strip()
+    canonical_id = warning_id
     lines = [l.strip() for l in raw_block.split('\n') if l.strip()]
     date_pattern = r'Date\s*:\s*(\d{4}[/.-]\d{1,2}[/.-]\d{1,2}(?:\s+\d{2}(?::?\d{2})?(?:\s*UTC)?)?)'
     issued_text = None
@@ -53,7 +54,8 @@ def parse_warning(raw_block, reference_header):
         if not title and not is_date_line and not is_id_line:
             title = line
     coords_text, lat, lon, spatial = parse_coordinates(raw_block)
-    hazard = classify_hazard(raw_block)
+    categories = classify_hazard_categories(raw_block)
+    hazard = categories[0] if categories else "general"
     checksum = hashlib.sha256(raw_block.encode('utf-8')).hexdigest()
     raw_message = {
         "warning_id": warning_id,
@@ -65,6 +67,7 @@ def parse_warning(raw_block, reference_header):
     }
     nav_warning = {
         "warning_id": warning_id,
+        "canonical_id": canonical_id,
         "source_id": SOURCE_ID,
         "navarea": NAVAREA_ID,
         "title": title or header_clean,
@@ -73,6 +76,7 @@ def parse_warning(raw_block, reference_header):
         "latitude": lat,
         "longitude": lon,
         "category": hazard,
+        "categories": categories,
         "status": "active",
         "raw_text": raw_block,
         "spatial": spatial

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
-import { NavWarning, NavareaRegion } from '../types/maritime';
+import { NavWarning, NavareaRegion, HazardCategory } from '../types/maritime';
 import { getCategoryBadgeStyle } from '../core/classification';
 import {
   computeDistanceNm,
@@ -112,6 +112,19 @@ export const MaritimeMap: React.FC<MaritimeMapProps> = ({
       const badgeStyle = getCategoryBadgeStyle(warning.category);
       const color = badgeStyle.colorHex;
 
+      const warningCats: HazardCategory[] = (
+        warning.categories && warning.categories.length > 0
+          ? warning.categories
+          : [warning.category]
+      ) as HazardCategory[];
+
+      const badgesHtml = warningCats
+        .map((cat) => {
+          const catStyle = getCategoryBadgeStyle(cat);
+          return `<span style="display:inline-block;background:${catStyle.colorHex}22;color:${catStyle.colorHex};border:1px solid ${catStyle.colorHex}66;border-radius:4px;padding:2px 6px;font-size:10px;text-transform:uppercase;font-weight:600;margin-right:4px;margin-bottom:4px">${catStyle.label}</span>`;
+        })
+        .join('');
+
       const popupHtml = `
         <div style="font-family:system-ui;font-size:12px;color:var(--text);min-width:210px;line-height:1.4">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;border-bottom:1px solid #e2e8f0;padding-bottom:4px">
@@ -119,8 +132,8 @@ export const MaritimeMap: React.FC<MaritimeMapProps> = ({
             <span style="font-size:10px;background:#f1f5f9;color:#475569;padding:2px 6px;border-radius:4px;font-weight:600">NAVAREA ${warning.navarea}</span>
           </div>
           <div style="font-weight:600;margin-bottom:6px;color:var(--text)">${warning.title}</div>
-          <div style="display:inline-block;background:${color}22;color:${color};border:1px solid ${color}66;border-radius:4px;padding:2px 6px;font-size:10px;margin-bottom:6px;text-transform:uppercase;font-weight:600">
-            ${badgeStyle.label}
+          <div style="display:flex;flex-wrap:wrap;margin-bottom:4px">
+            ${badgesHtml}
           </div>
           ${warning.coordinates ? `<div style="font-family:ui-monospace,monospace;font-size:11px;color:var(--text-muted);margin-top:4px">${warning.coordinates}</div>` : ''}
           ${warning.issued_text ? `<div style="font-size:10px;color:var(--text-light);margin-top:4px">Issued: ${warning.issued_text}</div>` : ''}

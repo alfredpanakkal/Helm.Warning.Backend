@@ -71,24 +71,33 @@ except ImportError:
     HAS_SUPABASE = False
 
 # Attempt shared helper import
+import hashlib
+from shared.models import build_master_payload, build_geometry_payloads, parse_safe_iso_timestamp
+from shared.sync_engine import upsert_warning_atomic
+
 try:
-    from shared.utils import classify_hazard
+    from shared.utils import classify_hazard, classify_hazard_categories
+
 except ImportError:
-    def classify_hazard(text: str) -> str:
+    def classify_hazard_categories(text: str) -> list[str]:
         t = text.lower()
-        if any(w in t for w in ["cable", "pipe", "submarine", "subsea", "diver"]):
-            return "subsea"
-        if any(w in t for w in ["drifting", "derelict", "hazard", "mine"]):
-            return "drifting"
-        if any(w in t for w in ["firing", "gunnery", "exercise", "military", "torpedo", "rocket"]):
-            return "military"
-        if any(w in t for w in ["light", "buoy", "beacon", "aton", "unlit", "damaged"]):
-            return "aton"
-        if any(w in t for w in ["rig", "platform", "drill", "survey", "seismic"]):
-            return "offshore"
+        cats = []
         if any(w in t for w in ["gps", "dgps", "ais", "navtex", "radar"]):
-            return "electronic"
-        return "general"
+            cats.append("electronic")
+        if any(w in t for w in ["firing", "gunnery", "exercise", "military", "torpedo", "rocket"]):
+            cats.append("military")
+        if any(w in t for w in ["light", "buoy", "beacon", "aton", "unlit", "damaged"]):
+            cats.append("aton")
+        if any(w in t for w in ["cable", "pipe", "submarine", "subsea", "diver"]):
+            cats.append("subsea")
+        if any(w in t for w in ["drifting", "derelict", "hazard", "mine"]):
+            cats.append("drifting")
+        if any(w in t for w in ["rig", "platform", "drill", "survey", "seismic"]):
+            cats.append("offshore")
+        return cats if cats else ["general"]
+
+    def classify_hazard(text: str) -> str:
+        return classify_hazard_categories(text)[0]
 
 
 # --- Environment Configuration ---
@@ -343,11 +352,10 @@ def adapt_to_nav_warnings(
     raw_gml_text: str = "",
     used_ai: bool = False,
     **kwargs
-) -> Dict[str, Any]:
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """
-    Adapts S-124 extracted notice into the exact schema existing in live public.nav_warnings.
-    Strips non-existent triage columns (data_quality, triage_tier, parsing_method, etc.)
-    to avoid PostgREST error PGRST204.
+    Adapts S-124 extracted notice into schema-compliant master payload and child geometries.
+    Conforms to the 20261019/20261020 PostgreSQL/Supabase schema.
     """
     import re
     if isinstance(local_or_ai_data, dict):
@@ -385,12 +393,14 @@ def adapt_to_nav_warnings(
         title = f"{title} - {warning_type}"
 
     lat, lon, coord_str = compute_centroid(spatial)
-    category = classify_hazard(f"{warning_type or ''} {body_text}")
+    categories = classify_hazard_categories(f"{warning_type or ''} {body_text}")
+    category = categories[0] if categories else "general"
+    canonical_id = f"NAVAREA II {warning_id}"
 
-    # Base payload containing strictly verified columns present in live public.nav_warnings
     record = {
         "warning_id": warning_id,
-        "source_id": SOURCE_ID,  # "shom-navarea-2"
+        "canonical_id": canonical_id,
+        "source_id": SOURCE_ID,
         "navarea": "NAVAREA II",
         "title": title[:255],
         "issued_text": pub_time,
@@ -398,13 +408,22 @@ def adapt_to_nav_warnings(
         "latitude": lat,
         "longitude": lon,
         "category": category,
+        "categories": categories,
         "severity": "moderate",
-        "status": "active" if not cancel_time else "cancelled",
+        "status": "cancelled" if cancel_time else "active",
         "raw_text": body_text or raw_gml[:1000],
         "spatial": spatial,
     }
 
+    master_payload = build_master_payload(record)
+    geom_payloads = build_geometry_payloads(record)
+    record["_master"] = master_payload
+    record["_geoms"] = geom_payloads
+    record["geometries"] = geom_payloads
+
     return record
+
+
 
 
 def run_navarea_ii_pipeline(
@@ -461,17 +480,6 @@ def run_navarea_ii_pipeline(
 
     print(f"[2/4] Retrieved {len(warning_objects)} Exchange Sets (Total reported: {total_items})")
 
-    # Audit sync execution if sync log table exists
-    if supabase and not dry_run:
-        try:
-            supabase.table("navarea_sync_logs").insert({
-                "navarea": "NAVAREA II",
-                "total_items": total_items,
-                "server_errors": server_errors or None,
-            }).execute()
-        except Exception as e:
-            # Table might not exist; safe to continue
-            pass
 
     print("[3/4] Processing S-100 Exchange Sets...")
     for item in warning_objects:
@@ -549,44 +557,36 @@ def run_navarea_ii_pipeline(
                     raw_payload=raw_gml,
                     used_ai=used_ai,
                 )
+                master = adapted_warn["_master"]
+                geoms = adapted_warn["_geoms"]
+
 
                 # 4. Upsert to Supabase
                 if supabase and not dry_run:
                     try:
-                        # Primary target: nav_warnings
-                        supabase.table("nav_warnings").upsert(
-                            adapted_warn, on_conflict="warning_id,source_id"
-                        ).execute()
-                        summary["synced"] += 1
-                        print(f"  ✨ Synced to nav_warnings: {adapted_warn['warning_id']} (Geo: {bool(final_geometry)})")
+                        checksum = hashlib.sha256(raw_gml.encode("utf-8")).hexdigest()
+                        supabase.table("raw_messages").insert({
+                            "warning_id": warning_no or master["canonical_id"],
+                            "source_id": SOURCE_ID,
+                            "subject_header": master["title"][:100],
+                            "full_raw_text": raw_gml,
+                            "checksum_sha256": checksum,
+                        }).execute()
                     except Exception as e:
-                        print(f"  ❌ Error syncing {adapted_warn['warning_id']} to nav_warnings: {e}")
+                        if "duplicate key" not in str(e).lower():
+                            print(f"  ⚠️ [raw_messages] {warning_no}: {e}")
 
-                    # Optional dual-write to navarea_warnings if table exists
-                    try:
-                        legacy_record = {
-                            "dataset_id": dataset_id,
-                            "navarea": "NAVAREA II",
-                            "service_instance": SERVICE_INSTANCE,
-                            "warning_number": warning_no,
-                            "warning_type": warning_type,
-                            "general_area": general_area,
-                            "publication_time": pub_time,
-                            "cancellation_date": cancel_time,
-                            "warning_text": final_text,
-                            "geojson_geometry": final_geometry,
-                            "raw_payload": raw_gml,
-                            "source_method": "SECOM_S124_HYBRID",
-                        }
-                        supabase.table("navarea_warnings").upsert(
-                            legacy_record, on_conflict="dataset_id"
-                        ).execute()
-                    except Exception:
-                        pass
+                    success = upsert_warning_atomic(supabase, master, geoms)
+                    if success:
+                        summary["synced"] += 1
+                        print(f"  ✨ Synced: {master['canonical_id']} (Triage: {master['triage_tier']}, Geoms: {len(geoms)})")
+                    else:
+                        print(f"  ❌ Error syncing {master['canonical_id']} via RPC")
                 else:
                     summary["synced"] += 1
                     status_note = "[DRY-RUN]" if dry_run else "[NO-DB]"
-                    print(f"  🔍 {status_note} Processed {adapted_warn['warning_id']} (Type: {warning_type}, Geom: {bool(final_geometry)})")
+                    print(f"  🔍 {status_note} Processed {master['canonical_id']} (Triage: {master['triage_tier']}, Geoms: {len(geoms)})")
+
 
     print("\n" + "=" * 70)
     print(f"📊 Summary: Harvested {summary['harvested']} S-124 files | Synced: {summary['synced']} | Gemini Fallbacks: {summary['fallback_used']}")

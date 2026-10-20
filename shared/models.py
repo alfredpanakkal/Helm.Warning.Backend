@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""shared/models.py — Triage, provenance, and maritime attribute models.
-Shared by all parsers and the sync engine."""
+"""shared/models.py — Triage, provenance, maritime attribute models, and payload builders.
+Shared by all parsers and the sync engine.
+Aligned with 20261019/20261020 PostgreSQL/Supabase schema.
+"""
 
 from __future__ import annotations
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
-from typing import Optional
+import re
+from typing import Optional, Any, Dict, List
 
 
 class TriageTier(str, Enum):
@@ -30,6 +34,41 @@ UNPLOTTED_REASONS = {
     "missing_hemisphere", "truncated_clause", "empty_stub", "orphan_fragment",
     "meta_list", "validation_failed", "no_valid_geometry",
 }
+
+
+def parse_safe_iso_timestamp(date_val: Any) -> Optional[str]:
+    """Tolerantly parses timestamp or date string into ISO-8601 string.
+    Returns None if date is free-text (e.g., '2026 HOURS 19 OCT') or invalid.
+    """
+    if not date_val:
+        return None
+    s = str(date_val).strip()
+    if not s:
+        return None
+
+    # Try ISO format directly
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return dt.isoformat()
+    except Exception:
+        pass
+
+    # Try common standardized formats
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S%z",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d",
+        "%d%H%M UTC %b %y",
+        "%d%H%M UTC %b %Y",
+    ):
+        try:
+            dt = datetime.strptime(s, fmt)
+            return dt.isoformat()
+        except Exception:
+            continue
+
+    return None
 
 
 @dataclass
@@ -60,10 +99,18 @@ class TriageRecord:
 
     def to_db_row(self, base: dict) -> dict:
         """Merge triage/provenance fields into an existing DB upsert row."""
-        canonical_id = base.get("canonical_id") or base.get("warning_id")
+        canonical_id = base.get("canonical_id")
+        if not canonical_id:
+            nav = (base.get("navarea") or "").strip()
+            wid = (base.get("warning_id") or "").strip()
+            canonical_id = f"{nav} {wid}".strip() if (nav and wid) else (wid or "UNKNOWN")
+
         if "categories" not in base:
             cat = base.get("category")
-            base["categories"] = [cat] if cat else []
+            base["categories"] = [cat] if cat else ["general"]
+        elif isinstance(base.get("categories"), list) and not base["categories"]:
+            base["categories"] = ["general"]
+
         base.update({
             "canonical_id": canonical_id,
             "data_quality": self.data_quality.value,
@@ -85,3 +132,125 @@ class TriageRecord:
             ],
         })
         return base
+
+
+def format_canonical_id(navarea: Optional[str], warning_id: Optional[str]) -> str:
+    """Format canonical_id according to convention: '{NAVAREA} {warning_id}'."""
+    nav = (navarea or "").strip()
+    wid = (warning_id or "").strip()
+    if nav and wid:
+        if wid.startswith(nav):
+            return wid
+        return f"{nav} {wid}"
+    return wid or nav or "UNKNOWN"
+
+
+def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Builds GeoJSON geometry child records suitable for public.nav_warning_geometries.
+    Outputs: list of dicts with keys: zone_label, feature_type, buffer_nm, geojson
+    """
+    geometries: List[Dict[str, Any]] = []
+
+    spatial = record.get("spatial")
+    if isinstance(spatial, dict):
+        sp_type = spatial.get("type", "")
+        if sp_type == "Feature":
+            geom = spatial.get("geometry", {})
+            f_type = geom.get("type", "Point").lower()
+            geometries.append({
+                "zone_label": record.get("title") or "Spatial Feature",
+                "feature_type": f_type,
+                "buffer_nm": float(spatial.get("properties", {}).get("buffer_nm", 0.0) or 0.0),
+                "geojson": geom
+            })
+            return geometries
+        elif sp_type in ("Point", "Polygon", "LineString", "MultiPoint", "MultiPolygon", "MultiLineString"):
+            geometries.append({
+                "zone_label": record.get("title") or "Spatial Feature",
+                "feature_type": sp_type.lower(),
+                "buffer_nm": 0.0,
+                "geojson": spatial
+            })
+            return geometries
+
+    # Fallback to lat/lon if available
+    lat = record.get("latitude")
+    lon = record.get("longitude")
+    if lat is not None and lon is not None:
+        try:
+            flat = float(lat)
+            flon = float(lon)
+            if -90 <= flat <= 90 and -180 <= flon <= 180:
+                geometries.append({
+                    "zone_label": "Centroid",
+                    "feature_type": "point",
+                    "buffer_nm": 0.0,
+                    "geojson": {
+                        "type": "Point",
+                        "coordinates": [flon, flat]
+                    }
+                })
+        except (ValueError, TypeError):
+            pass
+
+    return geometries
+
+
+def build_master_payload(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Builds schema-compliant master record for public.nav_warnings.
+    Strips legacy flat columns (latitude, longitude, spatial, issued_text)
+    and populates canonical_id, categories array, triage tier, and safe ISO dates.
+    """
+    navarea = (record.get("navarea") or "").strip()
+    wid = str(record.get("warning_id") or "").strip()
+    canonical_id = record.get("canonical_id") or format_canonical_id(navarea, wid)
+
+    # Categories array
+    categories: List[str] = []
+    if "categories" in record and isinstance(record["categories"], list):
+        categories = [str(c).strip().lower() for c in record["categories"] if c]
+    elif "category" in record and record["category"]:
+        categories = [str(record["category"]).strip().lower()]
+    if not categories:
+        categories = ["general"]
+    # De-duplicate while preserving order
+    seen_cats = set()
+    cleaned_cats = []
+    for c in categories:
+        if c not in seen_cats:
+            seen_cats.add(c)
+            cleaned_cats.append(c)
+
+    title = record.get("title") or f"{canonical_id}"
+    area_text = record.get("area_text") or record.get("general_area") or record.get("subarea") or record.get("issued_text")
+    status = record.get("status") or "active"
+
+    # Determine triage tier
+    geoms = build_geometry_payloads(record)
+    default_tier = "A" if geoms else "C"
+    triage_tier = record.get("triage_tier") or default_tier
+    unplotted_reason = record.get("unplotted_reason")
+    if not geoms:
+        triage_tier = "C"
+        unplotted_reason = unplotted_reason or "no_valid_geometry"
+
+    valid_from = parse_safe_iso_timestamp(record.get("valid_from") or record.get("publication_time") or record.get("issued_text"))
+    valid_to = parse_safe_iso_timestamp(record.get("valid_to") or record.get("cancellation_date"))
+
+    return {
+        "canonical_id": canonical_id,
+        "navarea": navarea or "NAVAREA",
+        "title": title[:255],
+        "area_text": area_text,
+        "categories": cleaned_cats,
+        "status": status,
+        "triage_tier": triage_tier,
+        "data_quality": record.get("data_quality", "EXPLICIT"),
+        "parsing_method": record.get("parsing_method", "RULE"),
+        "qa_flags": record.get("qa_flags", []),
+        "unplotted_reason": unplotted_reason,
+        "valid_from": valid_from,
+        "valid_to": valid_to,
+        "raw_text": record.get("raw_text") or record.get("warning_text") or "",
+        "source_id": record.get("source_id", ""),
+    }

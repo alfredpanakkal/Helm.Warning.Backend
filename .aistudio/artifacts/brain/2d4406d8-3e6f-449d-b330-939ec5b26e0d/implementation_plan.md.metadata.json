@@ -1,6 +1,6 @@
 {
-  "summary": "Updated production Supabase migration script adhering to the four specific architectural requirements: 1) canonical_id on master with UUID FKs on all child tables, 2) complete removal of geojson_blob storage column, 3) migration to geography(Geometry, 4326) for native antimeridian crossing safety, and 4) corrected spatial view query with dynamic ST_AsGeoJSON and status='active' filter.",
-  "updatedAt": "2026-10-19T13:06:51.127685887Z",
+  "summary": "Fully revised Implementation Plan (v24) resolving all 7 audit findings: adds RLS policies and SECURITY DEFINER search_path to Phase 1 migrations; unifies differential cancel keying on canonical_id in Phase 2; implements ISO date parsing with safe NULL fallbacks for valid_from/valid_to in Phase 2 & SQL RPC; removes stale navarea_sync_logs writes in Phase 4; re-points frontend fetchLiveNavWarnings to nav_warnings_active_spatial with geojson_blob mapping in Phase 5; preserves migration immutability via forward migration 20261020_realtime_and_audit.sql; and adds integration tests for active_spatial view joins and non-zero exit codes on missing credentials in Phase 6.",
+  "updatedAt": "2026-10-20T05:50:08.464495726Z",
   "requestFeedback": true,
   "userFacing": true
 }

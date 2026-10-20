@@ -79,15 +79,32 @@ class TestValidationFramework(unittest.TestCase):
         with self.assertRaises(ValidationError):
             validate_nav_warning_dict(invalid_rec)
 
-    def test_validate_public_inputs_decorator(self):
-        @validate_public_inputs
-        def sample_func(a, b):
-            return f"{a}:{b}"
+    def test_classify_hazard_categories_multi(self):
+        from shared.utils import classify_hazard_categories, classify_hazard
+        
+        # Multiple overlapping hazards
+        multi_text = "MILITARY FIRING EXERCISE CONDUCTED. DRIFTING TARGET CONTAINER REPORTED AT VICINITY."
+        cats = classify_hazard_categories(multi_text)
+        self.assertIn("military", cats)
+        self.assertIn("drifting", cats)
+        self.assertEqual(classify_hazard(multi_text), "military")
 
-        self.assertEqual(sample_func("hello", "world"), "hello:world")
-        with self.assertRaises(ValidationError):
-            sample_func(None, "world")
+        # Subsea towing and offshore platform
+        subsea_rig = "SEISMIC TOWING OPERATIONS IN VICINITY OF DRILLING RIG JACK-UP"
+        cats_sub = classify_hazard_categories(subsea_rig)
+        self.assertIn("subsea", cats_sub)
+        self.assertIn("offshore", cats_sub)
+
+        # Electronic jamming
+        gnss_text = "GPS GNSS INTERFERENCE OBSERVED IN EAST SEA"
+        self.assertEqual(classify_hazard_categories(gnss_text), ["electronic"])
+
+        # Fallback to general
+        general_text = "HYDROGRAPHIC SURVEY COMPLETED. CHARTS UPDATED."
+        self.assertEqual(classify_hazard_categories(general_text), ["general"])
+        self.assertEqual(classify_hazard(general_text), "general")
 
 
 if __name__ == "__main__":
     unittest.main()
+

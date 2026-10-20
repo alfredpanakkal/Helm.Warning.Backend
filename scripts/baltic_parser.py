@@ -20,7 +20,7 @@ if hasattr(sys.stdout, 'reconfigure'):
 if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
 
-from shared.utils import convert_to_decimal, parse_coordinates, classify_hazard
+from shared.utils import convert_to_decimal, parse_coordinates, classify_hazard, classify_hazard_categories
 
 SOURCE_ID = "sma-baltic-subarea"
 NAVAREA_ID = "Baltic"
@@ -38,6 +38,7 @@ def parse_warning(raw_block, reference_header):
         warning_id = f"SWEDISH {num}"
     else:
         warning_id = header_no_area
+    canonical_id = warning_id
     lines = [line.strip() for line in raw_block.split('\n') if line.strip()]
     date_pattern = r'(\d{6}\s+UTC\s+[A-Z]{3})'
     issued_text = None
@@ -52,7 +53,8 @@ def parse_warning(raw_block, reference_header):
     if yr_match and issued_text and not re.search(r'\b20\d{2}\b', issued_text):
         issued_text = f"{issued_text} 20{yr_match.group(1)}"
     coords_text, lat, lon, spatial = parse_coordinates(raw_block)
-    hazard = classify_hazard(raw_block)
+    categories = classify_hazard_categories(raw_block)
+    hazard = categories[0] if categories else "general"
     checksum = hashlib.sha256(raw_block.encode('utf-8')).hexdigest()
     raw_message = {
         "warning_id": warning_id,
@@ -64,6 +66,7 @@ def parse_warning(raw_block, reference_header):
     }
     nav_warning = {
         "warning_id": warning_id,
+        "canonical_id": canonical_id,
         "source_id": SOURCE_ID,
         "navarea": NAVAREA_ID,
         "title": title or header_no_area,
@@ -72,6 +75,7 @@ def parse_warning(raw_block, reference_header):
         "latitude": lat,
         "longitude": lon,
         "category": hazard,
+        "categories": categories,
         "status": "active",
         "raw_text": raw_block,
         "spatial": spatial
