@@ -51,6 +51,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ALLOW_DRY_RUN: ${{ github.event_name == 'pull_request' && '1' || '' }}
         run: |
           PYTHONPATH=${{ github.workspace }} python -m scripts.run_navarea_1
 
