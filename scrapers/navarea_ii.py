@@ -394,7 +394,6 @@ def adapt_to_nav_warnings(
 
     lat, lon, coord_str = compute_centroid(spatial)
     categories = classify_hazard_categories(f"{warning_type or ''} {body_text}")
-    category = categories[0] if categories else "general"
     canonical_id = f"NAVAREA II {warning_id}"
 
     record = {
@@ -403,14 +402,15 @@ def adapt_to_nav_warnings(
         "source_id": SOURCE_ID,
         "navarea": "NAVAREA II",
         "title": title[:255],
-        "issued_text": pub_time,
+        # Human-readable coordinate string (falls back to title area)
         "coordinates": coord_str,
+        # lat/lon/spatial are consumed by build_master_payload / build_geometry_payloads
         "latitude": lat,
         "longitude": lon,
-        "category": category,
         "categories": categories,
-        "severity": "moderate",
         "status": "cancelled" if cancel_time else "active",
+        "valid_from": parse_safe_iso_timestamp(pub_time),
+        "valid_to": parse_safe_iso_timestamp(cancel_time),
         "raw_text": body_text or raw_gml[:1000],
         "spatial": spatial,
     }
@@ -446,6 +446,7 @@ def run_navarea_ii_pipeline(
         "total_items": 0,
         "harvested": 0,
         "synced": 0,
+        "sync_errors": 0,
         "fallback_used": 0,
         "server_errors": "",
         "dry_run": dry_run or (supabase is None),
@@ -582,6 +583,7 @@ def run_navarea_ii_pipeline(
                         print(f"  ✨ Synced: {master['canonical_id']} (Triage: {master['triage_tier']}, Geoms: {len(geoms)})")
                     else:
                         print(f"  ❌ Error syncing {master['canonical_id']} via RPC")
+                        summary["sync_errors"] += 1
                 else:
                     summary["synced"] += 1
                     status_note = "[DRY-RUN]" if dry_run else "[NO-DB]"
@@ -617,4 +619,8 @@ def run_navarea_ii_pipeline(
 
 if __name__ == "__main__":
     res = run_navarea_ii_pipeline()
+    if res.get("server_errors") or res.get("sync_errors"):
+        sys.exit(1)  # regional failure
+    if res.get("dry_run") and not res.get("harvested"):
+        sys.exit(2)  # credentials/env missing and nothing processed
     sys.exit(0)
