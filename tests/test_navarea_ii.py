@@ -102,10 +102,13 @@ class TestNavareaIIExtractor(unittest.TestCase):
         self.assertEqual(row["coordinates"], "47.2000N 004.5000W")
         self.assertIn("NAVAREA II 359/26", row["title"])
         self.assertEqual(row["status"], "active")
-        self.assertEqual(row["category"], "military")
+        # Schema 20261019/20: flat "category"/"severity" were replaced by the "categories" array
+        self.assertIn("military", row["categories"])
+        self.assertNotIn("category", row)
+        self.assertNotIn("severity", row)
         self.assertEqual(row["latitude"], 47.2)
         self.assertEqual(row["longitude"], -4.5)
-        self.assertEqual(row["severity"], "moderate")
+        # severity was removed from the schema; ensure it is not resurrected
         # Ensure unmigrated triage columns are strictly stripped to prevent PostgREST PGRST204
         self.assertNotIn("data_quality", row)
         self.assertNotIn("triage_tier", row)
