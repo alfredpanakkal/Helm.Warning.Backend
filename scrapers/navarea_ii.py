@@ -116,7 +116,7 @@ PING_SECOM_API_KEY = os.environ.get("PING_SECOM_API_KEY", "")
 
 SERVICE_INSTANCE = "navarea_ii_en"
 PING_OBJECT_URL = f"https://services.ping-info-nautique.fr/secom/{SERVICE_INSTANCE}/v1/object"
-SOURCE_ID = "shom-navarea-2"
+SOURCE_ID = "shom-navarea-2"  # NAVAREA II (Metarea II / SHOM PING service)
 MAX_PAGES = 20  # safety cap for pagination following
 
 # Public (unauthenticated) NAVAREA II S-124 Exchange Set endpoint (English series).
