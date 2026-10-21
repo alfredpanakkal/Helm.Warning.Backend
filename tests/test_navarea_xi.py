@@ -103,7 +103,7 @@ class TestNavareaXiSpatialSync(unittest.TestCase):
         }
         geoms = build_geometry_payloads(record)
         self.assertEqual(len(geoms), 1)
-        self.assertEqual(geoms[0]["feature_type"], "point")
+        self.assertEqual(geoms[0]["feature_type"], "POINT")
         self.assertEqual(geoms[0]["geojson"], record["spatial"])
 
     def test_spatial_feature_geometry_preserved(self):
@@ -118,7 +118,7 @@ class TestNavareaXiSpatialSync(unittest.TestCase):
         }
         geoms = build_geometry_payloads(record)
         self.assertEqual(len(geoms), 1)
-        self.assertEqual(geoms[0]["feature_type"], "polygon")
+        self.assertEqual(geoms[0]["feature_type"], "POLYGON")
         self.assertEqual(geoms[0]["buffer_nm"], 3.0)
         self.assertEqual(geoms[0]["geojson"]["type"], "Polygon")
 
