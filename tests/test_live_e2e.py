@@ -40,7 +40,7 @@ class TestLiveEndToEnd(unittest.TestCase):
             },
             "geometries": [{
                 "zone_label": "e2e point",
-                "feature_type": "point",
+                "feature_type": "POINT",
                 "geojson": {"type": "Point", "coordinates": [10.0, 54.0]},
             }],
         }
