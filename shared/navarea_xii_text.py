@@ -150,10 +150,10 @@ def extract_cross_refs(warning: dict):
         is superseded by this one. "CANCEL THIS MSG ..." self-cancels are NOT
         references and never match.
       - "header_ref": numeric tokens in the header parentheses, e.g.
-        "NAVAREA XII 150/26(21,22)". CAUTION: NGA also uses parenthesised
-        broadcast-category codes ("(18)" = rocket launching, "(GEN)", ...), so
-        header refs are recorded but must NOT be treated as supersede
-        instructions without review.
+        "NAVAREA XII 150/26(21,22)" references warnings 021/26 and 022/26.
+        Review decision: header parens ARE cross-references — the sync layer
+        marks referenced warnings SUPERSEDED. Non-numeric tokens like "(GEN)"
+        are broadcast-category codes and are ignored here (never returned).
 
     Returns a list of {"number", "year", "kind", "source"} dicts.
     """
