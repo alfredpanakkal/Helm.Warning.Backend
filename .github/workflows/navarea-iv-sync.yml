@@ -1,0 +1,88 @@
+name: NAVAREA IV Ingestion Pipeline
+
+on:
+  schedule:
+    - cron: '45 */6 * * *'
+  push:
+    branches:
+      - main
+    paths:
+      - 'scripts/navarea_iv_*'
+      - 'scripts/run_navarea_iv.py'
+      - 'shared/navarea_iv_text.py'
+      - 'shared/nga_memo_text.py'
+      - 'shared/navarea_xii_text.py'
+      - 'shared/utils.py'
+      - 'shared/models.py'
+      - 'requirements.txt'
+      - '.github/workflows/navarea-iv-sync.yml'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: navarea-iv-sync-engine
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  ingest-navarea-iv-warnings:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: 'requirements.txt'
+
+      # NGA MSI publishes the Daily Memo as plain text — no Playwright browser needed
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify Module Importability
+        run: |
+          PYTHONPATH=${{ github.workspace }} python -c "import scripts.run_navarea_iv; import scripts.navarea_iv_scraper; import scripts.navarea_iv_parser; import scripts.navarea_iv_sync; import shared.navarea_iv_text; import shared.nga_memo_text; print('All NAVAREA IV pipeline modules imported successfully')"
+
+      - name: Run Unit Tests for NAVAREA IV and XII (shared preprocessor regression)
+        run: |
+          PYTHONPATH=${{ github.workspace }} python -m unittest tests.test_navarea_iv tests.test_navarea_iv_parser tests.test_navarea_xii tests.test_navarea_xii_parser -v
+
+      - name: Harvest, Parse & Sync NAVAREA IV
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ALLOW_DRY_RUN: ${{ github.event_name == 'pull_request' && '1' || '' }}
+        run: |
+          PYTHONPATH=${{ github.workspace }} python -m scripts.run_navarea_iv
+
+      - name: Verify Output Files
+        run: |
+          if [ ! -f navareas/navarea_iv/navarea_iv_warnings.txt ]; then
+            echo "Scraper error: navarea_iv_warnings.txt not generated!"
+            exit 1
+          fi
+          if [ ! -f navareas/navarea_iv/parsed_navarea_iv_warnings.json ]; then
+            echo "Parser error: parsed_navarea_iv_warnings.json not generated!"
+            exit 1
+          fi
+          echo "Output files verified successfully."
+
+      - name: Upload Output Artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: navarea-iv-warnings-data
+          path: |
+            navareas/navarea_iv/navarea_iv_warnings.txt
+            navareas/navarea_iv/parsed_navarea_iv_warnings.json
+          retention-days: 7
+          if-no-files-found: ignore

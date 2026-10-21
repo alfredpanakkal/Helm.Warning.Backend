@@ -94,6 +94,19 @@ def main() -> int:
         all_success = False
 
     print("\n" + "=" * 70)
+    print("🚀 NAVAREA IV (NGA DAILY MEMO)")
+    print("=" * 70)
+    try:
+        from scripts.run_navarea_iv import main as run_iv
+        res = run_iv()
+        if res is False:
+            all_success = False
+    except Exception as e:
+        logger.error(f"NAVAREA IV pipeline failed: {e}", exc_info=True)
+        print(f"❌ NAVAREA IV failed: {e}")
+        all_success = False
+
+    print("\n" + "=" * 70)
     print("🚀 NAVAREA II (S-124 SECOM)")
     print("=" * 70)
     try:
