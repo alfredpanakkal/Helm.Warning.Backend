@@ -10,6 +10,7 @@ snapshot). Covers IV-specific edge cases absent from XII:
   - multi-ref cancels ("CANCEL NAVAREA IV 964/25, 1110/25.")
   - multi-letter sub-area labels (MODU list A..AAAQ in 204/26)
   - title-line false-positive marker rejection ("ST. KITTS AND NEVIS.")
+  - geometry-clause segmentation incl. trackline classification (206/26)
 """
 import os
 import sys
@@ -23,6 +24,8 @@ from shared.navarea_iv_text import (
     split_into_warnings,
     extract_cross_refs,
     split_sub_areas,
+    extract_geometry_clauses,
+    ring_to_trackline,
 )
 
 FIXTURE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "navarea_iv")
@@ -191,6 +194,93 @@ class TestSubAreas(unittest.TestCase):
         subs = split_sub_areas(self.by_id["NAVAREA IV 204/26"]["raw_text"])
         for s in subs:
             self.assertNotIn("TO REPORT A MOBILE OFFSHORE", s["text"])
+
+
+class TestGeometryClauses(unittest.TestCase):
+    """Clause-level geometry segmentation (extract_geometry_clauses).
+
+    Unlike split_sub_areas(), clauses cover UNMARKED numbered items too, so
+    NAVAREA IV 206/26's iceberg limits (items 2-4) become their own geometry
+    records instead of being silently dropped, and clauses matching
+    "TRACKLINE(S) JOINING" are flagged so the parser renders open lines.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.by_id = {b["warning_id"]: b for b in split_into_warnings(_load("daily_memo_snapshot.txt"))}
+
+    def test_206_items_and_marks_are_clauses(self):
+        # 9 numbered items; item 5 carries marks A/B/C -> 11 clauses total.
+        # Trackline clauses: items 2-4 (iceberg limits) + A/B/C (sea ice
+        # limit, via the item preamble "SEA ICE LIMIT ALONG TRACKLINES
+        # JOINING:").
+        clauses = extract_geometry_clauses(self.by_id["NAVAREA IV 206/26"]["raw_text"])
+        self.assertEqual(len(clauses), 11)
+        self.assertEqual([c["label"] for c in clauses],
+                         ["Item 1", "Item 2", "Item 3", "Item 4",
+                          "A", "B", "C", "Item 6", "Item 7", "Item 8", "Item 9"])
+        trackline = [c["label"] for c in clauses if c["is_trackline"]]
+        self.assertEqual(trackline, ["Item 2", "Item 3", "Item 4", "A", "B", "C"])
+
+    def test_158_markers_before_items_use_implicit_item(self):
+        # "LIGHTS UNLIT:\nA. ..." — markers before any numbered item get an
+        # implicit item context and keep their plain letter labels.
+        clauses = extract_geometry_clauses(self.by_id["NAVAREA IV 158/26"]["raw_text"])
+        self.assertEqual([c["label"] for c in clauses], ["A", "B", "C"])
+        for c in clauses:
+            self.assertFalse(c["is_trackline"])
+
+    def test_1524_items_only_no_st_clause(self):
+        # "ST. KITTS AND NEVIS." is a title line, not a marker: the item
+        # falls back to a whole-item clause, never a "ST" clause.
+        clauses = extract_geometry_clauses(self.by_id["NAVAREA IV 1524/24"]["raw_text"])
+        self.assertEqual([c["label"] for c in clauses],
+                         ["Item 1", "Item 2", "Item 3", "Item 4"])
+
+    def test_204_marks_plus_prose_items(self):
+        clauses = extract_geometry_clauses(self.by_id["NAVAREA IV 204/26"]["raw_text"])
+        # 95 MODU marks + 2 prose items ("1. ..." list header / "2. TO REPORT...")
+        self.assertEqual(len(clauses), 97)
+        labels = [c["label"] for c in clauses]
+        self.assertEqual([l for l in labels if str(l).startswith("Item ")],
+                         ["Item 1", "Item 2"])
+        marks = [l for l in labels if not str(l).startswith("Item ")]
+        self.assertEqual(len(marks), 95)
+        self.assertEqual(marks[0], "A")
+        self.assertEqual(marks[-1], "AAAQ")
+
+    def test_markerless_itemless_warning_single_clause(self):
+        raw = self.by_id["NAVAREA IV 53/26"]["raw_text"]
+        clauses = extract_geometry_clauses(raw)
+        self.assertEqual(clauses, [{"label": None, "text": raw, "is_trackline": False}])
+
+    def test_empty_text_returns_no_clauses(self):
+        self.assertEqual(extract_geometry_clauses(""), [])
+
+
+class TestRingToTrackline(unittest.TestCase):
+    def test_closed_ring_opened_to_linestring(self):
+        spatial = {"type": "Polygon",
+                   "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]}
+        self.assertEqual(
+            ring_to_trackline(spatial),
+            {"type": "LineString", "coordinates": [[0, 0], [1, 0], [1, 1]]},
+        )
+
+    def test_open_polygon_unchanged(self):
+        spatial = {"type": "Polygon",
+                   "coordinates": [[[0, 0], [1, 0], [1, 1]]]}
+        self.assertEqual(ring_to_trackline(spatial), spatial)
+
+    def test_point_none_and_non_dict_passthrough(self):
+        pt = {"type": "Point", "coordinates": [1, 2]}
+        self.assertEqual(ring_to_trackline(pt), pt)
+        self.assertIsNone(ring_to_trackline(None))
+        self.assertEqual(ring_to_trackline("not-a-dict"), "not-a-dict")
+
+    def test_empty_ring_unchanged(self):
+        spatial = {"type": "Polygon", "coordinates": [[]]}
+        self.assertEqual(ring_to_trackline(spatial), spatial)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,8 @@ and asserts the master/geometry payload contract:
   - sub-area FeatureCollection geometry with per-feature zone_label
   - build_geometry_payloads() yields one CHECK-vocabulary row per sub-area
   - cross-references survive into nav_warnings for the sync supersede pass
+  - trackline clauses ("IN VICINITY OF TRACKLINE JOINING") render as open
+    LineStrings, not closed polygons (862/24 regression)
 """
 import hashlib
 import os
@@ -96,6 +98,17 @@ class TestSubAreaGeometry(unittest.TestCase):
         self.assertEqual(w["geometry_sub_areas"], ["A", "B", "C"])
         for f in w["spatial"]["features"]:
             self.assertEqual(f["geometry"]["type"], "Point")
+
+    def test_862_trackline_ring_opened_to_linestring(self):
+        # "IN VICINITY OF TRACKLINE JOINING ..." — the coordinate parser
+        # builds a closed ring (6 vertices + closing point); the trackline
+        # contract requires it be opened into a LineString.
+        w = self.by_id["NAVAREA XII 862/24"]
+        features = w["spatial"]["features"]
+        self.assertEqual(len(features), 1)
+        geom = features[0]["geometry"]
+        self.assertEqual(geom["type"], "LineString")
+        self.assertEqual(len(geom["coordinates"]), 7)
 
     def test_133_meta_list_has_no_geometry(self):
         w = self.by_id["NAVAREA XII 133/26"]

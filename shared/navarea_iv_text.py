@@ -13,7 +13,7 @@ preprocessor. NAVAREA IV specifics (see that module for the full contract):
     ("ST. KITTS AND NEVIS." in 1524/24) while keeping all legitimate markers.
 """
 
-from shared.nga_memo_text import NgaMemoPreprocessor
+from shared.nga_memo_text import NgaMemoPreprocessor, ring_to_trackline
 
 NAVAREA_ID = "IV"
 
@@ -29,4 +29,5 @@ get_in_force_dtg = _impl.get_in_force_dtg
 split_into_warnings = _impl.split_into_warnings
 extract_cross_refs = _impl.extract_cross_refs
 split_sub_areas = _impl.split_sub_areas
+extract_geometry_clauses = _impl.extract_geometry_clauses
 normalize_memo = _impl.normalize_memo
