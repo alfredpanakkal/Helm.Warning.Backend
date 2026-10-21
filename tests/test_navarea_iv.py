@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""test_navarea_iv.py — NAVAREA IV (NGA Daily Memo) preprocessing tests.
+
+Run against the verbatim live memo fixture (msi.nga.mil DailyMemIV.txt
+snapshot). Covers IV-specific edge cases absent from XII:
+  - integer-minute coordinates ("44-20N")
+  - wrapped-token variants: "57\n-00N", "12-\n28.85N", "27-09\n.1N"
+  - lowercase month DTGs ("200632Z Feb 26")
+  - header parens wrapped to the next line ("NAVAREA IV 113/26\\n(26).")
+  - multi-ref cancels ("CANCEL NAVAREA IV 964/25, 1110/25.")
+  - multi-letter sub-area labels (MODU list A..AAAQ in 204/26)
+  - title-line false-positive marker rejection ("ST. KITTS AND NEVIS.")
+"""
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from shared.navarea_iv_text import (
+    rejoin_wrapped_coords,
+    get_in_force_dtg,
+    split_into_warnings,
+    extract_cross_refs,
+    split_sub_areas,
+)
+
+FIXTURE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "navarea_iv")
+
+
+def _load(name):
+    with open(os.path.join(FIXTURE_DIR, name), "r", encoding="utf-8") as f:
+        return f.read()
+
+
+class TestRejoinWrappedCoords(unittest.TestCase):
+    def test_xii_style_wrap(self):
+        # "58-10.\n50N" (1170/25 depths list)
+        self.assertEqual(rejoin_wrapped_coords("58-10.\n50N 068-19.17W."), "58-10.50N 068-19.17W.")
+
+    def test_degrees_then_minutes_next_line(self):
+        # "57\n-00N" (206/26 sea-ice limit sub-area B)
+        self.assertEqual(rejoin_wrapped_coords("57\n-00N 056-00W,"), "57-00N 056-00W,")
+
+    def test_decimal_part_next_line(self):
+        # "27-09\n.1N" (204/26 MODU list)
+        self.assertEqual(rejoin_wrapped_coords("27-09\n.1N 091-12.7W."), "27-09.1N 091-12.7W.")
+
+    def test_degrees_hyphen_next_line(self):
+        # "12-\n28.85N" (466/25)
+        self.assertEqual(rejoin_wrapped_coords("IN 12-\n28.85N 081-43.83W."), "IN 12-28.85N 081-43.83W.")
+
+    def test_prose_wraps_untouched(self):
+        self.assertEqual(rejoin_wrapped_coords("IN AREA BO\nUND BY"), "IN AREA BO\nUND BY")
+        self.assertEqual(rejoin_wrapped_coords("C-CONFIDEN\nCE"), "C-CONFIDEN\nCE")
+
+    def test_invalid_merge_rejected(self):
+        # minutes >= 60 must not merge
+        self.assertEqual(rejoin_wrapped_coords("57\n-99N 056-00W,"), "57\n-99N 056-00W,")
+
+    def test_idempotent(self):
+        once = rejoin_wrapped_coords("58-10.\n50N 068-19.17W.")
+        self.assertEqual(rejoin_wrapped_coords(once), once)
+
+
+class TestSegmentation(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.memo = _load("daily_memo_snapshot.txt")
+        cls.blocks = split_into_warnings(cls.memo)
+        cls.by_id = {b["warning_id"]: b for b in cls.blocks}
+
+    def test_in_force_marker(self):
+        self.assertEqual(get_in_force_dtg(self.memo), "051505Z MAR")
+
+    def test_count_and_order(self):
+        self.assertEqual(len(self.blocks), 108)
+        self.assertEqual(self.blocks[0]["warning_id"], "NAVAREA IV 207/26")
+        self.assertEqual(len(self.by_id), 108)  # all unique
+
+    def test_unpadded_ids(self):
+        self.assertIn("NAVAREA IV 7/26", self.by_id)
+        self.assertIn("NAVAREA IV 12/25", self.by_id)
+        self.assertIn("NAVAREA IV 1431/25", self.by_id)
+
+    def test_lowercase_month_dtg(self):
+        self.assertEqual(self.by_id["NAVAREA IV 158/26"]["dtg"], "200632Z Feb 26")
+        self.assertEqual(self.by_id["NAVAREA IV 153/26"]["dtg"], "191839Z Feb 26")
+
+    def test_msgid_legacy_blocks(self):
+        self.assertIsNone(self.by_id["NAVAREA IV 367/22"]["dtg"])
+        self.assertIn("MSGID/GENADMIN", self.by_id["NAVAREA IV 367/22"]["raw_text"])
+
+    def test_header_parens_continuation_line(self):
+        # "NAVAREA IV 113/26\n(26)."
+        block = self.by_id["NAVAREA IV 113/26"]
+        self.assertEqual(block["header_refs"], ["26"])
+        self.assertEqual(block["dtg"], "061649Z FEB 26")
+
+    def test_wrapped_coords_merged_in_blocks(self):
+        # 466/25 raw block must contain the repaired coordinate
+        self.assertIn("12-28.85N 081-43.83W", self.by_id["NAVAREA IV 466/25"]["raw_text"])
+        # 1170/25 depths list
+        self.assertIn("58-10.50N 068-19.17W", self.by_id["NAVAREA IV 1170/25"]["raw_text"])
+        # 206/26 sea-ice limit
+        self.assertIn("57-00N 056-00W", self.by_id["NAVAREA IV 206/26"]["raw_text"])
+
+
+class TestCrossRefs(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.by_id = {b["warning_id"]: b for b in split_into_warnings(_load("daily_memo_snapshot.txt"))}
+
+    def _cancels(self, wid):
+        block = self.by_id[wid]
+        return [(r["number"], r["year"]) for r in extract_cross_refs(block)
+                if r["kind"] == "cancellation"]
+
+    def test_multi_ref_cancel(self):
+        # "2. CANCEL NAVAREA IV 964/25, 1110/25."
+        self.assertEqual(self._cancels("NAVAREA IV 16/26"), [("964", "25"), ("1110", "25")])
+
+    def test_cancel_with_header_paren_suffix(self):
+        # "2. CANCEL NAVAREA IV 1008/25(24)."
+        self.assertEqual(self._cancels("NAVAREA IV 161/26"), [("1008", "25")])
+
+    def test_plain_cancels(self):
+        self.assertEqual(self._cancels("NAVAREA IV 133/26"), [("91", "26")])
+        self.assertEqual(self._cancels("NAVAREA IV 204/26"), [("149", "26")])
+        self.assertEqual(self._cancels("NAVAREA IV 190/26"), [("159", "26")])
+
+    def test_numbers_not_padded(self):
+        self.assertEqual(self._cancels("NAVAREA IV 19/26"), [("57", "23")])
+        # stored ids are unpadded ("NAVAREA IV 7/26"), so refs must be too
+        self.assertEqual(self._cancels("NAVAREA IV 133/26"), [("91", "26")])
+
+    def test_self_cancel_never_a_ref(self):
+        # "2. CANCEL THIS MSG 160736Z MAR 26."
+        self.assertEqual(self._cancels("NAVAREA IV 207/26"), [])
+
+    def test_header_refs_numeric_only(self):
+        block = self.by_id["NAVAREA IV 207/26"]
+        refs = [(r["number"], r["year"], r["kind"]) for r in extract_cross_refs(block)]
+        self.assertEqual(refs, [("11", "26", "header_ref"), ("26", "26", "header_ref")])
+
+    def test_gen_ignored(self):
+        block = self.by_id["NAVAREA IV 206/26"]
+        self.assertEqual(extract_cross_refs(block), [])
+
+
+class TestSubAreas(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.by_id = {b["warning_id"]: b for b in split_into_warnings(_load("daily_memo_snapshot.txt"))}
+
+    def test_modu_list_multi_letter_labels(self):
+        subs = split_sub_areas(self.by_id["NAVAREA IV 204/26"]["raw_text"])
+        labels = [s["label"] for s in subs]
+        self.assertEqual(len(labels), 95)
+        self.assertEqual(labels[0], "A")
+        self.assertEqual(labels[-1], "AAAQ")
+        self.assertIn("AA", labels)
+        self.assertIn("AAZ", labels)
+
+    def test_moorings_list(self):
+        subs = split_sub_areas(self.by_id["NAVAREA IV 1292/25"]["raw_text"])
+        self.assertEqual([s["label"] for s in subs], list("ABCDEFGHIJKLMNOPQRSTUV"))
+
+    def test_column_zero_markers(self):
+        subs = split_sub_areas(self.by_id["NAVAREA IV 180/26"]["raw_text"])
+        self.assertEqual([s["label"] for s in subs], ["A", "B"])
+
+    def test_title_line_false_positive_rejected(self):
+        # "ST. KITTS AND NEVIS." must not become a sub-area (1524/24)
+        subs = split_sub_areas(self.by_id["NAVAREA IV 1524/24"]["raw_text"])
+        self.assertEqual(subs, [{"label": None, "text": self.by_id["NAVAREA IV 1524/24"]["raw_text"]}])
+
+    def test_marker_with_wrapped_coords_kept(self):
+        # "R. (NEW POSITION) DEEPWATER PONTUS\n 27-35.9N ..." — coords on next line
+        subs = split_sub_areas(self.by_id["NAVAREA IV 204/26"]["raw_text"])
+        seg_r = [s for s in subs if s["label"] == "R"][0]
+        self.assertIn("27-35.9N 092-18.0W", seg_r["text"])
+
+    def test_unmarked_warning_single_area(self):
+        subs = split_sub_areas(self.by_id["NAVAREA IV 53/26"]["raw_text"])
+        self.assertEqual(len(subs), 1)
+        self.assertIsNone(subs[0]["label"])
+
+    def test_item_line_terminates_subarea(self):
+        # 204/26: sub-area segments must not bleed into "2. TO REPORT..."
+        subs = split_sub_areas(self.by_id["NAVAREA IV 204/26"]["raw_text"])
+        for s in subs:
+            self.assertNotIn("TO REPORT A MOBILE OFFSHORE", s["text"])
+
+
+if __name__ == "__main__":
+    unittest.main()
