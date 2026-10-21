@@ -54,6 +54,7 @@ jobs:
             navareas/navarea_1/parsed_navarea_1_warnings.json
             navareas/navarea_xi/navarea_xi_warnings.txt
             navareas/navarea_xi/parsed_navarea_xi_warnings.json
+            navareas/navarea_xii/navarea_xii_warnings.txt
+            navareas/navarea_xii/parsed_navarea_xii_warnings.json
           retention-days: 7
           if-no-files-found: ignore
-
