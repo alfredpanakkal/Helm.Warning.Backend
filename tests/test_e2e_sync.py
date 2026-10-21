@@ -92,7 +92,7 @@ class TestE2ESync(unittest.TestCase):
         }
         geoms = build_geometry_payloads(point_input)
         self.assertEqual(len(geoms), 1)
-        self.assertEqual(geoms[0]["feature_type"], "point")
+        self.assertEqual(geoms[0]["feature_type"], "POINT")
         self.assertEqual(geoms[0]["geojson"]["type"], "Point")
         self.assertEqual(geoms[0]["geojson"]["coordinates"], [12.5, 55.5])
 
@@ -106,7 +106,7 @@ class TestE2ESync(unittest.TestCase):
         }
         poly_geoms = build_geometry_payloads(poly_input)
         self.assertEqual(len(poly_geoms), 1)
-        self.assertEqual(poly_geoms[0]["feature_type"], "polygon")
+        self.assertEqual(poly_geoms[0]["feature_type"], "POLYGON")
         self.assertEqual(poly_geoms[0]["geojson"]["type"], "Polygon")
 
     def test_triage_tier_c_for_no_geometry(self):
