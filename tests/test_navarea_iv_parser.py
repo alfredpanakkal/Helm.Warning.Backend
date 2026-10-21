@@ -85,11 +85,22 @@ class TestSubAreaGeometry(unittest.TestCase):
         self.assertEqual(len(features[0]["geometry"]["coordinates"][0]), 7)
         self.assertEqual(len(features[1]["geometry"]["coordinates"][0]), 5)
 
-    def test_206_sea_ice_limits_including_wrapped_coord(self):
+    def test_206_iceberg_limits_six_trackline_features(self):
+        # NAIS iceberg bulletin. Items 2-4 are unmarked "LIMIT ALONG
+        # TRACKLINE JOINING" clauses (previously dropped: only A./B./C. made
+        # geometry); item 5 holds the sea-ice limit sub-areas A/B/C. All six
+        # are open lines, never closed areas.
         w = self.by_id["NAVAREA IV 206/26"]
-        self.assertEqual(w["geometry_sub_areas"], ["A", "B", "C"])
+        self.assertEqual(w["geometry_sub_areas"],
+                         ["Item 2", "Item 3", "Item 4", "A", "B", "C"])
         features = w["spatial"]["features"]
-        self.assertEqual([len(f["geometry"]["coordinates"][0]) for f in features], [11, 9, 9])
+        self.assertEqual(len(features), 6)
+        for f in features:
+            self.assertEqual(f["geometry"]["type"], "LineString")
+        # Item 2: 5 vertices; Item 3: 8; Item 4: 2 (open segment);
+        # A: 10 (incl. "57\n-00N" rejoin); B: 8; C: 8
+        self.assertEqual([len(f["geometry"]["coordinates"]) for f in features],
+                         [5, 8, 2, 10, 8, 8])
 
     def test_204_modu_list_95_point_subareas(self):
         w = self.by_id["NAVAREA IV 204/26"]
@@ -155,9 +166,46 @@ class TestSubAreaGeometry(unittest.TestCase):
         actual = {wid for wid, w in self.by_id.items() if w["spatial"] is None}
         self.assertEqual(actual, expected_tier_c)
 
-    def test_153_closed_trackline_polygon(self):
+    def test_153_closed_trackline_ring_opened(self):
+        # "IN VICINITY OF TRACKLINE JOINING ..." with 6 vertices: the ring
+        # the coordinate parser produces must be opened (closing vertex
+        # dropped) instead of rendered as a filled polygon.
         w = self.by_id["NAVAREA IV 153/26"]
-        self.assertEqual(w["spatial"]["features"][0]["geometry"]["type"], "Polygon")
+        geom = w["spatial"]["features"][0]["geometry"]
+        self.assertEqual(geom["type"], "LineString")
+        self.assertEqual(len(geom["coordinates"]), 7)
+
+
+class TestTracklineLimits(unittest.TestCase):
+    """Limits declared as "TRACKLINE(S) JOINING" render as open lines."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.by_id = {w["warning_id"]: w for w in
+                     parse_memo_text(_load("daily_memo_snapshot.txt"))["nav_warnings"]}
+
+    def test_205_trackline_linestring(self):
+        w = self.by_id["NAVAREA IV 205/26"]
+        features = w["spatial"]["features"]
+        self.assertEqual(len(features), 1)
+        geom = features[0]["geometry"]
+        self.assertEqual(geom["type"], "LineString")
+        self.assertEqual(len(geom["coordinates"]), 6)
+
+    def test_206_geometry_rows_all_line(self):
+        w = self.by_id["NAVAREA IV 206/26"]
+        geoms = build_geometry_payloads(w)
+        self.assertEqual(len(geoms), 6)
+        self.assertEqual([g["zone_label"] for g in geoms],
+                         ["Item 2", "Item 3", "Item 4", "A", "B", "C"])
+        for g in geoms:
+            self.assertEqual(g["feature_type"], "LINE")
+
+    def test_133_trackline_row_is_line(self):
+        w = self.by_id["NAVAREA IV 133/26"]
+        geoms = build_geometry_payloads(w)
+        self.assertEqual(len(geoms), 1)
+        self.assertEqual(geoms[0]["feature_type"], "LINE")
 
 
 class TestGeometryPayloads(unittest.TestCase):

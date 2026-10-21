@@ -8,7 +8,7 @@ identical to the original standalone module, so existing importers
 (scraper, parser, tests) are unaffected.
 """
 
-from shared.nga_memo_text import NgaMemoPreprocessor
+from shared.nga_memo_text import NgaMemoPreprocessor, ring_to_trackline
 
 NAVAREA_ID = "XII"
 
@@ -24,6 +24,7 @@ get_in_force_dtg = _impl.get_in_force_dtg
 split_into_warnings = _impl.split_into_warnings
 extract_cross_refs = _impl.extract_cross_refs
 split_sub_areas = _impl.split_sub_areas
+extract_geometry_clauses = _impl.extract_geometry_clauses
 normalize_memo = _impl.normalize_memo
 
 # Regex attributes re-exported for backward compatibility with tests.

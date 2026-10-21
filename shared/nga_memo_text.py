@@ -19,13 +19,42 @@ AI-fallback grounding (H05):
   - split_into_warnings():   DTG-header segmentation of the daily memo
   - extract_cross_refs():    header-paren refs + body "CANCEL NAVAREA <ID> n/yy" refs
   - split_sub_areas():       A./B./C. sub-area split (one geometry record each)
+  - extract_geometry_clauses(): clause-level geometry segmentation with
+    trackline classification (see below)
   - normalize_memo():        rejoin + segmentation pipeline
+
+Trackline contract: clauses whose text (or item preamble) says
+"TRACKLINE(S) JOINING" describe an OPEN line — an iceberg/sea-ice limit or a
+survey/cable track — never a closed area. The clause dict carries
+is_trackline=True; the parser then converts any ring the shared coordinate
+parser produced into an open LineString via ring_to_trackline(). Without
+this, e.g. NAVAREA IV 206/26's limits render as filled polygons that shade
+the safe water south of the limit instead of the ice north of it.
 
 No coordinate parsing or conversion happens here. Geometry always comes from
 shared.utils.parse_coordinates (no-second-parser rule).
 """
 
 import re
+
+
+def ring_to_trackline(spatial):
+    """Convert a closed Polygon ring into an open LineString.
+
+    Applies to trackline clauses only ("LIMIT/TRACKLINE JOINING"): the
+    ring's duplicated closing vertex is dropped so the geometry renders as
+    a boundary stroke, not a filled area. Non-Polygon inputs are returned
+    unchanged.
+    """
+    if not isinstance(spatial, dict) or spatial.get("type") != "Polygon":
+        return spatial
+    rings = spatial.get("coordinates") or []
+    if not rings:
+        return spatial
+    ring = list(rings[0] or [])
+    if len(ring) > 2 and ring[0] == ring[-1]:
+        ring = ring[:-1]
+    return {"type": "LineString", "coordinates": ring}
 
 
 class NgaMemoPreprocessor:
@@ -35,10 +64,12 @@ class NgaMemoPreprocessor:
     RE_DTG_LINE = re.compile(r"^(\d{6}Z\s+[A-Za-z]{3}\s+\d{2})$")
     RE_IN_FORCE = re.compile(r"IN\s+FORCE\s+AS\s+OF\s+(\d{6}Z\s+[A-Z]{3})", re.IGNORECASE)
     RE_ITEM_LINE = re.compile(r"^\s*\d\.\s")
+    RE_ITEM_NUM = re.compile(r"^\s*(\d{1,2})\.\s")
     RE_COORD_PAIR = re.compile(
         r"\d{2,3}-\d{2}(?:\.\d+)?[NS]\s+\d{2,3}-\d{2}(?:\.\d+)?[EW]", re.IGNORECASE
     )
     RE_HEADER_PAREN_CONT = re.compile(r"^\(([^)]*)\)\.?$")
+    RE_TRACKLINE_CLAUSE = re.compile(r"\bTRACKLINES?\s+JOINING\b", re.IGNORECASE)
 
     # Coordinate tokens split across line wraps. Each spec is
     # (compiled_pattern, merge_fn) — a merge only applies when the merged
@@ -286,6 +317,131 @@ class NgaMemoPreprocessor:
             if segment:
                 out.append({"label": label, "text": segment})
         return out
+
+    # --- geometry clauses -----------------------------------------------------
+    def extract_geometry_clauses(self, raw_text: str):
+        """Segment a warning body into geometry clauses (parser-facing).
+
+        A clause is one numbered item, or one A./B./C. sub-area within an
+        item. Unlike split_sub_areas(), clauses also cover UNMARKED numbered
+        items, so limits declared as "2. ICEBERG LIMIT ALONG TRACKLINE
+        JOINING ..." become their own geometry records instead of being
+        silently dropped or merged.
+
+        Each clause dict:
+          label        — "Item N" for unmarked items; the marker letter for
+                         sub-areas; None for markerless, itemless warnings.
+                         Duplicate marker labels across items are
+                         disambiguated as "N.L" (e.g. "5.A").
+          text         — the clause's verbatim text (coordinates live here).
+          is_trackline — True when the clause or its item preamble says
+                         "TRACKLINE(S) JOINING": the geometry is an open
+                         boundary/survey line, not a closed area. The parser
+                         applies ring_to_trackline() to these clauses.
+
+        Markers that appear before any numbered item ("LIGHTS UNLIT:\\nA. ...")
+        are handled via an implicit item context, matching the legacy
+        split_sub_areas() behavior. When require_coords_in_subarea is
+        enabled, coordinate-less marker segments are rejected and the item
+        falls back to a single whole-item clause (never loses geometry).
+
+        Returns [{"label", "text", "is_trackline"}, ...]; empty text -> [].
+        """
+        if not raw_text:
+            return []
+        lines = raw_text.split("\n")
+
+        events = []  # (line_index, kind, value)
+        for i, line in enumerate(lines):
+            m = self.RE_ITEM_NUM.match(line)
+            if m:
+                events.append((i, "item", m.group(1)))
+                continue
+            m = self.re_subarea_marker.match(line)
+            if m:
+                events.append((i, "mark", m.group(1)))
+
+        if not events:
+            return [{
+                "label": None,
+                "text": raw_text,
+                "is_trackline": bool(self.RE_TRACKLINE_CLAUSE.search(raw_text)),
+            }]
+
+        # Implicit item context for warnings whose markers are not preceded
+        # by any numbered item (e.g. "LIGHTS UNLIT:\\nA. BOSTON ...").
+        if events[0][1] == "mark":
+            events.insert(0, (0, "item", None))
+
+        clauses = []  # dicts + private "_item" for label disambiguation
+        n = len(events)
+        e = 0
+        while e < n:
+            start, kind, item_num = events[e]
+            if kind != "item":
+                e += 1
+                continue
+
+            # Item ends at the next item event (or end of block).
+            item_end = len(lines)
+            for k in range(e + 1, n):
+                if events[k][1] == "item":
+                    item_end = events[k][0]
+                    break
+            marks = [ev for ev in events[e + 1:] if ev[1] == "mark" and ev[0] < item_end]
+
+            def _emit(label, text, context, item=item_num):
+                if not text:
+                    return
+                clauses.append({
+                    "label": label,
+                    "text": text,
+                    "is_trackline": bool(self.RE_TRACKLINE_CLAUSE.search(context)),
+                    "_item": item,
+                })
+
+            if not marks:
+                text = "\n".join(lines[start:item_end]).strip()
+                _emit(("Item %s" % item_num) if item_num else None, text, text)
+            else:
+                preamble = "\n".join(lines[start:marks[0][0]])
+                kept = marks
+                if self.require_coords_in_subarea:
+                    kept = []
+                    for j, (mstart, _kind, mlabel) in enumerate(marks):
+                        mend = marks[j + 1][0] if j + 1 < len(marks) else item_end
+                        if self.RE_COORD_PAIR.search("\n".join(lines[mstart:mend])):
+                            kept.append((mstart, _kind, mlabel))
+                if kept:
+                    for j, (mstart, _kind, mlabel) in enumerate(kept):
+                        mend = kept[j + 1][0] if j + 1 < len(kept) else item_end
+                        seg = "\n".join(lines[mstart:mend]).strip()
+                        context = (preamble + "\n" + seg) if preamble else seg
+                        _emit(mlabel, seg, context)
+                else:
+                    # All candidate markers were false positives: keep the
+                    # geometry by falling back to the whole item.
+                    text = "\n".join(lines[start:item_end]).strip()
+                    _emit(("Item %s" % item_num) if item_num else None, text, text)
+            e += 1
+
+        # Disambiguate duplicate marker labels across items ("A" in items 1
+        # and 5 -> "1.A" / "5.A"). Item labels are already unique.
+        from collections import Counter
+        mark_labels = Counter(
+            c["label"] for c in clauses if c["label"] and not str(c["label"]).startswith("Item ")
+        )
+        for c in clauses:
+            label = c["label"]
+            if (
+                label
+                and not str(label).startswith("Item ")
+                and mark_labels[label] > 1
+                and c.get("_item")
+            ):
+                c["label"] = "%s.%s" % (c["_item"], label)
+            c.pop("_item", None)
+        return clauses
 
     def normalize_memo(self, memo_text: str):
         """Full preprocessing pipeline: rejoin wrapped coordinates, then segment."""

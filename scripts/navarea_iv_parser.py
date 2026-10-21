@@ -5,15 +5,17 @@ navarea_iv_parser.py — Parser for NAVAREA IV (NGA Daily Memo)
 Deterministic parser on top of shared/navarea_iv_text.py preprocessing
 (same architecture as the NAVAREA XII parser):
   1. rejoin_wrapped_coords() + DTG-header segmentation
-  2. split_sub_areas(): A./B./C. sub-areas (up to AAAQ in MODU lists),
-     each its own geometry record
-  3. parse_coordinates() (shared, no-second-parser rule) per sub-area
+  2. extract_geometry_clauses(): one clause per numbered item or sub-area
+     (up to AAAQ in MODU lists), with trackline classification
+  3. parse_coordinates() (shared, no-second-parser rule) per clause;
+     trackline clauses get their ring opened via ring_to_trackline()
+     (iceberg/sea-ice limits and survey tracks are open lines, not areas)
   4. extract_cross_refs(): header-paren refs + body CANCEL refs
      (incl. multi-refs: "CANCEL NAVAREA IV 964/25, 1110/25.")
 
-Geometry contract: a warning's sub-areas are emitted as a single GeoJSON
-FeatureCollection; each feature carries its sub-area label so the sync layer
-persists one nav_warning_geometries row per sub-area (zone_label).
+Geometry contract: a warning's clauses are emitted as a single GeoJSON
+FeatureCollection; each feature carries its clause label so the sync layer
+persists one nav_warning_geometries row per clause (zone_label).
 """
 
 import sys
@@ -34,9 +36,10 @@ if hasattr(sys.stderr, 'reconfigure'):
 
 from shared.navarea_iv_text import (
     split_into_warnings,
-    split_sub_areas,
+    extract_geometry_clauses,
     extract_cross_refs,
     get_in_force_dtg,
+    ring_to_trackline,
 )
 from shared.utils import parse_coordinates, classify_hazard_categories
 
@@ -77,18 +80,22 @@ def _extract_title(block) -> str:
     return title[:255]
 
 
-def _build_spatial(sub_areas):
-    """Assemble geometry from parsed sub-areas.
+def _build_spatial(clauses):
+    """Assemble geometry from parsed clauses.
 
-    Returns (spatial, primary_lat, primary_lon, sub_area_labels_with_geometry).
-    Single sub-area with geometry: single-feature FeatureCollection.
-    Multiple sub-areas: one Feature per sub-area (zone_label in properties).
+    Returns (spatial, primary_lat, primary_lon, clause_labels_with_geometry).
+    Single clause with geometry: single-feature FeatureCollection.
+    Multiple clauses: one Feature per clause (zone_label in properties).
+    Trackline clauses (is_trackline) get Polygon rings opened into
+    LineStrings — limits and survey tracks are open lines, never areas.
     """
     geoms = []  # (label, spatial, lat, lon)
-    for sub in sub_areas:
-        _, lat, lon, spatial = parse_coordinates(sub["text"])
+    for clause in clauses:
+        _, lat, lon, spatial = parse_coordinates(clause["text"])
+        if spatial and clause.get("is_trackline"):
+            spatial = ring_to_trackline(spatial)
         if spatial:
-            geoms.append((sub["label"], spatial, lat, lon))
+            geoms.append((clause["label"], spatial, lat, lon))
 
     if not geoms:
         return None, None, None, []
@@ -133,8 +140,8 @@ def parse_warning(block):
         "checksum_sha256": checksum,
     }
 
-    sub_areas = split_sub_areas(raw_text)
-    spatial, lat, lon, geom_labels = _build_spatial(sub_areas)
+    clauses = extract_geometry_clauses(raw_text)
+    spatial, lat, lon, geom_labels = _build_spatial(clauses)
     categories = classify_hazard_categories(raw_text)
     cross_refs = extract_cross_refs(block)
 
@@ -153,7 +160,7 @@ def parse_warning(block):
         "status": "active",
         "raw_text": raw_text,
         "spatial": spatial,
-        "sub_areas": [s["label"] for s in sub_areas],
+        "sub_areas": [c["label"] for c in clauses],
         "geometry_sub_areas": geom_labels,
         "cross_refs": cross_refs,
     }
