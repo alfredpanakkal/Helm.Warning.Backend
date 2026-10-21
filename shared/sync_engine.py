@@ -77,14 +77,28 @@ def upsert_warning_atomic(supabase_client, master: Dict[str, Any], geometries: L
         supabase_client.rpc("upsert_nav_warning", {"p_payload": payload}).execute()
         return True
     except Exception as rpc_err:
-        # Fallback to direct master table upsert if RPC is missing
+        # Fallback to direct master table upsert if RPC is missing.
+        # IMPORTANT: the direct upsert CANNOT persist geometries (the
+        # geom_postgis column requires PostGIS/ST_GeomFromGeoJSON, only
+        # available inside the RPC). Persisting the master while dropping
+        # its geometries corrupts the nav_warnings_active_spatial JOIN
+        # (Tier-A masters with zero geometry rows = invisible on the map),
+        # so this is treated as an error, not a silent success.
         print(f"    ⚠️ RPC upsert failed ({rpc_err}); attempting direct master upsert...")
         try:
             supabase_client.table("nav_warnings").upsert(master, on_conflict="canonical_id").execute()
-            return True
         except Exception as direct_err:
             print(f"    ❌ Direct master upsert failed: {direct_err}")
             return False
+        if geometries:
+            print(
+                f"    ❌ GEOMETRIES DROPPED for {master.get('canonical_id')}: "
+                f"{len(geometries)} geometry payload(s) NOT persisted "
+                f"(nav_warnings_active_spatial will not show this warning). "
+                f"Fix the upsert_nav_warning RPC and re-run the sync."
+            )
+            return False
+        return True
 
 
 def run_differential_sync(

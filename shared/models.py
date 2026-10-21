@@ -145,9 +145,30 @@ def format_canonical_id(navarea: Optional[str], warning_id: Optional[str]) -> st
     return wid or nav or "UNKNOWN"
 
 
+def geojson_type_to_feature_type(geojson_type: Optional[str]) -> str:
+    """Maps a GeoJSON geometry type to the public.nav_warning_geometries
+    feature_type CHECK-constraint vocabulary:
+    ('POINT', 'LINE', 'POLYGON', 'CORRIDOR', 'SWEEP_ARC', 'BOUNDING_BOX').
+    Note: lowercase values like 'point' violate the CHECK and abort the
+    upsert_nav_warning RPC transaction.
+    """
+    t = (geojson_type or "Point").strip().upper()
+    if t in ("LINESTRING", "MULTILINESTRING"):
+        return "LINE"
+    if t in ("MULTIPOINT",):
+        return "POINT"
+    if t in ("MULTIPOLYGON",):
+        return "POLYGON"
+    if t in ("POINT", "POLYGON", "CORRIDOR", "SWEEP_ARC", "BOUNDING_BOX"):
+        return t
+    # Unknown geometry type: persist as POINT so the record still plots
+    return "POINT"
+
+
 def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Builds GeoJSON geometry child records suitable for public.nav_warning_geometries.
     Outputs: list of dicts with keys: zone_label, feature_type, buffer_nm, geojson
+    feature_type MUST use the DB CHECK-constraint vocabulary (POINT/LINE/POLYGON).
     """
     geometries: List[Dict[str, Any]] = []
 
@@ -156,10 +177,9 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
         sp_type = spatial.get("type", "")
         if sp_type == "Feature":
             geom = spatial.get("geometry", {})
-            f_type = geom.get("type", "Point").lower()
             geometries.append({
                 "zone_label": record.get("title") or "Spatial Feature",
-                "feature_type": f_type,
+                "feature_type": geojson_type_to_feature_type(geom.get("type")),
                 "buffer_nm": float(spatial.get("properties", {}).get("buffer_nm", 0.0) or 0.0),
                 "geojson": geom
             })
@@ -167,7 +187,7 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
         elif sp_type in ("Point", "Polygon", "LineString", "MultiPoint", "MultiPolygon", "MultiLineString"):
             geometries.append({
                 "zone_label": record.get("title") or "Spatial Feature",
-                "feature_type": sp_type.lower(),
+                "feature_type": geojson_type_to_feature_type(sp_type),
                 "buffer_nm": 0.0,
                 "geojson": spatial
             })
@@ -183,7 +203,7 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
             if -90 <= flat <= 90 and -180 <= flon <= 180:
                 geometries.append({
                     "zone_label": "Centroid",
-                    "feature_type": "point",
+                    "feature_type": "POINT",
                     "buffer_nm": 0.0,
                     "geojson": {
                         "type": "Point",
@@ -194,7 +214,6 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
             pass
 
     return geometries
-
 
 def build_master_payload(record: Dict[str, Any]) -> Dict[str, Any]:
     """Builds schema-compliant master record for public.nav_warnings.
