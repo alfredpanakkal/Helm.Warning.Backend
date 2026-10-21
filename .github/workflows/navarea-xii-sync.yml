@@ -1,0 +1,86 @@
+name: NAVAREA XII Ingestion Pipeline
+
+on:
+  schedule:
+    - cron: '15 */6 * * *'
+  push:
+    branches:
+      - main
+    paths:
+      - 'scripts/navarea_xii_*'
+      - 'scripts/run_navarea_xii.py'
+      - 'shared/navarea_xii_text.py'
+      - 'shared/utils.py'
+      - 'shared/models.py'
+      - 'requirements.txt'
+      - '.github/workflows/navarea-xii-sync.yml'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: navarea-xii-sync-engine
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  ingest-navarea-xii-warnings:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: 'requirements.txt'
+
+      # NGA MSI publishes the Daily Memo as plain text — no Playwright browser needed
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify Module Importability
+        run: |
+          PYTHONPATH=${{ github.workspace }} python -c "import scripts.run_navarea_xii; import scripts.navarea_xii_scraper; import scripts.navarea_xii_parser; import scripts.navarea_xii_sync; import shared.navarea_xii_text; print('All NAVAREA XII pipeline modules imported successfully')"
+
+      - name: Run Unit Tests for NAVAREA XII
+        run: |
+          PYTHONPATH=${{ github.workspace }} python -m unittest tests.test_navarea_xii tests.test_navarea_xii_parser -v
+
+      - name: Harvest, Parse & Sync NAVAREA XII
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ALLOW_DRY_RUN: ${{ github.event_name == 'pull_request' && '1' || '' }}
+        run: |
+          PYTHONPATH=${{ github.workspace }} python -m scripts.run_navarea_xii
+
+      - name: Verify Output Files
+        run: |
+          if [ ! -f navareas/navarea_xii/navarea_xii_warnings.txt ]; then
+            echo "Scraper error: navarea_xii_warnings.txt not generated!"
+            exit 1
+          fi
+          if [ ! -f navareas/navarea_xii/parsed_navarea_xii_warnings.json ]; then
+            echo "Parser error: parsed_navarea_xii_warnings.json not generated!"
+            exit 1
+          fi
+          echo "Output files verified successfully."
+
+      - name: Upload Output Artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: navarea-xii-warnings-data
+          path: |
+            navareas/navarea_xii/navarea_xii_warnings.txt
+            navareas/navarea_xii/parsed_navarea_xii_warnings.json
+          retention-days: 7
+          if-no-files-found: ignore
