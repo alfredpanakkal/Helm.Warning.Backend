@@ -231,19 +231,23 @@ class TestGeometryClauses(unittest.TestCase):
             self.assertFalse(c["is_trackline"])
 
     def test_1524_items_only_no_st_clause(self):
-        # "ST. KITTS AND NEVIS." is a title line, not a marker: the item
-        # falls back to a whole-item clause, never a "ST" clause.
+        # "ST. KITTS AND NEVIS." is a title line: it forms a marker event,
+        # but the coordinate-less segment is rejected and the implicit item
+        # falls back to a whole-block clause labeled None. The numbered items
+        # 1-4 follow; no clause is ever labeled "ST".
         clauses = extract_geometry_clauses(self.by_id["NAVAREA IV 1524/24"]["raw_text"])
         self.assertEqual([c["label"] for c in clauses],
-                         ["Item 1", "Item 2", "Item 3", "Item 4"])
+                         [None, "Item 1", "Item 2", "Item 3", "Item 4"])
+        self.assertIn("ST. KITTS AND NEVIS.", clauses[0]["text"])
 
     def test_204_marks_plus_prose_items(self):
         clauses = extract_geometry_clauses(self.by_id["NAVAREA IV 204/26"]["raw_text"])
-        # 95 MODU marks + 2 prose items ("1. ..." list header / "2. TO REPORT...")
-        self.assertEqual(len(clauses), 97)
+        # Item 1 holds the 95 MODU marks (so no "Item 1" clause); items 2
+        # ("TO REPORT...") and 3 ("CANCEL...") are prose items.
+        self.assertEqual(len(clauses), 97)  # 95 MODU marks + Item 2 + Item 3
         labels = [c["label"] for c in clauses]
         self.assertEqual([l for l in labels if str(l).startswith("Item ")],
-                         ["Item 1", "Item 2"])
+                         ["Item 2", "Item 3"])
         marks = [l for l in labels if not str(l).startswith("Item ")]
         self.assertEqual(len(marks), 95)
         self.assertEqual(marks[0], "A")
