@@ -271,10 +271,15 @@ class TestRingToTrackline(unittest.TestCase):
             {"type": "LineString", "coordinates": [[0, 0], [1, 0], [1, 1]]},
         )
 
-    def test_open_polygon_unchanged(self):
+    def test_open_polygon_becomes_linestring(self):
+        # Non-closed rings are already open lines: same coordinates, but the
+        # type always flips Polygon -> LineString for trackline clauses.
         spatial = {"type": "Polygon",
                    "coordinates": [[[0, 0], [1, 0], [1, 1]]]}
-        self.assertEqual(ring_to_trackline(spatial), spatial)
+        self.assertEqual(
+            ring_to_trackline(spatial),
+            {"type": "LineString", "coordinates": [[0, 0], [1, 0], [1, 1]]},
+        )
 
     def test_point_none_and_non_dict_passthrough(self):
         pt = {"type": "Point", "coordinates": [1, 2]}
@@ -282,8 +287,13 @@ class TestRingToTrackline(unittest.TestCase):
         self.assertIsNone(ring_to_trackline(None))
         self.assertEqual(ring_to_trackline("not-a-dict"), "not-a-dict")
 
-    def test_empty_ring_unchanged(self):
+    def test_empty_ring_becomes_empty_linestring(self):
         spatial = {"type": "Polygon", "coordinates": [[]]}
+        self.assertEqual(ring_to_trackline(spatial),
+                         {"type": "LineString", "coordinates": []})
+
+    def test_no_rings_passthrough(self):
+        spatial = {"type": "Polygon", "coordinates": []}
         self.assertEqual(ring_to_trackline(spatial), spatial)
 
 
