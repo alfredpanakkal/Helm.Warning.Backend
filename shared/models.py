@@ -172,25 +172,44 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     geometries: List[Dict[str, Any]] = []
 
+    def _append_geometry(geojson_obj: Dict[str, Any], label: str, buffer_val: Any = 0.0) -> None:
+        if not isinstance(geojson_obj, dict):
+            return
+        geom_type = geojson_obj.get("type")
+        if not geom_type:
+            return
+        try:
+            buffer_nm = float(buffer_val or 0.0)
+        except (TypeError, ValueError):
+            buffer_nm = 0.0
+        geometries.append({
+            "zone_label": label,
+            "feature_type": geojson_type_to_feature_type(geom_type),
+            "buffer_nm": buffer_nm,
+            "geojson": geojson_obj,
+        })
+
     spatial = record.get("spatial")
     if isinstance(spatial, dict):
         sp_type = spatial.get("type", "")
         if sp_type == "Feature":
-            geom = spatial.get("geometry", {})
-            geometries.append({
-                "zone_label": record.get("title") or "Spatial Feature",
-                "feature_type": geojson_type_to_feature_type(geom.get("type")),
-                "buffer_nm": float(spatial.get("properties", {}).get("buffer_nm", 0.0) or 0.0),
-                "geojson": geom
-            })
+            geom = spatial.get("geometry") or {}
+            props = spatial.get("properties") if isinstance(spatial.get("properties"), dict) else {}
+            _append_geometry(geom, record.get("title") or "Spatial Feature", props.get("buffer_nm", 0.0))
             return geometries
+        if sp_type == "FeatureCollection":
+            features = spatial.get("features") or []
+            label = record.get("title") or "Spatial Feature"
+            for feature in features:
+                if not isinstance(feature, dict):
+                    continue
+                geom = feature.get("geometry") or {}
+                props = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+                _append_geometry(geom, label, props.get("buffer_nm", 0.0))
+            if geometries:
+                return geometries
         elif sp_type in ("Point", "Polygon", "LineString", "MultiPoint", "MultiPolygon", "MultiLineString"):
-            geometries.append({
-                "zone_label": record.get("title") or "Spatial Feature",
-                "feature_type": geojson_type_to_feature_type(sp_type),
-                "buffer_nm": 0.0,
-                "geojson": spatial
-            })
+            _append_geometry(spatial, record.get("title") or "Spatial Feature", 0.0)
             return geometries
 
     # Fallback to lat/lon if available
@@ -214,6 +233,7 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
             pass
 
     return geometries
+
 
 def build_master_payload(record: Dict[str, Any]) -> Dict[str, Any]:
     """Builds schema-compliant master record for public.nav_warnings.
