@@ -169,6 +169,10 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Builds GeoJSON geometry child records suitable for public.nav_warning_geometries.
     Outputs: list of dicts with keys: zone_label, feature_type, buffer_nm, geojson
     feature_type MUST use the DB CHECK-constraint vocabulary (POINT/LINE/POLYGON).
+
+    Per-feature "properties.zone_label" (e.g. NAVAREA XII sub-area labels
+    A./B./C.) overrides the record-level label so each sub-area persists as
+    its own geometry row.
     """
     geometries: List[Dict[str, Any]] = []
 
@@ -195,7 +199,11 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
         if sp_type == "Feature":
             geom = spatial.get("geometry") or {}
             props = spatial.get("properties") if isinstance(spatial.get("properties"), dict) else {}
-            _append_geometry(geom, record.get("title") or "Spatial Feature", props.get("buffer_nm", 0.0))
+            _append_geometry(
+                geom,
+                props.get("zone_label") or record.get("title") or "Spatial Feature",
+                props.get("buffer_nm", 0.0),
+            )
             return geometries
         if sp_type == "FeatureCollection":
             features = spatial.get("features") or []
@@ -205,7 +213,11 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
                     continue
                 geom = feature.get("geometry") or {}
                 props = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
-                _append_geometry(geom, label, props.get("buffer_nm", 0.0))
+                _append_geometry(
+                    geom,
+                    props.get("zone_label") or label,
+                    props.get("buffer_nm", 0.0),
+                )
             if geometries:
                 return geometries
         elif sp_type in ("Point", "Polygon", "LineString", "MultiPoint", "MultiPolygon", "MultiLineString"):
