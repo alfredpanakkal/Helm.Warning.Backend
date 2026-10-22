@@ -309,7 +309,9 @@ def run_differential_sync(
     # silently disappeared from the map). Force such warnings through the
     # RPC again so their geometry payloads get rewritten from this parse.
     geometry_seen = None  # None = check unavailable; set() = checked
-    skipped_cids = {entry[0].get("canonical_id") for entry in diff["skip"]} if diff["skip"] else set()
+    # NOTE: compute_differential returns 'skip' as a flat list of canonical_id
+    # strings (unlike 'new'/'update', which hold (warning, msg) tuples).
+    skipped_cids = set(diff["skip"]) if diff["skip"] else set()
     backfill_candidate_ids = [
         rec["id"]
         for w in scraped_for_diff
@@ -339,22 +341,27 @@ def run_differential_sync(
             geometry_seen = None
 
     if geometry_seen is not None and diff["skip"]:
-        still_skipping = []
-        for entry in diff["skip"]:
-            warn_wrapper, msg = entry
-            cid = warn_wrapper.get("canonical_id")
+        # Candidates (active + Tier A + fresh geoms) whose DB id has zero
+        # geometry rows get reclassified from 'skip' into 'update'.
+        backfilled_cids = set()
+        for cid in diff["skip"]:
+            if cid not in skipped_cids:
+                continue
             rec = existing_warnings.get(cid) or {}
-            if (
-                warn_wrapper.get("_geoms")
-                and rec.get("status") == "active"
-                and rec.get("triage_tier") == "A"
-                and rec.get("id") not in geometry_seen
-            ):
-                diff["update"].append(entry)
-                print(f"  🔁 Geometry backfill: {cid} is Tier A active with zero geometry rows → re-upserting")
-            else:
-                still_skipping.append(entry)
-        diff["skip"] = still_skipping
+            if rec.get("id") in geometry_seen:
+                continue
+            backfilled_cids.add(cid)
+            print(f"  🔁 Geometry backfill: {cid} is Tier A active with zero geometry rows → re-upserting")
+        if backfilled_cids:
+            wrapper_by_cid = {w["canonical_id"]: w for w in scraped_for_diff}
+            for cid in sorted(backfilled_cids):
+                wrapper = wrapper_by_cid.get(cid)
+                if wrapper:
+                    # 'update' entries are (warning, msg) tuples; the raw message
+                    # is already recorded (checksum matched), so pass an empty
+                    # msg to skip the redundant raw_messages insert.
+                    diff["update"].append((wrapper, {}))
+            diff["skip"] = [cid for cid in diff["skip"] if cid not in backfilled_cids]
 
     print(
         f"\n[2/4] Differential analysis: "
