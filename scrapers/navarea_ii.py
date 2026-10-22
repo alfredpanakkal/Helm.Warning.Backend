@@ -3,7 +3,7 @@
 scrapers/navarea_ii.py — NAVAREA II S-124 SECOM Ingestion Pipeline
 Ingests S-124 (Ed. 2.0) nautical datasets packaged inside S-100 Exchange Sets
 via IEC 63173-2 (SECOM) REST API or the public Get_NW_Messages XML endpoint,
-using local XML extraction with Gemini 2.5 Flash-Lite backup for robust geometry
+using local XML extraction with a Gemini Flash-Lite backup for robust geometry
 recovery, and adapts notices into Supabase nav_warnings.
 """
 
@@ -38,7 +38,7 @@ except ImportError:
     HAS_PYDANTIC = False
     class BaseModel:
         def __init__(self, **kwargs):
-            for k, v in kwargs.items():
+            for k, v in kwargs:
                 setattr(self, k, v)
         @classmethod
         def model_validate_json(cls, json_str):
@@ -113,6 +113,9 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 PING_SECOM_API_KEY = os.environ.get("PING_SECOM_API_KEY", "")
+# Model IDs must be verified against the API before deployment; never assume a
+# model stays available. Overridable per environment without a code change.
+GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-3.5-flash-lite")
 
 SERVICE_INSTANCE = "navarea_ii_en"
 PING_OBJECT_URL = f"https://services.ping-info-nautique.fr/secom/{SERVICE_INSTANCE}/v1/object"
@@ -449,22 +452,23 @@ def local_s124_extractor(gml_content: str, filename: str = "dataset.gml") -> Dic
 
 def gemini_flash_lite_backup(gml_content: str) -> Optional[Dict[str, Any]]:
     """
-    Intelligent backup parser using Gemini 2.5 Flash-Lite when local extraction
-    lacks geometry, encounters complex GML nesting, or fails on irregular formatting.
+    Intelligent backup parser using the Gemini Flash-Lite model configured via
+    GEMINI_MODEL_NAME when local extraction lacks geometry, encounters complex
+    GML nesting, or fails on irregular formatting.
     Uses explicit Pydantic schema to avoid additional_properties error.
     """
     if not ai_client:
         return None
 
     try:
-        print("    [!] Local parser lacked geometry; invoking Gemini 2.5 Flash-Lite fallback...")
+        print(f"    [!] Local parser lacked geometry; invoking Gemini Flash-Lite fallback ({GEMINI_MODEL_NAME})...")
         prompt = (
             "Extract the warning details and boundary geometry coordinates from this GML XML:\n\n"
             + gml_content[:15000]
         )
 
         response = ai_client.models.generate_content(
-            model="gemini-2.5-flash-lite",
+            model=GEMINI_MODEL_NAME,
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -862,6 +866,7 @@ def run_navarea_ii_pipeline(
 | **Gemini Flash-Lite Fallbacks** | `{summary['fallback_used']}` |
 | **Execution Mode** | `{"Dry-Run / Offline" if summary['dry_run'] else "Supabase Live"}` |
 """)
+
                 if server_errors:
                     sf.write(f"\n> ⚠️ **Server Notice:** {server_errors}\n")
         except Exception:
