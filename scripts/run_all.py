@@ -117,6 +117,19 @@ def main() -> int:
         print(f"[!] NAVAREA II sync failed: {e}")
         all_success = False
 
+    print("\n" + "=" * 70)
+    print("🚀 NAVAREA VIII (NHO INDIA IN-FORCE BULLETIN)")
+    print("=" * 70)
+    try:
+        from scripts.run_navarea_8 import main as run_viii
+        res = run_viii()
+        if res is False:
+            all_success = False
+    except Exception as e:
+        logger.error(f"NAVAREA VIII pipeline failed: {e}", exc_info=True)
+        print(f"❌ NAVAREA VIII failed: {e}")
+        all_success = False
+
     total_duration = time.time() - start_total
     print("\n" + "=" * 70)
     if all_success:
