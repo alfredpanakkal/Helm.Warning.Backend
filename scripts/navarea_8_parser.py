@@ -7,18 +7,18 @@ bulletin into the pipeline JSON shape. Rule-first only — NO AI escalation
 (per pipeline policy for NAVAREA VIII; geometry-ambiguous warnings fail
 closed to Tier C / no_valid_geometry via shared/models.build_master_payload).
 
-Format of the NHO in-force bulletin (observed):
-    NAVAREA VIII - WARNINGS IN FORCE AS ON 20 MAR 2026
-    NAVAREA VIII 1066/26
-    INDIA - WEST COAST (.) CHARTS INT 21 ...
-    1. LAT ... (.) 2. ...
-    CANCEL NAVAREA VIII MSG 293/26 AND THIS MSG
+Real bulletin format (validated against live in-force text, Oct 2026):
+    NAVAREA VIII -1102/26 INDIA WEST COAST - KARWAR (.) CHARTS IN 215 257
+    INT 7343 (.) HYDROGRAPHIC SURVEY UNDER PROGRESS IN AREA BOUNDED WITHIN
+    14-47.2N TO 14-50.9N AND 074-02.8E TO 074-08.15E 2. CANCEL THIS MSG ...
+    ... CANCEL NAVAREA VIII MSG 1024/26 AND THIS MSG ...
+    ... CANCEL NAVAREA VIII -1096/26 ...
 
 Deterministic strategy:
   1. Capture the 'AS ON <date>' header (in-force snapshot date).
-  2. Segment into warnings on 'NAVAREA VIII n/yy' headers.
-  3. Local clause segmentation only (numbered/lettered items) — coordinate
-     parsing is delegated to the shared parser (no-second-parser rule).
+  2. Segment into warnings on 'NAVAREA VIII [dash] n/yy' headers.
+  3. Local clause segmentation only (numbered items) — coordinate parsing is
+     delegated to the shared parser (no-second-parser rule).
   4. classify_hazard_categories() for categories; CANCEL/body cross-refs
      extracted for the sync layer's supersede pass.
 """
@@ -42,10 +42,19 @@ from shared.utils import parse_coordinates, classify_hazard_categories
 SOURCE_ID = "nho-navarea-viii"
 NAVAREA_ID = "VIII"
 
-RE_WARNING_HEADER = re.compile(r"NAVAREA\s+VIII\s+(\d{1,4})\s*/\s*(\d{2})", re.IGNORECASE)
-RE_AS_ON = re.compile(r"WARNINGS\s+IN\s+FORCE\s+AS\s+ON\s+(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})", re.IGNORECASE)
-RE_CANCEL_REF = re.compile(r"CANCEL\s+NAVAREA\s+VIII\s+(?:MSG\s+)?(\d{1,4})\s*/\s*(\d{2})", re.IGNORECASE)
-RE_ITEM_LINE = re.compile(r"^\s*(\d{1,2}\.|[A-H]\.|-)\s+", re.MULTILINE)
+# 'NAVAREA VIII 1066/26' or 'NAVAREA VIII -1102/26' (both observed; the dash
+# form is used in the live in-force text and the NHO website table).
+RE_WARNING_HEADER = re.compile(r"NAVAREA\s+VIII\s*[-\u2013]?\s*(\d{1,4})\s*/\s*(\d{2})", re.IGNORECASE)
+RE_AS_ON = re.compile(r"WARNINGS?\s+IN\s+FORCE\s+AS\s+ON\s+(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})", re.IGNORECASE)
+# Handles: 'CANCEL NAVAREA VIII MSG 1024/26', 'CANCEL NAVAREA VIII -1096/26',
+# 'CANCEL NAVAREA VIII 293/26'
+RE_CANCEL_REF = re.compile(
+    r"CANCEL\s+NAVAREA\s+VIII\s*(?:MSG\s*)?[-\u2013]?\s*(\d{1,4})\s*/\s*(\d{2})", re.IGNORECASE)
+# Numbered item markers anywhere in the line (mirror text arrives as one long
+# line, so we must not anchor to line starts). Requires whitespace/dash
+# boundary before and an uppercase word after, so coordinate fragments like
+# '074-08.15E' or '2.5NM' never match.
+RE_ITEM_LINE = re.compile(r"(?:^|\s)(\d{1,2})\.[\s]+(?=[A-Z])")
 
 MONTHS = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
@@ -91,17 +100,20 @@ def _segment_clauses(body: str):
     for i, m in enumerate(matches):
         end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
         chunk = body[m.start():end].strip()
-        label = m.group(1).rstrip(".").strip() or f"Item {i + 1}"
+        label = m.group(1).strip() or f"Item {i + 1}"
         clauses.append({"label": label, "text": chunk})
     return clauses
 
 
 def _extract_title(body: str) -> str:
-    """Title = leading lines before the first numbered/lettered item."""
+    """Title = leading text before the first numbered item (typically the
+    location / operation description, e.g. 'INDIA WEST COAST - KARWAR')."""
     m = RE_ITEM_LINE.search(body)
     head = body[:m.start()] if m else body
     lines = [_clean_line(l) for l in head.split("\n") if l.strip()]
     title = " ".join(lines).strip()
+    # Trim trailing DTG tokens the mirror prepends to the next warning.
+    title = re.sub(r"\b\d{6}Z?\s*/?\s*[A-Z]{3}\s+\d{2}\s*$", "", title).strip()
     return title[:255] or "NAVAREA VIII Warning"
 
 
@@ -119,13 +131,12 @@ def _extract_cross_refs(raw_text: str):
 
 def split_into_warnings(text: str):
     """
-    Segments the bulletin into warning blocks on 'NAVAREA VIII n/yy' headers.
+    Segments the bulletin into warning blocks on 'NAVAREA VIII [-]n/yy' headers.
     Returns a list of {warning_id, number, year, raw_text}.
     """
     blocks = []
     matches = list(RE_WARNING_HEADER.finditer(text or ""))
     for i, m in enumerate(matches):
-        # Skip the 'AS ON' header line itself (it has no n/yy).
         start = m.start()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
         raw_text = text[start:end].strip()
