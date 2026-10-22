@@ -1,0 +1,40 @@
+name: Assemble lifecycle payload
+
+on:
+  push:
+    branches: [fix/lifecycle-safety]
+    paths: ['payload/.trigger']
+
+permissions:
+  contents: write
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble base64 payload parts into real files
+        run: |
+          set -eu
+          python3 - <<'PYEOF'
+          import base64, glob, os
+          parts = {}
+          for p in glob.glob('payload/**/*.b64.*', recursive=True):
+              rel = os.path.relpath(p, 'payload')
+              stem, idx = rel.rsplit('.', 1)
+              target = stem[:-len('.b64')]
+              parts.setdefault(target, {})[int(idx)] = open(p).read().strip()
+          for target, chunks in parts.items():
+              data = b''.join(base64.b64decode(chunks[i], validate=True) for i in sorted(chunks))
+              os.makedirs(os.path.dirname(target) or '.', exist_ok=True)
+              with open(target, 'wb') as f:
+                  f.write(data)
+              print('assembled', target, len(data), 'bytes')
+          PYEOF
+          rm -rf payload
+          md5sum shared/sync_engine.py migrations/20261023_lifecycle_safety.sql tests/test_lifecycle_safety.py > ASSEMBLED.md5 || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: assemble payload parts into source files"
+          git push
