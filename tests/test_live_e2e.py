@@ -22,8 +22,11 @@ E2E_CID = "TEST-REGION 999/26"
 class TestLiveEndToEnd(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from supabase import create_client
-        cls.sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+        try:
+            from supabase import create_client
+            cls.sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+        except Exception as e:
+            raise unittest.SkipTest(f"Supabase client not available: {e}")
 
     def _upsert_test_warning(self):
         payload = {
