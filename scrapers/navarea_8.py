@@ -26,7 +26,7 @@ import re
 import sys
 import time
 import argparse
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Optional, Tuple
 from urllib.parse import urljoin
 
@@ -147,13 +147,13 @@ def pick_latest(links: List[Tuple[str, str, Optional[datetime]]]) -> Optional[Tu
 # ---------------------------------------------------------------------------
 
 @retry(max_attempts=2, delay=2.0, exceptions=(Exception,))
-def fetch_page_static() -> Optional[str]:
+def fetch_page_static() -> str:
     """
     FAST PATH: plain HTTP GET of the warnings page.
     Returns the HTML if the request succeeds, else raises (handled by retry).
     The caller checks whether PDF links are present before trusting this.
     """
-    logger.info("⚡ Fast path: fetching page with plain requests...", extra={"url": NAVAREA_PAGE_URL})
+    logger.info("Fast path: fetching page with plain requests...", extra={"url": NAVAREA_PAGE_URL})
     response = requests.get(NAVAREA_PAGE_URL, headers=BROWSER_HEADERS, timeout=30)
     response.raise_for_status()
     return response.text
@@ -169,11 +169,11 @@ def render_page_html() -> str:
         browser = p.chromium.launch(headless=True)
         try:
             page = browser.new_page()
-            logger.info(f"🌐 Fallback: navigating with headless Chromium to {NAVAREA_PAGE_URL} ...")
+            logger.info(f"Fallback: navigating with headless Chromium to {NAVAREA_PAGE_URL} ...")
             # Liferay portals often hold long-poll connections and may never reach
             # 'networkidle'; anchor on the DOM and then wait for PDF links instead.
             page.goto(NAVAREA_PAGE_URL, wait_until="domcontentloaded", timeout=60000)
-            logger.info(f"⏳ Waiting up to {RENDER_TIMEOUT_S}s for JS to render the PDF table...")
+            logger.info(f"Waiting up to {RENDER_TIMEOUT_S}s for JS to render the PDF table...")
             page.wait_for_selector("a[href*='.pdf' i]", timeout=RENDER_TIMEOUT_S * 1000)
             # Give a still-rendering table a moment to finish re-ordering/updating.
             time.sleep(SETTLE_DELAY_S)
@@ -196,7 +196,7 @@ def get_pdf_links() -> Tuple[List[Tuple[str, str, Optional[datetime]]], str]:
             static_html = fetch_page_static()
             links = collect_pdf_links(static_html)
             if links:
-                logger.info(f"⚡ Fast path succeeded: {len(links)} PDF link(s) found without a browser.")
+                logger.info(f"Fast path succeeded: {len(links)} PDF link(s) found without a browser.")
                 return links, "static"
             logger.info("Fast path found no PDF links (JS-rendered page); falling back to Playwright.")
         except Exception as e:
@@ -251,9 +251,9 @@ def _fetch_pdf_bytes(pdf_url: str) -> Tuple[bytes, str]:
     return payload, content_type
 
 
-def download_pdf(pdf_url: str, output_dir: str, dry_run: bool = False) -> Optional[str]:
+def download_pdf(pdf_url: str, output_dir: str, dry_run: bool = False) -> Tuple[Optional[str], bool]:
     """
-    Downloads the bulletin PDF with retries; returns the local file path.
+    Downloads the bulletin PDF with retries; returns (local_path, skipped_existing).
     Skips the download when the dated file already exists on disk (idempotent).
     """
     os.makedirs(output_dir, exist_ok=True)
@@ -265,15 +265,15 @@ def download_pdf(pdf_url: str, output_dir: str, dry_run: bool = False) -> Option
     latest_path = os.path.join(output_dir, "latest_warnings.pdf")
 
     if os.path.exists(dated_path) and os.path.getsize(dated_path) > 0:
-        logger.info(f"📦 Bulletin already on disk, skipping download: {dated_path}")
+        logger.info(f"Bulletin already on disk, skipping download: {dated_path}")
         # Keep the stable 'latest' copy in sync in case it drifted.
         with open(dated_path, "rb") as src, open(latest_path, "wb") as dst:
             dst.write(src.read())
-        return dated_path
+        return dated_path, True
 
     if dry_run:
-        logger.info(f"🧪 [DRY-RUN] Would download: {pdf_url}")
-        return None
+        logger.info(f"[DRY-RUN] Would download: {pdf_url}")
+        return None, False
 
     payload, _ = _fetch_pdf_bytes(pdf_url)
 
@@ -282,8 +282,8 @@ def download_pdf(pdf_url: str, output_dir: str, dry_run: bool = False) -> Option
     with open(latest_path, "wb") as f:
         f.write(payload)
 
-    logger.info(f"✅ PDF saved to {dated_path} ({len(payload)/1024:.1f} KB); refreshed {latest_path}")
-    return dated_path
+    logger.info(f"PDF saved to {dated_path} ({len(payload)/1024:.1f} KB); refreshed {latest_path}")
+    return dated_path, False
 
 
 # ---------------------------------------------------------------------------
@@ -299,9 +299,9 @@ def run_navarea_8_scraper(output_dir: str = OUTPUT_DIR, dry_run: bool = False) -
         setup_logging(level=os.environ.get("LOG_LEVEL", "INFO"))
 
     logger.info("=" * 60)
-    logger.info("⚓ NAVAREA VIII (NHO India) PDF Scraper")
-    logger.info(f"📡 Source page: {NAVAREA_PAGE_URL}")
-    logger.info(f"📁 Output dir: {output_dir}")
+    logger.info("NAVAREA VIII (NHO India) PDF Scraper")
+    logger.info(f"Source page: {NAVAREA_PAGE_URL}")
+    logger.info(f"Output dir: {output_dir}")
 
     summary = {
         "pdf_url": None,
@@ -320,7 +320,7 @@ def run_navarea_8_scraper(output_dir: str = OUTPUT_DIR, dry_run: bool = False) -
     links, method = get_pdf_links()
     summary["pdf_links_found"] = len(links)
     summary["fetch_method"] = method
-    logger.info(f"🔗 Found {len(links)} NAVAREA PDF link(s) via {method}.")
+    logger.info(f"Found {len(links)} NAVAREA PDF link(s) via {method}.")
 
     if not links:
         raise RuntimeError(
@@ -332,7 +332,7 @@ def run_navarea_8_scraper(output_dir: str = OUTPUT_DIR, dry_run: bool = False) -
     pdf_url, caption, as_on = chosen
     summary["pdf_url"] = pdf_url
     summary["as_on_date"] = as_on.strftime("%Y-%m-%d") if as_on else None
-    logger.info(f"📌 Selected: {pdf_url}")
+    logger.info(f"Selected: {pdf_url}")
     if caption:
         logger.info(f"   Caption: {caption!r}")
     if as_on:
@@ -340,17 +340,16 @@ def run_navarea_8_scraper(output_dir: str = OUTPUT_DIR, dry_run: bool = False) -
 
     check_staleness(as_on)
 
-    already = summary.get("saved_path")
-    saved = download_pdf(pdf_url, output_dir, dry_run=dry_run)
+    saved, skipped = download_pdf(pdf_url, output_dir, dry_run=dry_run)
     summary["saved_path"] = saved
-    summary["skipped_existing"] = bool(saved and os.path.exists(saved) and saved == already)
+    summary["skipped_existing"] = skipped
 
     # GitHub Actions step summary
     step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if step_summary:
         try:
             with open(step_summary, "a", encoding="utf-8") as sf:
-                sf.write(f"""### ⚓ NAVAREA VIII PDF Scraper Summary
+                sf.write(f"""### NAVAREA VIII PDF Scraper Summary
 | Metric | Value |
 | :--- | :--- |
 | **Fetch Method** | {summary['fetch_method']} |
@@ -377,7 +376,7 @@ def main() -> int:
         run_navarea_8_scraper(output_dir=args.output_dir, dry_run=args.dry_run)
         return 0
     except Exception as e:
-        logger.error(f"❌ {e}")
+        logger.error(f"Scraper failed: {e}")
         return 1
 
 
