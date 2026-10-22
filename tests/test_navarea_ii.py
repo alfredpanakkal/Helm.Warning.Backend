@@ -4,7 +4,6 @@
 import sys
 import os
 import io
-import json
 import base64
 import zipfile
 import unittest
@@ -17,7 +16,7 @@ from scrapers.navarea_ii import (
     strip_ns,
     local_s124_extractor,
     adapt_to_nav_warnings,
-    S124BackupSchema,
+    derive_warning_number,
     run_navarea_ii_pipeline,
     NW_MESSAGES_URL,
     parse_nw_datasets,
@@ -118,24 +117,59 @@ class TestNavareaIIExtractor(unittest.TestCase):
         self.assertNotIn("qa_flags", row)
         self.assertNotIn("unplotted_reason", row)
 
-    def test_backup_schema_validation(self):
-        raw_json = json.dumps({
-            "warning_number": "512/26",
-            "warning_type": "Drifting Hazard",
-            "general_area": "ATLANTIC OCEAN",
-            "publication_time": "2026-10-18T14:30:00Z",
-            "cancellation_date": None,
-            "warning_text": "CONTAINER REPORTED ADRIFT IN VICINITY OF 45-20N 008-10W.",
-            "geometry_type": "Point",
-            "coordinates": [
-                {"longitude": -8.1667, "latitude": 45.3333}
-            ]
-        })
-        parsed = S124BackupSchema.model_validate_json(raw_json)
-        self.assertEqual(parsed.warning_number, "512/26")
-        self.assertEqual(parsed.geometry_type, "Point")
-        self.assertEqual(parsed.coordinates[0].longitude, -8.1667)
-        self.assertEqual(parsed.coordinates[0].latitude, 45.3333)
+    def test_planned_cancellation_date_keeps_warning_active(self):
+        # S-124 cancellationDate is the PLANNED cancellation date of an
+        # in-force warning; it must not flip status to "cancelled".
+        row = adapt_to_nav_warnings(
+            dataset_id="124FR00N036026E",
+            warning_number="360/26",
+            warning_type="Survey",
+            general_area="BAY OF BISCAY",
+            publication_time="2026-10-18T12:00:00Z",
+            cancellation_date="2027-01-18T00:00:00Z",
+            warning_text="SURVEY OPS",
+            geojson_geometry={"type": "Point", "coordinates": [-4.5, 47.2]},
+        )
+        master = row["_master"]
+        self.assertEqual(master["status"], "active")
+        self.assertEqual(master["valid_to"], "2027-01-18T00:00:00+00:00")
+
+    def test_geometry_less_warning_triages_to_tier_c(self):
+        # With the AI fallback removed, a geometry-less warning must fail
+        # closed: Tier C, unplotted_reason set, zero geometry payloads.
+        row = adapt_to_nav_warnings(
+            dataset_id="124FR00N029726E",
+            warning_number="297/26",
+            warning_type="Survey",
+            general_area="BAY OF BISCAY",
+            warning_text="SURVEY OPS WITHOUT COORDINATES",
+            geojson_geometry=None,
+        )
+        master = row["_master"]
+        self.assertEqual(master["triage_tier"], "C")
+        self.assertEqual(master["unplotted_reason"], "no_valid_geometry")
+        self.assertEqual(master["parsing_method"], "RULE")
+        self.assertEqual(row["_geoms"], [])
+
+    def test_extractor_ignores_cancel_reference_numbers(self):
+        # Text fallback must not misattribute a cancelled warning's number
+        sample_gml = """<?xml version="1.0" encoding="utf-8"?>
+<S124_NavigationalWarning>
+  <generalArea>BAY OF BISCAY</generalArea>
+  <textDescription>CANCEL NAVAREA II 215/26. SURVEY OPERATIONS COMMENCED.</textDescription>
+</S124_NavigationalWarning>"""
+
+        data = local_s124_extractor(sample_gml, "NW.NAVAREA_II.360.2026.eng.gml")
+        self.assertIsNone(data["warning_number"])
+        # Pipeline normalization derives the number from the dataset id
+        self.assertEqual(derive_warning_number(data["warning_number"], data["dataset_id"]), "360/26")
+
+    def test_derive_warning_number_prefers_dataset_id(self):
+        self.assertEqual(derive_warning_number("360", "NW.NAVAREA_II.360.2026.eng"), "360/26")
+        self.assertEqual(derive_warning_number(None, "NW.NAVAREA_II.215.2026.eng"), "215/26")
+        self.assertEqual(derive_warning_number("215/26", "NW.NAVAREA_II.215.2026.eng"), "215/26")
+        self.assertEqual(derive_warning_number("359/26", "124FR00N035926E"), "359/26")
+        self.assertEqual(derive_warning_number("360", "124FR00N036026E"), "360")
 
     def test_nw_messages_url_is_filtered_english_series(self):
         # The public ExchangeSet endpoint must request the NAVAREA II series in English
@@ -179,6 +213,7 @@ class TestNavareaIIExtractor(unittest.TestCase):
         self.assertEqual(summary["total_items"], 1)
         self.assertEqual(summary["harvested"], 1)
         self.assertEqual(summary["synced"], 1)
+        self.assertEqual(summary["sync_errors"], 0)
 
 
 if __name__ == "__main__":

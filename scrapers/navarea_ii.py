@@ -3,18 +3,17 @@
 scrapers/navarea_ii.py — NAVAREA II S-124 SECOM Ingestion Pipeline
 Ingests S-124 (Ed. 2.0) nautical datasets packaged inside S-100 Exchange Sets
 via IEC 63173-2 (SECOM) REST API or the public Get_NW_Messages XML endpoint,
-using local XML extraction with a Gemini Flash-Lite backup for robust geometry
-recovery, and adapts notices into Supabase nav_warnings.
+using rule-first local XML extraction (no AI fallback — geometry-less warnings
+triage to Tier C) and adapts notices into Supabase nav_warnings.
 """
 
 import os
 import io
+import re
 import sys
-import json
 import base64
 import zipfile
 import hashlib
-from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Tuple
 import xml.etree.ElementTree as ET
 
@@ -31,27 +30,6 @@ try:
 except ImportError:
     HAS_SCRAPLING = False
 
-try:
-    from pydantic import BaseModel, Field
-    HAS_PYDANTIC = True
-except ImportError:
-    HAS_PYDANTIC = False
-    class BaseModel:
-        def __init__(self, **kwargs):
-            for k, v in kwargs:
-                setattr(self, k, v)
-        @classmethod
-        def model_validate_json(cls, json_str):
-            data = json.loads(json_str)
-            inst = cls()
-            for k, v in data.items():
-                if k == "coordinates" and isinstance(v, list):
-                    v = [CoordinatePair(**item) if isinstance(item, dict) else item for item in v]
-                setattr(inst, k, v)
-            return inst
-    def Field(*args, **kwargs):
-        return kwargs.get("default", None)
-
 # Ensure root directory is on Python path
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT_DIR not in sys.path:
@@ -63,29 +41,18 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-# Attempt Google GenAI import
-try:
-    from google import genai
-    from google.genai import types
-    HAS_GENAI = True
-except ImportError:
-    HAS_GENAI = False
-
 # Attempt Supabase client import
 try:
-    from supabase import create_client, Client
+    from supabase import create_client
     HAS_SUPABASE = True
 except ImportError:
     HAS_SUPABASE = False
 
-# Attempt shared helper import
-import hashlib
 from shared.models import build_master_payload, build_geometry_payloads, parse_safe_iso_timestamp
 from shared.sync_engine import upsert_warning_atomic
 
 try:
     from shared.utils import classify_hazard, classify_hazard_categories
-
 except ImportError:
     def classify_hazard_categories(text: str) -> list[str]:
         t = text.lower()
@@ -111,11 +78,7 @@ except ImportError:
 # --- Environment Configuration ---
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 PING_SECOM_API_KEY = os.environ.get("PING_SECOM_API_KEY", "")
-# Model IDs must be verified against the API before deployment; never assume a
-# model stays available. Overridable per environment without a code change.
-GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-3.5-flash-lite")
 
 SERVICE_INSTANCE = "navarea_ii_en"
 PING_OBJECT_URL = f"https://services.ping-info-nautique.fr/secom/{SERVICE_INSTANCE}/v1/object"
@@ -140,13 +103,6 @@ if HAS_SUPABASE and SUPABASE_URL and SUPABASE_KEY:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     except Exception as e:
         print(f"⚠️ Supabase client initialization warning: {e}")
-
-ai_client: Optional[Any] = None
-if HAS_GENAI and GEMINI_API_KEY:
-    try:
-        ai_client = genai.Client(api_key=GEMINI_API_KEY)
-    except Exception as e:
-        print(f"⚠️ Google AI Studio client initialization warning: {e}")
 
 
 # --- PING SECOM request helpers ---
@@ -323,26 +279,6 @@ def exchange_set_to_payload_items(datasets: List[Tuple[str, str]]) -> List[Dict[
     return items
 
 
-# --- Gemini Structured Output Schema ---
-class CoordinatePair(BaseModel):
-    longitude: float = Field(description="Longitude in decimal degrees")
-    latitude: float = Field(description="Latitude in decimal degrees")
-
-
-class S124BackupSchema(BaseModel):
-    warning_number: Optional[str] = Field(default=None, description="Notice number, e.g., '359/26'")
-    general_area: Optional[str] = Field(default=None, description="Broad geographic locality, e.g., 'BAY OF BISCAY'")
-    warning_type: Optional[str] = Field(default=None, description="Category or nature of the maritime hazard")
-    publication_time: Optional[str] = Field(default=None, description="ISO 8601 publication or start timestamp")
-    cancellation_date: Optional[str] = Field(default=None, description="ISO 8601 cancellation timestamp or null")
-    warning_text: str = Field(default="", description="Full plain body text of the navigational warning")
-    geometry_type: Optional[str] = Field(default=None, description="'Point', 'LineString', or 'Polygon'")
-    coordinates: Optional[List[CoordinatePair]] = Field(
-        default=None,
-        description="List of point coordinates in decimal degrees (longitude, latitude)",
-    )
-
-
 def strip_ns(tag: str) -> str:
     """Removes XML namespace prefix from tag if present."""
     return tag.split("}", 1)[1] if "}" in tag else tag
@@ -353,6 +289,7 @@ def local_s124_extractor(gml_content: str, filename: str = "dataset.gml") -> Dic
     Primary local zero-latency extractor for S-124 GML XML datasets.
     Extracts text descriptions, warning attributes, and parses vector geometry,
     inverting GML lat-lon coordinate ordering to GeoJSON standard [lon, lat].
+    No AI fallback: warnings without geometry downstream-triage to Tier C.
     """
     dataset_id = os.path.splitext(os.path.basename(filename))[0]
     warning_text_parts: List[str] = []
@@ -412,7 +349,7 @@ def local_s124_extractor(gml_content: str, filename: str = "dataset.gml") -> Dic
 
         if tag in ("Polygon", "Surface", "PolygonPatch"):
             geom_type = "Polygon"
-        elif tag in ("Point", "DirectPosition") and not geom_type:
+        elif tag in ("Point",) and not geom_type:
             geom_type = "Point"
         elif tag in ("LineString", "Curve", "LineStringSegment") and geom_type != "Polygon":
             geom_type = "LineString"
@@ -430,13 +367,17 @@ def local_s124_extractor(gml_content: str, filename: str = "dataset.gml") -> Dic
         else:
             geojson_geom = {"type": "LineString", "coordinates": coordinates}
 
-    # If warning_number was not explicitly tagged, attempt regex search in text
+    # If warning_number was not explicitly tagged, attempt regex search in text.
+    # Guard: skip numbers that belong to CANCEL references ("CANCEL 215/26") so
+    # the cancelled warning's number is never misattributed to this dataset.
     full_text = "\n\n".join(warning_text_parts).strip()
     if not warning_number and full_text:
-        import re
-        match = re.search(r"\b(\d{1,4}/\d{2,4})\b", full_text)
-        if match:
-            warning_number = match.group(1)
+        for m in re.finditer(r"\b(\d{1,4}/\d{2,4})\b", full_text):
+            prefix = full_text[max(0, m.start() - 20):m.start()].upper()
+            if "CANCEL" in prefix:
+                continue
+            warning_number = m.group(1)
+            break
 
     return {
         "dataset_id": dataset_id,
@@ -450,72 +391,21 @@ def local_s124_extractor(gml_content: str, filename: str = "dataset.gml") -> Dic
     }
 
 
-def gemini_flash_lite_backup(gml_content: str) -> Optional[Dict[str, Any]]:
+def derive_warning_number(warning_no: Optional[str], dataset_id: str) -> Optional[str]:
     """
-    Intelligent backup parser using the Gemini Flash-Lite model configured via
-    GEMINI_MODEL_NAME when local extraction lacks geometry, encounters complex
-    GML nesting, or fails on irregular formatting.
-    Uses explicit Pydantic schema to avoid additional_properties error.
+    Normalizes warning numbers, preferring the authoritative ExchangeSet dataset id
+    (NW.NAVAREA_II.<num>.<yyyy>.eng) over any locally parsed number:
+      - tagged "360/26"           -> kept as-is
+      - tagged "360" (no slash)    -> "360/26" derived from dataset id
+      - None (tag missing)         -> derived from dataset id
+    Falls back to the tagged value when the dataset id carries no number.
     """
-    if not ai_client:
-        return None
-
-    try:
-        print(f"    [!] Local parser lacked geometry; invoking Gemini Flash-Lite fallback ({GEMINI_MODEL_NAME})...")
-        prompt = (
-            "Extract the warning details and boundary geometry coordinates from this GML XML:\n\n"
-            + gml_content[:15000]
-        )
-
-        response = ai_client.models.generate_content(
-            model=GEMINI_MODEL_NAME,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=S124BackupSchema,
-                temperature=0.0,
-            ),
-        )
-        if not response.text:
-            return None
-
-        data = S124BackupSchema.model_validate_json(response.text)
-
-        # Reconstruct GeoJSON geometry safely
-        geojson_geom = None
-        if data.coordinates and data.geometry_type:
-            raw_pts = []
-            for pt in data.coordinates:
-                if hasattr(pt, "longitude") and hasattr(pt, "latitude"):
-                    raw_pts.append([pt.longitude, pt.latitude])
-                elif isinstance(pt, dict):
-                    raw_pts.append([pt.get("longitude"), pt.get("latitude")])
-                elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                    raw_pts.append([pt[0], pt[1]])
-
-            gtype = (data.geometry_type or "").strip().lower()
-            if gtype == "point" and raw_pts:
-                geojson_geom = {"type": "Point", "coordinates": raw_pts[0]}
-            elif gtype == "polygon" and raw_pts:
-                # Close the polygon ring if not closed
-                if raw_pts[0] != raw_pts[-1]:
-                    raw_pts.append(raw_pts[0])
-                geojson_geom = {"type": "Polygon", "coordinates": [raw_pts]}
-            elif gtype in ("linestring", "curve") and raw_pts:
-                geojson_geom = {"type": "LineString", "coordinates": raw_pts}
-
-        return {
-            "warning_number": data.warning_number,
-            "general_area": data.general_area,
-            "warning_type": data.warning_type,
-            "publication_time": data.publication_time,
-            "cancellation_date": data.cancellation_date,
-            "warning_text": data.warning_text,
-            "geojson_geometry": geojson_geom,
-        }
-    except Exception as e:
-        print(f"    [!] Gemini Flash-Lite fallback error: {e}")
-        return None
+    if warning_no and "/" in warning_no:
+        return warning_no
+    m = re.search(r"NW\.NAVAREA_II\.(\d+)\.(\d{4})", dataset_id or "")
+    if m:
+        return f"{int(m.group(1))}/{m.group(2)[-2:]}"
+    return warning_no
 
 
 def compute_centroid(geojson_geometry: Optional[Dict[str, Any]]) -> Tuple[Optional[float], Optional[float], Optional[str]]:
@@ -556,7 +446,6 @@ def adapt_to_nav_warnings(
     Adapts S-124 extracted notice into schema-compliant master payload and child geometries.
     Conforms to the 20261019/20261020 PostgreSQL/Supabase schema.
     """
-    import re
     if isinstance(local_or_ai_data, dict):
         raw_num = str(local_or_ai_data.get("warning_number") or "")
         dataset_id = local_or_ai_data.get("dataset_id", "")
@@ -607,7 +496,10 @@ def adapt_to_nav_warnings(
         "latitude": lat,
         "longitude": lon,
         "categories": categories,
-        "status": "cancelled" if cancel_time else "active",
+        # S-124 cancellationDate is the PLANNED cancellation of an in-force
+        # warning, not evidence of cancellation; keep status active and let
+        # valid_to carry the planned date.
+        "status": "active",
         "valid_from": parse_safe_iso_timestamp(pub_time),
         "valid_to": parse_safe_iso_timestamp(cancel_time),
         "raw_text": body_text or raw_gml[:1000],
@@ -633,7 +525,8 @@ def run_navarea_ii_pipeline(
     1. Fetches the public Get_NW_Messages S-124 Exchange Set (primary, no key),
        falling back to the keyed PING SECOM /object REST API
     2. Decodes Base64 S-100 Exchange Sets and unzips in-memory GML
-    3. Runs local extractor, falling back to Gemini Flash-Lite if geometry is missing
+    3. Runs the rule-first local extractor (no AI fallback; geometry-less
+       warnings triage to Tier C via build_master_payload)
     4. Upserts normalized records into Supabase nav_warnings
     """
     print("=" * 70)
@@ -647,7 +540,6 @@ def run_navarea_ii_pipeline(
         "harvested": 0,
         "synced": 0,
         "sync_errors": 0,
-        "fallback_used": 0,
         "server_errors": "",
         "source_used": "",
         "dry_run": dry_run or (supabase is None),
@@ -758,58 +650,27 @@ def run_navarea_ii_pipeline(
                     print(f"  ⚠️ Could not read GML file {file_path}: {e}")
                     continue
 
-                # 1. Primary: Extract locally
+                # 1. Rule-first local extraction (no AI fallback)
                 local_data = local_s124_extractor(raw_gml, file_path)
                 final_geometry = local_data.get("geojson_geometry")
                 final_text = local_data.get("warning_text") or ""
-                warning_no = local_data.get("warning_number")
-                general_area = local_data.get("general_area")
-                warning_type = local_data.get("warning_type")
-                pub_time = local_data.get("publication_time")
-                cancel_time = local_data.get("cancellation_date")
                 dataset_id = local_data.get("dataset_id")
 
-                # Normalize "360"-style warning numbers to "360/26" via dataset id
-                if warning_no and "/" not in warning_no and dataset_id:
-                    import re as _re
-                    m = _re.search(r"NW\.NAVAREA_II\.(\d+)\.(\d{4})", dataset_id)
-                    if m:
-                        warning_no = f"{int(m.group(1))}/{m.group(2)[-2:]}"
-
-                used_ai = False
-                # 2. Backup Trigger: If no coordinates or critical text found, invoke Gemini Flash-Lite
-                if (not final_geometry or not final_text) and ai_client:
-                    summary["fallback_used"] += 1
-                    used_ai = True
-                    ai_backup = gemini_flash_lite_backup(raw_gml)
-                    if ai_backup:
-                        if not final_geometry and ai_backup.get("geojson_geometry"):
-                            final_geometry = ai_backup["geojson_geometry"]
-                        if not final_text and ai_backup.get("warning_text"):
-                            final_text = ai_backup["warning_text"]
-                        if not warning_no and ai_backup.get("warning_number"):
-                            warning_no = ai_backup["warning_number"]
-                        if not general_area and ai_backup.get("general_area"):
-                            general_area = ai_backup["general_area"]
-                        if not warning_type and ai_backup.get("warning_type"):
-                            warning_type = ai_backup["warning_type"]
-                        if not pub_time and ai_backup.get("publication_time"):
-                            pub_time = ai_backup["publication_time"]
-                        if not cancel_time and ai_backup.get("cancellation_date"):
-                            cancel_time = ai_backup["cancellation_date"]
+                # 2. Normalize warning number, preferring the authoritative
+                #    ExchangeSet dataset id (also fills in a missing tag)
+                warning_no = derive_warning_number(local_data.get("warning_number"), dataset_id)
 
                 # 3. Format adapted record for nav_warnings
                 adapted_warn = adapt_to_nav_warnings(
                     dataset_id=dataset_id,
                     warning_number=warning_no,
-                    warning_type=warning_type,
-                    general_area=general_area,
-                    publication_time=pub_time,
-                    cancellation_date=cancel_time,
+                    warning_type=local_data.get("warning_type"),
+                    general_area=local_data.get("general_area"),
+                    publication_time=local_data.get("publication_time"),
+                    cancellation_date=local_data.get("cancellation_date"),
                     warning_text=final_text,
                     geojson_geometry=final_geometry,
                     raw_payload=raw_gml,
-                    used_ai=used_ai,
                 )
                 master = adapted_warn["_master"]
                 geoms = adapted_warn["_geoms"]
@@ -844,7 +705,7 @@ def run_navarea_ii_pipeline(
 
 
     print("\n" + "=" * 70)
-    print(f"📊 Summary: Harvested {summary['harvested']} S-124 files | Synced: {summary['synced']} | Gemini Fallbacks: {summary['fallback_used']}")
+    print(f"📊 Summary: Harvested {summary['harvested']} S-124 files | Synced: {summary['synced']} | Errors: {summary['sync_errors']}")
     print("=" * 70)
 
     # Write to GitHub Actions Step Summary if available
@@ -863,7 +724,7 @@ def run_navarea_ii_pipeline(
 | **Total Items Reported** | `{summary['total_items']}` |
 | **S-124 GML Harvested** | `{summary['harvested']}` |
 | **Notices Synced** | `{summary['synced']}` |
-| **Gemini Flash-Lite Fallbacks** | `{summary['fallback_used']}` |
+| **Sync Errors** | `{summary['sync_errors']}` |
 | **Execution Mode** | `{"Dry-Run / Offline" if summary['dry_run'] else "Supabase Live"}` |
 """)
 
