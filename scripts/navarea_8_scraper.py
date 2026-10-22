@@ -2,7 +2,7 @@
 """
 navarea_8_scraper.py — NAVAREA VIII (NHO India) Stage-1 Scraper Wrapper
 Delegates to scrapers/navarea_8.py's tiered acquisition chain:
-  pdf-route -> nho-page-text -> sealagom-mirror
+  pdf-route -> nho-page-text
 Each tier is sanity-validated (>= MIN_EXPECTED_WARNINGS headers); the first
 tier to yield a real bulletin wins. The wrapper guarantees the pipeline's
 standard raw-text file exists afterwards.

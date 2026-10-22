@@ -13,8 +13,6 @@ Tiers (in order):
      no Playwright process management) -> PDF -> pypdf text
   3. NHO page via Playwright headless Chromium -> PDF -> pypdf text
   4. NHO public page rendered text (StealthyFetcher) parsed directly
-  5. SeaLagom NAVAREA VIII mirror (anonymous, no auth, always-fresh
-     community copy of the same in-force bulletin)
 
 Design rules (from the old repo's post-mortem):
   - Never trust an empty/near-empty result: every tier must clear
@@ -68,7 +66,6 @@ logger = get_logger("scraper.navarea_8")
 
 BASE_URL = "https://hydrobharat.gov.in"
 NAVAREA_PAGE_URL = "https://hydrobharat.gov.in/navarea-warnings"
-MIRROR_URL = "https://www.sealagom.com/navarea/8/"
 OUTPUT_DIR = os.environ.get("NAVAREA_8_OUTPUT_DIR", os.path.join("navareas", "navarea_8"))
 
 RENDER_TIMEOUT_S = 90
@@ -319,19 +316,9 @@ def _tier_nho_page_text() -> Tuple[str, Optional[str], int]:
     return text, None, n
 
 
-def _tier_mirror() -> Tuple[str, Optional[str], int]:
-    """SeaLagom mirror — anonymous, no auth, fresh community copy (proven)."""
-    resp = requests.get(MIRROR_URL, headers=BROWSER_HEADERS, timeout=30)
-    resp.raise_for_status()
-    text = clean_html_text(resp.text)
-    n = validate_bulletin_text(text, "sealagom-mirror")
-    return text, None, n
-
-
 TIERS = (
     ("pdf-route", _tier_pdf_route),
     ("nho-page-text", _tier_nho_page_text),
-    ("sealagom-mirror", _tier_mirror),
 )
 
 
@@ -352,7 +339,7 @@ def run_navarea_8_scraper(output_dir: str = OUTPUT_DIR, dry_run: bool = False) -
 
     logger.info("=" * 60)
     logger.info("NAVAREA VIII (NHO India) tiered bulletin scraper")
-    logger.info(f"Source page: {NAVAREA_PAGE_URL} | Mirror: {MIRROR_URL}")
+    logger.info(f"Source page: {NAVAREA_PAGE_URL}")
 
     if not HAS_REQUESTS:
         raise RuntimeError("requests is required. Run: pip install -r requirements.txt")
