@@ -18,6 +18,7 @@
   - [What This System Does Not Do](#what-this-system-does-not-do)
   - [Target Audience](#target-audience)
   - [Relationship to the Helm.Warning Ecosystem](#relationship-to-the-helmwarning-ecosystem)
+- [⏳ Project Timeline](#-helmwarningbackend--project-timeline)
 - [🔄 How the Pipeline Works](#-how-the-pipeline-works)
   - [Pipeline Flowchart](#pipeline-flowchart)
   - [Stage-by-Stage Explanation](#stage-by-stage-explanation)
@@ -78,6 +79,34 @@ Under the International Maritime Organization (IMO) and the International Hydrog
 
 ### Relationship to the Helm.Warning Ecosystem
 This repository serves as the authoritative data collection and processing engine. Downstream consumers—such as the **Helm Navigational Warning Operations Console** and the **Public Mariner Portal**—connect directly to the PostGIS spatial views and Supabase Realtime channels populated by this backend.
+
+---
+
+## ⏳ Helm.Warning.Backend — Project Timeline
+
+### Phase 0 · Origins (Jan – Jun 2026)
+Your maritime app journey began with vessel trackers, culminating in the first NAVAREA idea — an empty plotter repo (Jun 29).
+
+### Phase 1 · First Scraper (Sep 2026)
+**Sep 18** — First scraper ever built: **NAVAREA VIII** (NHO India) in `hydrobharat-navarea-scraper` (Liferay API + PDF parsing).
+
+### Phase 2 · Standalone Repos (Oct 7–15)
+**Oct 9** — Two dedicated repos, built in rapid bursts:
+- `NAVAREA-BALTIC` → **NAVAREA I (UKHO)** scraper born here (Oct 9, 06:52)
+- `NAVAREA-XI-JAPAN` → **NAVAREA XI** scraper (Japan Coast Guard)
+
+### Phase 3 · Unified Backend (Oct 16–20)
+**Oct 16** — All scrapers consolidated into `Helm.Warning.Backend` (shared infra, sync engine, CI, tests).
+**Oct 19** — **NAVAREA II** added (S-124/SECOM); `scrapers/` package created.
+**Oct 20** — Schema v24; NAVAREA II stabilized (XML ExchangeSet → Scrapling fetcher).
+
+### Phase 4 · Expansion & Maturity (Oct 21–22)
+**Oct 21** — **NAVAREA XII** & **NAVAREA IV** built from scratch; geometry validation hardened.
+**Oct 22** — **NAVAREA VIII** full pipeline (full circle — first attempted, last completed); lifecycle-safety layer merged (PR #21).
+
+---
+
+**In one sentence:** One idea (Jun) → one scraper (Sep 18) → standalone repos (Oct 9) → unified backend (Oct 16) → 6 regions + safety layer (Oct 22).
 
 ---
 
