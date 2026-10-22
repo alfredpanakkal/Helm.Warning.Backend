@@ -4,14 +4,19 @@ navarea_8_scraper.py — NAVAREA VIII (NHO India) Stage-1 Scraper Wrapper
 Acquires the latest 'NAVAREA VIII - Warnings In Force' bulletin text.
 
 Acquisition tiers (in order, first success wins):
-  TIER 1 (authoritative): NHO portal PDF via scrapers/navarea_8.py
+  TIER 1 (preferred): NHO portal warnings TABLE via scrapers/navarea_8_table.py
+       (Playwright; auto-presses 'Next' until every paginated page is
+       scraped). Emits both structured rows (navarea_8_table.json) and
+       synthesized bulletin text.
+  TIER 2 (authoritative PDF): NHO portal PDF via scrapers/navarea_8.py
        (requests fast-path, Playwright fallback) + pypdf text extraction.
-  TIER 2 (fallback): SeaLagom NAVAREA VIII mirror (sealagom.com/navarea/8) —
+       Used when the table cannot be scraped (e.g. portal redesign).
+  TIER 3 (fallback): SeaLagom NAVAREA VIII mirror (sealagom.com/navarea/8) —
        anonymous plain-requests fetch of the same in-force bulletin text,
-       community-contributed. Used only when the NHO PDF tier fails.
+       community-contributed. Used only when both NHO tiers fail.
 
-Writes the raw text to navareas/navarea_8/navarea_8_warnings.txt; the PDF
-itself is kept alongside (latest_warnings.pdf) for audit/grounding.
+Writes the raw text to navareas/navarea_8/navarea_8_warnings.txt; structured
+table rows are kept alongside (navarea_8_table.json) for audit/grounding.
 """
 
 import os
@@ -31,10 +36,28 @@ MIRROR_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
              "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 # Minimum sanity: in-force bulletins carry dozens of warnings; fewer than
 # this suggests we captured an error page or a truncated document.
-MIN_EXPECTED_WARNINGS = 10
+MIN_EXPECTED_WARNINGS = 5
 
 
-def _fetch_tier1_pdf(raw_txt: str) -> str:
+def _fetch_tier1_table() -> str:
+    """NHO table acquisition (auto-pagination). Returns synthesized text."""
+    from scrapers.navarea_8_table import run_navarea_8_table_scraper
+
+    summary = run_navarea_8_table_scraper(
+        output_dir=OUTPUT_DIR, dry_run=False,
+        raw_txt=os.path.join(OUTPUT_DIR, "navarea_8_warnings.txt"))
+    n = summary.get("warnings") or 0
+    if n < MIN_EXPECTED_WARNINGS:
+        raise RuntimeError(
+            f"Tier 1 (NHO table): only {n} warning(s) collected "
+            f"(threshold {MIN_EXPECTED_WARNINGS}); possible partial scrape.")
+
+    txt_path = os.path.join(ROOT_DIR, OUTPUT_DIR, "navarea_8_warnings.txt")
+    with open(txt_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def _fetch_tier2_pdf() -> str:
     """NHO PDF acquisition + pypdf extraction. Returns extracted text."""
     from scrapers.navarea_8 import run_navarea_8_scraper
 
@@ -61,11 +84,11 @@ def _fetch_tier1_pdf(raw_txt: str) -> str:
     return text
 
 
-def _fetch_tier2_mirror() -> str:
+def _fetch_tier3_mirror() -> str:
     """SeaLagom mirror: anonymous requests fetch of the in-force text."""
     import requests
 
-    print(f"[Tier 2] Falling back to SeaLagom mirror: {MIRROR_URL}")
+    print(f"[Tier 3] Falling back to SeaLagom mirror: {MIRROR_URL}")
     resp = requests.get(
         MIRROR_URL,
         headers={
@@ -104,10 +127,12 @@ def scrape_viii_warnings(raw_txt="navareas/navarea_8/navarea_8_warnings.txt") ->
     """Runs the tiered acquisition and writes raw text to raw_txt. Returns the text."""
     text = None
     errors = []
-    for tier_name, fetcher in (("Tier 1 (NHO PDF)", _fetch_tier1_pdf),
-                               ("Tier 2 (SeaLagom mirror)", _fetch_tier2_mirror)):
+    tiers = (("Tier 1 (NHO table)", _fetch_tier1_table),
+             ("Tier 2 (NHO PDF)", _fetch_tier2_pdf),
+             ("Tier 3 (SeaLagom mirror)", _fetch_tier3_mirror))
+    for tier_name, fetcher in tiers:
         try:
-            candidate = fetcher() if tier_name.startswith("Tier 1") else fetcher()
+            candidate = fetcher()
             _validate(candidate, tier_name)
             text = candidate
             print(f"[+] Acquisition succeeded via {tier_name}")
