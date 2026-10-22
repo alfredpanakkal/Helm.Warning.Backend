@@ -1,0 +1,13 @@
+{
+  "name": "Gemini CLI Ready",
+  "image": "mcr.microsoft.com/devcontainers/universal:2",
+  "postCreateCommand": "npm install -g @google/gemini-cli",
+  "customizations": {
+    "vscode": {
+      "extensions": []
+    }
+  },
+  "remoteEnv": {
+    "GEMINI_API_KEY": "${localEnv:GEMINI_API_KEY}"
+  }
+}
