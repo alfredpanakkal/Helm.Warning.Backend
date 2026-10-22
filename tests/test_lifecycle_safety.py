@@ -1,4 +1,118 @@
-ga-navarea-iv"
+#!/usr/bin/env python3
+"""tests/test_lifecycle_safety.py — Lifecycle-safety regression tests.
+
+Covers the evidence-based archive policy introduced with the
+20261023 lifecycle-safety work: absence from a scrape is NOT
+cancellation, archiving is a status change, and every run leaves
+an audit ledger row in ingestion_generations.
+
+Uses standard library unittest for zero-dependency test execution.
+"""
+
+import os
+import sys
+import unittest
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
+
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+from shared.sync_engine import run_differential_sync
+
+
+class _Exec:
+    def __init__(self, data):
+        self.data = data
+
+
+def _make_sync_client(warn_rows, raw_rows=()):
+    """Mocks the chained supabase builder used by run_differential_sync.
+
+    Records every .update() patch (status transitions) and every
+    .insert() payload (run ledger rows) for assertion.
+    """
+    client = MagicMock()
+    client.recorded_updates = []
+    client.recorded_inserts = {}
+
+    def table(name):
+        t = MagicMock()
+        if name == "nav_warnings":
+            t.select.return_value.eq.return_value.execute.return_value = _Exec(list(warn_rows))
+            orig_update = t.update
+
+            def update_rec(patch, *a, **k):
+                client.recorded_updates.append({"table": name, "patch": patch})
+                return orig_update(patch, *a, **k)
+
+            t.update.side_effect = update_rec
+        elif name == "raw_messages":
+            t.select.return_value.eq.return_value.execute.return_value = _Exec(list(raw_rows))
+        else:
+            t.insert.return_value.execute.return_value = _Exec([])
+            orig_insert = t.insert
+
+            def insert_rec(payload, *a, **k):
+                client.recorded_inserts.setdefault(name, []).append(payload)
+                return orig_insert(payload, *a, **k)
+
+            t.insert.side_effect = insert_rec
+        return t
+
+    client.table.side_effect = table
+    return client
+
+
+def _status_updates(client, table_name="nav_warnings"):
+    return [u["patch"] for u in client.recorded_updates if u["table"] == table_name]
+
+
+def _scraped(source_id, navarea, ids, checksum_prefix="chk"):
+    """Builds minimal scraped warning/message sets for the given ids."""
+    warnings = []
+    messages = []
+    for i, wid in enumerate(ids):
+        cid = f"{navarea} {wid}"
+        warnings.append({
+            "warning_id": wid,
+            "navarea": navarea,
+            "source_id": source_id,
+            "title": f"TEST {wid}",
+            "raw_text": f"NAVAREA {navarea} {wid} TEST WARNING",
+            "spatial": {"type": "Point", "coordinates": [10.0, 50.0]},
+            "checksum_sha256": f"{checksum_prefix}{i}",
+        })
+        messages.append({
+            "warning_id": wid,
+            "canonical_id": cid,
+            "checksum_sha256": f"{checksum_prefix}{i}",
+        })
+    return warnings, messages
+
+
+def _db_rows(navarea, ids, valid_to=None):
+    rows = []
+    for wid in ids:
+        rows.append({
+            "canonical_id": f"{navarea} {wid}",
+            "status": "active",
+            "raw_text": "OLD",
+            "valid_to": valid_to,
+        })
+    return rows
+
+
+class TestLifecycleSafety(unittest.TestCase):
+    """Archiving = status/visibility change, never deletion."""
+
+    def test_partial_scrape_never_cancels_missing_warnings(self):
+        """Guard: a feed covering only a small fraction of the DB's active
+        warnings must leave the absent warnings ACTIVE (they are merely
+        'unobserved', recorded in the run ledger)."""
+        navarea = "NAVAREA IV"
+        source_id = "nga-navarea-iv"
         db_ids = [f"{n:03d}/26" for n in range(1, 21)]        # 20 actives in DB
         feed_ids = db_ids[:2]                                   # partial scrape: 2
 

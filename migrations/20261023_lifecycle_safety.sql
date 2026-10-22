@@ -121,7 +121,26 @@ BEGIN
         COALESCE(ARRAY(SELECT jsonb_array_elements_text(v_master->'categories')), '{}'),
         COALESCE(v_master->>'status', 'active'),
         COALESCE(v_master->>'triage_tier', 'C'),
-    rom = EXCLUDED.valid_from,
+        COALESCE(v_master->>'data_quality', 'EXPLICIT'),
+        COALESCE(v_master->>'parsing_method', 'RULE'),
+        COALESCE(v_master->'qa_flags', '[]'::jsonb),
+        v_master->>'unplotted_reason',
+        v_valid_from,
+        v_valid_to,
+        v_master->>'raw_text',
+        v_master->>'source_id'
+    )
+    ON CONFLICT (canonical_id) DO UPDATE SET
+        title = EXCLUDED.title,
+        area_text = EXCLUDED.area_text,
+        categories = EXCLUDED.categories,
+        status = EXCLUDED.status,
+        triage_tier = EXCLUDED.triage_tier,
+        data_quality = EXCLUDED.data_quality,
+        parsing_method = EXCLUDED.parsing_method,
+        qa_flags = EXCLUDED.qa_flags,
+        unplotted_reason = EXCLUDED.unplotted_reason,
+        valid_from = EXCLUDED.valid_from,
         valid_to = EXCLUDED.valid_to,
         raw_text = EXCLUDED.raw_text,
         source_id = EXCLUDED.source_id,
@@ -157,7 +176,56 @@ BEGIN
             BEGIN
                 INSERT INTO public.nav_warning_geometries (
                     warning_id, zone_label, feature_type,
-                    buffetted_reason = 'no_valid_geometry'
+                    buffer_nm, geom_postgis
+                ) VALUES (
+                    v_id,
+                    g->>'zone_label',
+                    v_ftype,
+                    COALESCE((g->>'buffer_nm')::numeric, 0),
+                    ST_SetSRID(ST_GeomFromGeoJSON(g->'geojson'), 4326)::geography
+                )
+                RETURNING geom_id INTO v_gid;
+                v_kept := v_kept + 1;
+                v_new_ids := array_append(v_new_ids, v_gid);
+            EXCEPTION WHEN OTHERS THEN
+                RAISE WARNING 'upsert_nav_warning: skipped invalid geometry for warning %: %',
+                    v_master->>'canonical_id', SQLERRM;
+            END;
+        END LOOP;
+
+        -- Replace previous geometries ONLY now that at least one replacement
+        -- was accepted; the old rows are identified by geom_id.
+        IF v_kept > 0 THEN
+            DELETE FROM public.nav_warning_geometries
+             WHERE warning_id = v_id
+               AND NOT (geom_id = ANY (v_new_ids));
+        END IF;
+    END IF;
+
+    -- Tier / geometry consistency after the upsert:
+    IF v_kept > 0 THEN
+        -- Normal path: fresh geometries exist; if a previous parse had flagged
+        -- the warning as preserved, drop the stale flag on a healthy re-parse.
+        UPDATE public.nav_warnings
+           SET qa_flags = qa_flags - 'geometry_preserved_previous_run'
+         WHERE id = v_id
+           AND qa_flags @> '["geometry_preserved_previous_run"]';
+    ELSIF v_existing > 0 THEN
+        -- Preservation path: the incoming parse produced no geometry, but a
+        -- previous run stored valid geometries. Keep them, keep Tier A
+        -- (chk_tier_a_invariants: clear unplotted_reason) and flag for review.
+        UPDATE public.nav_warnings
+           SET triage_tier = 'A',
+               unplotted_reason = NULL,
+               qa_flags = COALESCE(qa_flags, '[]'::jsonb)
+                          || '["geometry_preserved_previous_run"]'::jsonb
+         WHERE id = v_id;
+    ELSIF (v_master->>'triage_tier') = 'A' THEN
+        -- Truly geometry-less warning: demote so the map never shows phantom
+        -- Tier-A rows (matches chk_tier_a_invariants intent).
+        UPDATE public.nav_warnings
+           SET triage_tier = 'C',
+               unplotted_reason = 'no_valid_geometry'
          WHERE id = v_id;
     END IF;
 
