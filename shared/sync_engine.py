@@ -249,7 +249,7 @@ def run_differential_sync(
     try:
         res_warn = (
             supabase_client.table("nav_warnings")
-            .select("canonical_id, status, raw_text, valid_to")
+            .select("id, canonical_id, status, raw_text, valid_to, triage_tier")
             .eq("source_id", source_id)
             .execute()
         )
@@ -299,6 +299,62 @@ def run_differential_sync(
         wid for wid, rec in existing_warnings.items()
         if rec.get("status") == "active" and wid not in scraped_ids
     ]
+
+    # 2b. Geometry backfill guard (self-healing).
+    # A warning skipped as 'unchanged' whose DB row is active + Tier A but
+    # has ZERO rows in nav_warning_geometries is invisible in
+    # nav_warnings_active_spatial (INNER JOIN against geometries). This
+    # happens after an RPC/regression window that drops geometries while
+    # raw-text checksums stay unchanged (observed 2026-10: five regions
+    # silently disappeared from the map). Force such warnings through the
+    # RPC again so their geometry payloads get rewritten from this parse.
+    geometry_seen = None  # None = check unavailable; set() = checked
+    skipped_cids = {entry[0].get("canonical_id") for entry in diff["skip"]} if diff["skip"] else set()
+    backfill_candidate_ids = [
+        rec["id"]
+        for w in scraped_for_diff
+        if w["canonical_id"] in skipped_cids and w.get("_geoms")
+        for rec in [existing_warnings.get(w["canonical_id"]) or {}]
+        if rec.get("id") and rec.get("status") == "active" and rec.get("triage_tier") == "A"
+    ]
+    if backfill_candidate_ids:
+        geometry_seen = set()
+        try:
+            # PostgREST caps .in_() lists; query in chunks of 100
+            for i in range(0, len(backfill_candidate_ids), 100):
+                chunk = backfill_candidate_ids[i:i + 100]
+                res_geom = (
+                    supabase_client.table("nav_warning_geometries")
+                    .select("warning_id")
+                    .in_("warning_id", chunk)
+                    .execute()
+                )
+                geometry_seen.update(
+                    g.get("warning_id")
+                    for g in (res_geom.data or [])
+                    if isinstance(g, dict) and g.get("warning_id")
+                )
+        except Exception as e:
+            print(f"⚠️ Geometry backfill check failed ({e}); guard skipped this run.")
+            geometry_seen = None
+
+    if geometry_seen is not None and diff["skip"]:
+        still_skipping = []
+        for entry in diff["skip"]:
+            warn_wrapper, msg = entry
+            cid = warn_wrapper.get("canonical_id")
+            rec = existing_warnings.get(cid) or {}
+            if (
+                warn_wrapper.get("_geoms")
+                and rec.get("status") == "active"
+                and rec.get("triage_tier") == "A"
+                and rec.get("id") not in geometry_seen
+            ):
+                diff["update"].append(entry)
+                print(f"  🔁 Geometry backfill: {cid} is Tier A active with zero geometry rows → re-upserting")
+            else:
+                still_skipping.append(entry)
+        diff["skip"] = still_skipping
 
     print(
         f"\n[2/4] Differential analysis: "
