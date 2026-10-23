@@ -158,13 +158,36 @@ class TestSubAreaGeometry(unittest.TestCase):
         self.assertEqual(w["spatial"]["features"][0]["geometry"]["type"], "Point")
 
     def test_no_geometry_warnings(self):
-        # Meta list, prose-only, and legacy deg-min-sec warnings
+        # Meta list and prose-only warnings remain geometry-less (Tier C).
+        # The legacy 2021 deg-min-sec warnings (1157/21, 277/21, 278/21) now
+        # PLOT: shared/utils.py gained a DMS coordinate-pair pattern (live
+        # corpus regions XIII/XVI), so their light positions resolve as
+        # Tier-A Points — asserted in test_legacy_dms_warnings_now_parse.
         expected_tier_c = {
             "NAVAREA IV 190/26", "NAVAREA IV 190/25",
-            "NAVAREA IV 1157/21", "NAVAREA IV 278/21", "NAVAREA IV 277/21",
         }
         actual = {wid for wid, w in self.by_id.items() if w["spatial"] is None}
         self.assertEqual(actual, expected_tier_c)
+
+    def test_legacy_dms_warnings_now_parse(self):
+        # 2021 legacy MSGID blocks publish degrees-minutes-seconds pairs.
+        # The DMS pair pattern resolves them, so these lights now plot
+        # instead of lingering unplotted (Tier C) with known positions.
+        expected = {
+            # ILE DE LA TORTUE W. POINT LIGHT: 20-03-44N 072-58-02W
+            "NAVAREA IV 1157/21": (20.062222, -72.967222),
+            # ROCA PARTIDA LIGHT: 18-42-17N 095-11-18W
+            "NAVAREA IV 278/21": (18.704722, -95.188333),
+            # TONALA LIGHT: 18-12-45N 094-08-00W
+            "NAVAREA IV 277/21": (18.2125, -94.133333),
+        }
+        for wid, (lat, lon) in expected.items():
+            w = self.by_id[wid]
+            self.assertIsNotNone(w["spatial"], wid)
+            geom = w["spatial"]["features"][0]["geometry"]
+            self.assertEqual(geom["type"], "Point", wid)
+            self.assertAlmostEqual(w["latitude"], lat, places=6, msg=wid)
+            self.assertAlmostEqual(w["longitude"], lon, places=6, msg=wid)
 
     def test_153_closed_trackline_ring_opened(self):
         # "IN VICINITY OF TRACKLINE JOINING ..." with 6 vertices: the ring
