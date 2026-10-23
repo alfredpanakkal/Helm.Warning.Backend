@@ -10,6 +10,7 @@ import math
 from typing import Dict, List, Tuple, Set, Any, Optional
 
 from shared.exceptions import ParseError, ValidationError
+from shared.geometry_classifier import classify_geometry_archetype
 from shared.validation import (
     validate_coordinate_token,
     validate_warning_id,
@@ -263,11 +264,20 @@ def parse_coordinates(raw_text: str):
             # Centroid calculation for multi-point, polygon, and linestring
             primary_lat = round(sum(p[1] for p in points) / len(points), 6)
             primary_lon = round(sum(p[0] for p in points) / len(points), 6)
-            if len(points) >= 4:
+            archetype = classify_geometry_archetype(raw_text, points)
+            if archetype == "multipoint":
+                # Discrete scattered locations (e.g. 'IN VICINITY OF'
+                # wellhead/platform lists): individual markers, never a
+                # connected shape. Prevents the tangled-polygon map bug.
+                spatial = {"type": "MultiPoint", "coordinates": points}
+            elif archetype == "linestring" or len(points) in (2, 3):
+                # Sequential track/route: open path, never auto-closed.
+                spatial = {"type": "LineString", "coordinates": points}
+            else:
+                # Legacy default for bounded areas / unknown multi-vertex
+                # arrays: closed polygon ring.
                 closed_points = points if points[0] == points[-1] else points + [points[0]]
                 spatial = {"type": "Polygon", "coordinates": [closed_points]}
-            else:
-                spatial = {"type": "LineString", "coordinates": points}
 
     return parsed_coords, primary_lat, primary_lon, spatial
 

@@ -182,6 +182,24 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
         geom_type = geojson_obj.get("type")
         if not geom_type:
             return
+        if geom_type == "MultiPoint":
+            # Discrete locations (e.g. 'IN VICINITY OF' wellhead lists):
+            # persist one POINT geometry row per location with a 1 NM
+            # safety radius, instead of a single row holding a MultiPoint
+            # (which would tempt renderers to connect or hull the points).
+            coords = geojson_obj.get("coordinates") or []
+            for idx, c in enumerate(coords):
+                try:
+                    lon_v, lat_v = float(c[0]), float(c[1])
+                except (TypeError, ValueError, IndexError):
+                    continue
+                geometries.append({
+                    "zone_label": label if len(coords) == 1 else f"{label} {idx + 1}",
+                    "feature_type": "POINT",
+                    "buffer_nm": max(buffer_nm, 1.0),
+                    "geojson": {"type": "Point", "coordinates": [lon_v, lat_v]},
+                })
+            return
         try:
             buffer_nm = float(buffer_val or 0.0)
         except (TypeError, ValueError):
