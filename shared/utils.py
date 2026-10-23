@@ -10,7 +10,7 @@ import math
 from typing import Dict, List, Tuple, Set, Any, Optional
 
 from shared.exceptions import ParseError, ValidationError
-from shared.geometry_classifier import classify_geometry_archetype
+from shared.geometry_classifier import classify_geometry_archetype, ring_is_simple
 from shared.validation import (
     validate_coordinate_token,
     validate_warning_id,
@@ -275,9 +275,17 @@ def parse_coordinates(raw_text: str):
                 spatial = {"type": "LineString", "coordinates": points}
             else:
                 # Legacy default for bounded areas / unknown multi-vertex
-                # arrays: closed polygon ring.
-                closed_points = points if points[0] == points[-1] else points + [points[0]]
-                spatial = {"type": "Polygon", "coordinates": [closed_points]}
+                # arrays: closed polygon ring — but only if the ring is a
+                # valid, non-self-intersecting boundary (>= 3 unique
+                # vertices). A crooked/bowtie ring means the listed order
+                # is not a genuine perimeter: fall back to an open path
+                # instead of fabricating a filled, tangled hazard zone.
+                ring = points if points[0] == points[-1] else points + [points[0]]
+                unique_vertices = {tuple(p) for p in ring}
+                if len(unique_vertices) >= 4 and ring_is_simple(ring):
+                    spatial = {"type": "Polygon", "coordinates": [ring]}
+                else:
+                    spatial = {"type": "LineString", "coordinates": points}
 
     return parsed_coords, primary_lat, primary_lon, spatial
 
