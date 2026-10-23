@@ -5,9 +5,11 @@ regions without a dedicated parser (II, III, V, VI, VII, IX, X and the
 later MET areas XIII–XXI).
 
 This file keeps the repo's deterministic parsing as the final authority.
-A Gemini-first path is layered in front of it, but the rule parser remains
-as the fallback whenever the model is unavailable, times out, or returns
-invalid data.
+A Gemini-first path is layered in front of it (shared/gemini_navarea_parser),
+but the rule parser remains the fallback whenever the model is
+unavailable, times out, or returns invalid data. If the Gemini layer is
+absent entirely, this parser degrades to pure rule-first parsing instead
+of crashing on import (PR-A hotfix for the #29 breakage).
 """
 import sys
 import os
@@ -23,7 +25,11 @@ if ROOT_DIR not in sys.path:
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-from shared.gemini_navarea_parser import parse_bulletin_with_fallback
+try:
+    from shared.gemini_navarea_parser import parse_bulletin_with_fallback
+except ImportError:  # PR-A hotfix: Gemini layer not deployed — stay usable.
+    parse_bulletin_with_fallback = None
+
 from shared.utils import parse_coordinates, classify_hazard_categories
 from shared.navarea_universal_text import (
     UNIVERSAL_REGIONS, NAVAREA_NAMES, regions_in_text, warning_header_re, cancel_ref_re,
@@ -284,7 +290,7 @@ def resolve_region(input_filename, text):
 def main(input_filename="navareas/manual/navarea_ii/pasted_raw.txt",
          output_filename="navareas/manual/navarea_ii/parsed.json") -> bool:
     print("=" * 60)
-    print("NAVAREA Universal Parser (Gemini-first with deterministic fallback)")
+    print("NAVAREA Universal Parser (rule-first — Gemini layer optional)")
     print("=" * 60)
     content = ""
     if os.path.exists(input_filename):
@@ -312,7 +318,11 @@ def main(input_filename="navareas/manual/navarea_ii/pasted_raw.txt",
     print("Region: NAVAREA " + cfg["roman"]
           + " (" + region_name + ") — source_id=" + cfg["source_id"])
 
-    parsed_data = parse_bulletin_with_fallback(content, region_key, parse_bulletin_text)
+    if parse_bulletin_with_fallback is not None:
+        parsed_data = parse_bulletin_with_fallback(content, region_key, parse_bulletin_text)
+    else:
+        print("Gemini layer not installed — using deterministic rule parser only.")
+        parsed_data = parse_bulletin_text(content, region_key)
     n = len(parsed_data["nav_warnings"])
     n_geom = len([w for w in parsed_data["nav_warnings"] if w.get("spatial")])
     print("Parsed " + str(n) + " warning(s); " + str(n_geom)
