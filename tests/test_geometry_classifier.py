@@ -4,8 +4,9 @@ tests/test_geometry_classifier.py — Geometry archetype classification regressi
 
 Covers the tangled-polygon bug (NAVAREA VIII 961/26, 1096/26): scattered
 'vicinity' lists and survey tracks must not be rendered as auto-closed
-polygons. Exercises the REAL shared parser (no second parser) and the
-MultiPoint -> per-point POINT geometry-row explosion in shared/models.
+polygons. Exercises the REAL shared parser (no second parser), the
+MultiPoint -> per-point POINT geometry-row explosion in shared/models,
+and the ring topology guard (bowtie/self-intersection -> open LineString).
 """
 
 import sys
@@ -16,7 +17,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from shared.utils import parse_coordinates
 from shared.models import build_geometry_payloads
-from shared.geometry_classifier import classify_geometry_archetype, _is_sequential
+from shared.geometry_classifier import classify_geometry_archetype, _is_sequential, ring_is_simple
 
 
 V961 = """NAVAREA VIII -961/26 INDIA WEST COAST - OFF HAZIRA TO MUMBAI (.)
@@ -75,8 +76,8 @@ class TestArchetypeClassification(unittest.TestCase):
         self.assertEqual(spatial["type"], "LineString")
 
     def test_no_keywords_falls_back_to_legacy_polygon(self):
-        raw = ("SUBMERGED OBJECT REPORTED AT 19-12.44N 071-05.99E, "
-               "19-09.75N 071-08.55E, 19-10.61N 070-57.71E, 18-35.7N 072-12.81E")
+        raw = ("SUBMERGED OBJECT REPORTED AT 18-00N 071-00E, "
+               "18-00N 072-00E, 19-00N 072-00E, 19-00N 071-00E")
         spatial = _spatial(raw)
         self.assertEqual(spatial["type"], "Polygon")
 
@@ -93,6 +94,40 @@ class TestArchetypeClassification(unittest.TestCase):
         track = [[71.00 + i * 0.05, 18.50] for i in range(8)]
         self.assertFalse(_is_sequential(scattered))
         self.assertTrue(_is_sequential(track))
+
+
+class TestRingTopologyGuard(unittest.TestCase):
+    """Bowties / self-intersecting coordinate orders must not become filled polygons."""
+
+    def test_bowtie_order_falls_back_to_linestring(self):
+        # BL, TR, TL, BR — classic bowtie ordering, no keywords
+        raw = ("OBSTRUCTION REPORTED AT 18-00N 071-00E, 18-30N 071-30E, "
+               "18-30N 071-00E, 18-00N 071-30E")
+        spatial = _spatial(raw)
+        self.assertEqual(spatial["type"], "LineString")
+        self.assertNotEqual(spatial["coordinates"][0], spatial["coordinates"][-1])
+
+    def test_valid_rectangle_keeps_polygon(self):
+        raw = ("OBSTRUCTION REPORTED AT 18-00N 071-00E, 18-00N 071-30E, "
+               "18-30N 071-30E, 18-30N 071-00E")
+        spatial = _spatial(raw)
+        self.assertEqual(spatial["type"], "Polygon")
+
+    def test_v961_legacy_ring_is_crooked(self):
+        # Regression guard: the 9 scattered points of VIII 961/26, closed
+        # into the old legacy ring, ARE self-intersecting — the exact
+        # 'crooked polygon' observed on the map before the classifier fix.
+        _, _, _, pts_spatial = parse_coordinates(V961)
+        ring = [list(c) for c in pts_spatial["coordinates"]]
+        ring.append(list(ring[0]))
+        self.assertFalse(ring_is_simple(ring))
+
+    def test_ring_is_simple_square_and_bowtie(self):
+        square = [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]
+        bowtie = [[0, 0], [1, 1], [1, 0], [0, 1], [0, 0]]
+        self.assertTrue(ring_is_simple(square))
+        self.assertFalse(ring_is_simple(bowtie))
+        self.assertFalse(ring_is_simple([[0, 0], [1, 1], [0, 0]]))  # < 3 unique
 
 
 class TestMultiPointGeometryRows(unittest.TestCase):
