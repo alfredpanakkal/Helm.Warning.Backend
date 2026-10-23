@@ -65,28 +65,28 @@ REGIONS = {
 # "XX" etc. A plain "NAVAREA 123/26" (warning number, no numeral) must NOT
 # map anywhere.
 _HEADER_PATTERNS = [
-    (re.compile(r"NAVs*AREAs+XXI", re.IGNORECASE), "xxi"),
-    (re.compile(r"NAVs*AREAs+XX", re.IGNORECASE), "xx"),
-    (re.compile(r"NAVs*AREAs+XIX", re.IGNORECASE), "xix"),
-    (re.compile(r"NAVs*AREAs+XVIII", re.IGNORECASE), "xviii"),
-    (re.compile(r"NAVs*AREAs+XVII", re.IGNORECASE), "xvii"),
-    (re.compile(r"NAVs*AREAs+XVI", re.IGNORECASE), "xvi"),
-    (re.compile(r"NAVs*AREAs+XV", re.IGNORECASE), "xv"),
-    (re.compile(r"NAVs*AREAs+XIV", re.IGNORECASE), "xiv"),
-    (re.compile(r"NAVs*AREAs+XIII", re.IGNORECASE), "xiii"),
-    (re.compile(r"NAVs*AREAs+XII", re.IGNORECASE), "xii"),
-    (re.compile(r"NAVs*AREAs+XI", re.IGNORECASE), "xi"),
-    (re.compile(r"NAVs*AREAs+X", re.IGNORECASE), "x"),
-    (re.compile(r"NAVs*AREAs+IX", re.IGNORECASE), "ix"),
-    (re.compile(r"NAVs*AREAs+VIII", re.IGNORECASE), "8"),
-    (re.compile(r"NAVs*AREAs+VII", re.IGNORECASE), "vii"),
-    (re.compile(r"NAVs*AREAs+VI", re.IGNORECASE), "vi"),
-    (re.compile(r"NAVs*AREAs+V", re.IGNORECASE), "v"),
-    (re.compile(r"NAVs*AREAs+IV", re.IGNORECASE), "iv"),
-    (re.compile(r"NAVs*AREAs+III", re.IGNORECASE), "iii"),
-    (re.compile(r"NAVs*AREAs+II", re.IGNORECASE), "ii"),
-    (re.compile(r"NAVs*AREAs+I", re.IGNORECASE), "1"),
-    (re.compile(r"SWEDISHs+NAVs+WARN", re.IGNORECASE), "baltic"),
+    (re.compile(r"NAV\s*AREA\s*XXI\b", re.IGNORECASE), "xxi"),
+    (re.compile(r"NAV\s*AREA\s*XX\b", re.IGNORECASE), "xx"),
+    (re.compile(r"NAV\s*AREA\s*XIX\b", re.IGNORECASE), "xix"),
+    (re.compile(r"NAV\s*AREA\s*XVIII\b", re.IGNORECASE), "xviii"),
+    (re.compile(r"NAV\s*AREA\s*XVII\b", re.IGNORECASE), "xvii"),
+    (re.compile(r"NAV\s*AREA\s*XVI\b", re.IGNORECASE), "xvi"),
+    (re.compile(r"NAV\s*AREA\s*XV\b", re.IGNORECASE), "xv"),
+    (re.compile(r"NAV\s*AREA\s*XIV\b", re.IGNORECASE), "xiv"),
+    (re.compile(r"NAV\s*AREA\s*XIII\b", re.IGNORECASE), "xiii"),
+    (re.compile(r"NAV\s*AREA\s*XII\b", re.IGNORECASE), "xii"),
+    (re.compile(r"NAV\s*AREA\s*XI\b", re.IGNORECASE), "xi"),
+    (re.compile(r"NAV\s*AREA\s*X\b", re.IGNORECASE), "x"),
+    (re.compile(r"NAV\s*AREA\s*IX\b", re.IGNORECASE), "ix"),
+    (re.compile(r"NAV\s*AREA\s*VIII\b", re.IGNORECASE), "8"),
+    (re.compile(r"NAV\s*AREA\s*VII\b", re.IGNORECASE), "vii"),
+    (re.compile(r"NAV\s*AREA\s*VI\b", re.IGNORECASE), "vi"),
+    (re.compile(r"NAV\s*AREA\s*V\b", re.IGNORECASE), "v"),
+    (re.compile(r"NAV\s*AREA\s*IV\b", re.IGNORECASE), "iv"),
+    (re.compile(r"NAV\s*AREA\s*III\b", re.IGNORECASE), "iii"),
+    (re.compile(r"NAV\s*AREA\s*II\b", re.IGNORECASE), "ii"),
+    (re.compile(r"NAV\s*AREA\s*I\b", re.IGNORECASE), "1"),
+    (re.compile(r"SWEDISH\s*NAV\s*WARN", re.IGNORECASE), "baltic"),
 ]
 
 
@@ -146,8 +146,7 @@ def main(argv=None) -> bool:
     print(f"({len(raw_text)} chars, {raw_text.count(chr(10)) + 1} lines)")
     print("=" * 65)
 
-    print("
-[STAGE 1] Parsing pasted text (region parser)...")
+    print("[STAGE 1] Parsing pasted text (region parser)...")
     parse_main = importlib.import_module(parser_mod_name).main
     parse_success = parse_main(raw_txt, parsed_json)
 
@@ -163,25 +162,19 @@ def main(argv=None) -> bool:
     except (OSError, ValueError):
         n_warnings = 0
     if n_warnings == 0:
-        print("
-ERROR: pasted text parsed to 0 warnings — wrong region or "
-              "format? Aborting BEFORE sync (empty snapshot not synced).")
+        print("ERROR: pasted text parsed to 0 warnings — wrong region or format? Aborting BEFORE sync (empty snapshot not synced).")
         return False
-    print(f"
-Parse OK: {n_warnings} warning(s) extracted.")
+    print(f"Parse OK: {n_warnings} warning(s) extracted.")
 
-    print("
-[STAGE 2] Syncing parsed warnings to Supabase...")
+    print("[STAGE 2] Syncing parsed warnings to Supabase...")
     sync_to_supabase = importlib.import_module(sync_mod_name).sync_to_supabase
     sync_success = sync_to_supabase(parsed_json)
 
     if parse_success is False or sync_success is False:
-        print("
-Manual paste ingest finished with issues — see log above.")
+        print("Manual paste ingest finished with issues — see log above.")
         return False
 
-    print("
-Manual paste ingest completed!")
+    print("Manual paste ingest completed!")
     return True
 
 
