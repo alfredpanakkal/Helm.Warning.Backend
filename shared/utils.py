@@ -342,7 +342,10 @@ def parse_coordinates(raw_text: str):
                 # instead of fabricating a filled, tangled hazard zone.
                 ring = points if points[0] == points[-1] else points + [points[0]]
                 unique_vertices = {tuple(p) for p in ring}
-                if len(unique_vertices) >= 4 and ring_is_simple(ring):
+                # >= 3 UNIQUE vertices: a closed triangle listing (A,B,C,A)
+                # has 3 unique corners and is a genuine polygon (Baltic
+                # Skagerrak detonation areas); bowties fail ring_is_simple.
+                if len(unique_vertices) >= 3 and ring_is_simple(ring):
                     spatial = {"type": "Polygon", "coordinates": [ring]}
                 else:
                     spatial = {"type": "LineString", "coordinates": points}

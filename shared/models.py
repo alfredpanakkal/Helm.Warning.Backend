@@ -182,6 +182,10 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
         geom_type = geojson_obj.get("type")
         if not geom_type:
             return
+        try:
+            buffer_nm = float(buffer_val or 0.0)
+        except (TypeError, ValueError):
+            buffer_nm = 0.0
         if geom_type == "MultiPoint":
             # Discrete locations (e.g. 'IN VICINITY OF' wellhead lists):
             # persist one POINT geometry row per location with a 1 NM
@@ -200,10 +204,6 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "geojson": {"type": "Point", "coordinates": [lon_v, lat_v]},
                 })
             return
-        try:
-            buffer_nm = float(buffer_val or 0.0)
-        except (TypeError, ValueError):
-            buffer_nm = 0.0
         geometries.append({
             "zone_label": label,
             "feature_type": geojson_type_to_feature_type(geom_type),

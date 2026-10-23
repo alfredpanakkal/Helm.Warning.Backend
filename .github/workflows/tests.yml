@@ -21,6 +21,8 @@ jobs:
         run: |
           set +e
           python -m unittest discover tests -v 2>&1 | tee unittest.log
+          echo "=== test_lifecycle_safety in isolation ===" >> unittest.log
+          python -m unittest tests.test_lifecycle_safety -v >> unittest.log 2>&1 || true
           exit ${PIPESTATUS[0]}
       - name: Report failure on PR
         if: failure()
@@ -31,7 +33,7 @@ jobs:
             echo "❌ **unittest failed** on ${{ github.sha }}"
             echo ""
             echo '~~~'
-            tail -n 150 unittest.log
+            tail -n 220 unittest.log
             echo '~~~'
           } > comment.md
           gh pr comment 24 --repo "$GITHUB_REPOSITORY" --body-file comment.md
