@@ -267,11 +267,23 @@ def parse_coordinates(raw_text: str):
             archetype = classify_geometry_archetype(raw_text, points)
             if archetype == "multipoint":
                 # Discrete scattered locations (e.g. 'IN VICINITY OF'
-                # wellhead/platform lists): individual markers, never a
-                # connected shape. Prevents the tangled-polygon map bug.
+                # wellhead/platform lists, buoy lists): individual markers,
+                # never a connected shape. Prevents the tangled-polygon bug.
                 spatial = {"type": "MultiPoint", "coordinates": points}
+            elif archetype == "bounding_box":
+                # 'AREA BOUNDED WITHIN <lat> TO <lat> AND <lon> TO <lon>'
+                # (NAVAREA VIII 1102/26): two opposite corners define the
+                # rectangle — expand into a proper closed ring rather than
+                # misplotting a 2-point corridor LineString.
+                lon_a, lat_a = points[0]
+                lon_b, lat_b = points[1]
+                spatial = {"type": "Polygon", "coordinates": [[
+                    [lon_a, lat_a], [lon_b, lat_a], [lon_b, lat_b],
+                    [lon_a, lat_b], [lon_a, lat_a],
+                ]]}
             elif archetype == "linestring" or len(points) in (2, 3):
-                # Sequential track/route: open path, never auto-closed.
+                # Sequential track/route/trackline: open path, never
+                # auto-closed.
                 spatial = {"type": "LineString", "coordinates": points}
             else:
                 # Legacy default for bounded areas / unknown multi-vertex
