@@ -31,15 +31,32 @@ MAX_ROWS_PER_RUN = 20
 
 
 def _set_status(client, row_id, status, detected=None, result=None):
-    patch = {"status": status, "processed_at": os.environ.get("NOW") or None}
-    # processed_at handled below via .update with now() unavailable; use ISO from time
     import datetime
-    patch["processed_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    patch = {"status": status,
+             "processed_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
     if detected is not None:
         patch["detected_navarea"] = detected
     if result is not None:
         patch["result"] = result[:2000]
     client.table(QUEUE_TABLE).update(patch).eq("id", row_id).execute()
+
+
+def _effective_region(row, raw_text):
+    """Resolves the region for a queue row.
+
+    Detection from the text header wins; the admin's explicit selection is
+    the fallback. The panel's 'auto' sentinel (and any non-region value) is
+    treated as "no selection" rather than an invalid region.
+    """
+    detected = detect_navarea(raw_text)
+    if detected:
+        return detected, detected
+    selection = (row.get("navarea") or "").strip().lower()
+    if selection in ("", "auto", "none", "null"):
+        return None, None
+    if selection in REGIONS:
+        return selection, None
+    return None, None
 
 
 def main() -> bool:
@@ -59,18 +76,21 @@ def main() -> bool:
 
     print(f"Draining paste queue: {len(rows)} row(s).")
     all_ok = True
+    done = failed = 0
     for row in rows:
         row_id = row["id"]
         raw_text = row.get("raw_text") or ""
-        detected = detect_navarea(raw_text)
-        effective = detected or row.get("navarea")
-        if not effective or effective not in REGIONS:
+        effective, detected = _effective_region(row, raw_text)
+        if not effective:
             _set_status(client, row_id, "failed", detected,
                         "Could not determine NAVAREA region (no header in text "
                         "and no selection) — not ingested.")
+            print(f"  Row {row_id}: FAILED (region undeterminable)")
             all_ok = False
+            failed += 1
             continue
-        if detected and row.get("navarea") and detected != row.get("navarea"):
+        selection = (row.get("navarea") or "").strip().lower()
+        if detected and selection in REGIONS and detected != selection:
             print(f"  Row {row_id}: selection '{row['navarea']}' overridden by "
                   f"text header '{detected}'.")
 
@@ -78,20 +98,30 @@ def main() -> bool:
                                          encoding="utf-8") as f:
             f.write(raw_text)
             tmp_path = f.name
+        err_detail = ""
         try:
             ok = run_manual_paste(["--navarea", effective, "--input", tmp_path])
         except Exception as e:
             print(f"  Row {row_id}: ingest raised {e}")
+            err_detail = f"ingest raised: {e}"
             ok = False
         finally:
             os.unlink(tmp_path)
 
-        _set_status(client, row_id, "done" if ok else "failed", detected,
-                    f"ingested via region '{effective}'"
-                    + ("" if ok else " — see Action log for details"))
+        result_msg = f"ingested via region '{effective}'"
+        if not ok:
+            result_msg += (" — see Action log for details" if not err_detail
+                           else f" — {err_detail}")
+        _set_status(client, row_id, "done" if ok else "failed", detected, result_msg)
         all_ok = all_ok and ok
+        if ok:
+            done += 1
+        else:
+            failed += 1
         print(f"  Row {row_id}: {'OK' if ok else 'FAILED'} (region {effective})")
 
+    print(f"Queue drain summary: {done} done, {failed} failed, "
+          f"{len(rows)} processed.")
     return all_ok
 
 
