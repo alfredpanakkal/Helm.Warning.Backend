@@ -59,7 +59,9 @@ from shared.navarea_universal_text import (
 from shared import translation
 
 # Numbered item line: '1. HAZARDOUS ...' / 'A. ...'-adjacent numbering.
-RE_ITEM_LINE = re.compile(r"(?:^|\s)(\d{1,2})\.[\s]+(?=[A-Z])")
+# Line-anchored: a sentence-ending date like '... UTC oct 26.\nTo report'
+# must never be mistaken for item 26 (NAVAREA II rig-list bug).
+RE_ITEM_LINE = re.compile(r"^[ \t]*(\d{1,2})\.[\s]+(?=[A-Z])", re.MULTILINE)
 # 'WARNINGS IN FORCE AS ON 13 OCTOBER 2026' (Australia X bulletin header).
 RE_AS_ON = re.compile(
     r"WARNINGS?\s+IN\s+FORCE\s+AS\s+ON\s+(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})",
@@ -213,6 +215,24 @@ def _block_starts(text, cfg):
     return sorted(set(starts))
 
 
+def _collapse_same_warning(matches):
+    """Dedupes header matches that point at the SAME warning: a region can
+    match a warning twice (e.g. NAVAREA XIX hits both the 'Number:123/26'
+    extra anchor and the default 'NAVAREA XIX 123/26...' header). The
+    second start would truncate the block before its coordinates — keep
+    only the FIRST match per (number, year)."""
+    seen = set()
+    out = []
+    for m in matches:
+        year = m.group(2)
+        key = (m.group(1), normalize_year(year) if year else None)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(m)
+    return out
+
+
 def split_into_warnings(text: str, cfg):
     """
     Segments the bulletin into warning blocks on the region's header
@@ -220,8 +240,14 @@ def split_into_warnings(text: str, cfg):
     {warning_id, number, year, header_text, raw_text}.
     """
     blocks = []
-    matches = _header_matches(text, cfg)
-    starts = _block_starts(text, cfg)
+    matches = _collapse_same_warning(_header_matches(text, cfg))
+    starts = [m.start() for m in matches]
+    for m in cfg["companion_re"].finditer(text or ""):
+        prefix = text[max(0, m.start() - 8):m.start()].upper()
+        if "CANCEL" in prefix:
+            continue
+        starts.append(m.start())
+    starts = sorted(set(starts))
     for m in matches:
         start = m.start()
         end = len(text)

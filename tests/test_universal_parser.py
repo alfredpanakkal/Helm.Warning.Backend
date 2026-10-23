@@ -41,7 +41,7 @@ SAMPLE_II = (
 class TestUniversalRegistry(unittest.TestCase):
 
     def test_all_twenty_two_regions_registered(self):
-        self.assertEqual(sorted(REGIONS), ALL_REGION_KEYS)
+        self.assertEqual(sorted(REGIONS), sorted(ALL_REGION_KEYS))
 
     def test_universal_regions_use_universal_modules(self):
         for key in UNIVERSAL_REGIONS:
