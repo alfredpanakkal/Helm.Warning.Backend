@@ -23,13 +23,13 @@ jobs:
           python -m unittest discover tests -v 2>&1 | tee unittest.log
           exit ${PIPESTATUS[0]}
       - name: Report failure on PR
-        if: failure() && github.event_name == 'pull_request'
+        if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          gh pr comment "$PR_URL" --body "❌ **unittest failed** on ${{ github.sha }}
+          LOG=$(tail -n 120 unittest.log)
+          gh pr comment 24 --repo "$GITHUB_REPOSITORY" --body "❌ **unittest failed** on ${{ github.sha }}
 
           ```
-          $(tail -n 120 unittest.log)
+          $LOG
           ```"
