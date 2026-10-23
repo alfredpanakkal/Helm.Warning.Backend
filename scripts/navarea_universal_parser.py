@@ -11,6 +11,19 @@ unavailable, times out, or returns invalid data. If the Gemini layer is
 absent entirely, this parser degrades to pure rule-first parsing instead
 of crashing on import (PR-A hotfix for the #29 breakage).
 
+Header quirks (live coordinator corpus, Oct 2026) are carried by
+shared/navarea_universal_text.py: per-region extra header patterns
+(V bare '0648/26', VI 'NAVAREA - 0355-2026', VII 'n OF yyyy',
+XV 'NAVAREA XV 0142' with a bulletin year hint, XIX 'Number:n/yy'),
+2- and 4-digit years (normalized to 2-digit warning ids), the XIV
+'WARNING' word, and cancel-prefixed headers that must NEVER split a
+block (a 'CANCEL NAVAREA II 100/26' cross-ref is part of the enclosing
+warning, not a new one).
+
+Spanish bulletins (XV Chile / XVI Peru) get titles machine-translated
+via shared/translation.py — fail-closed: without a key or on any error
+the original Spanish title is kept and the ingest still succeeds.
+
 NAVAREA I companion exception: NAVAREA I (UK / North Atlantic) warnings
 are routinely bundled by universal-region publishers (e.g. Norwegian
 NAVAREA XIX bulletins also carry North Sea NAVAREA I items). Its headers
@@ -39,14 +52,22 @@ except ImportError:  # PR-A hotfix: Gemini layer not deployed — stay usable.
 
 from shared.utils import parse_coordinates, classify_hazard_categories
 from shared.navarea_universal_text import (
-    UNIVERSAL_REGIONS, NAVAREA_NAMES, regions_in_text, warning_header_re, cancel_ref_re,
+    UNIVERSAL_REGIONS, NAVAREA_NAMES, regions_in_text,
+    region_header_patterns, region_cancel_patterns, normalize_year, warning_header_re,
+    RE_YEAR_HINT, TITLE_TRANSLATION_REGIONS,
 )
+from shared.translation import looks_spanish, translate_title
 
-RE_ITEM_LINE = re.compile(r"(?:^|\s)(\d{1,2})\.[\s]+(?=[A-Z])")
+RE_ITEM_LINE = re.compile(r"(?:^|s)(d{1,2}).[s]+(?=[A-Z])")
 RE_AS_ON = re.compile(
-    r"WARNINGS?\s+IN\s+FORCE\s+AS\s+ON\s+(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})",
+    r"WARNINGS?s+INs+FORCEs+ASs+ONs+(d{1,2}s+[A-Za-z]{3,9}s+d{4})",
     re.IGNORECASE)
 RE_PATH_REGION = re.compile(r"navarea[_-]([a-z0-9]+)", re.IGNORECASE)
+# Broadcast tail: Australia terminates each message with 'NNNN' (and the
+# Russian XX with '.=' before it). These end-of-message markers must not
+# leak into the last warning's raw text / title.
+RE_BROADCAST_TAIL = re.compile(r"(?:
+[=s]*N{3,6}[=s]*)+s*$")
 
 MONTHS = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
@@ -68,9 +89,10 @@ def _region_config(region_key):
         "roman": roman,
         "source_id": "manual-navarea-" + region_key,
         "navarea_id": roman,
-        "header_re": warning_header_re(roman),
-        "cancel_re": cancel_ref_re(roman),
-        "companion_re": warning_header_re("I"),
+        "header_res": region_header_patterns(region_key, roman),
+        "cancel_res": region_cancel_patterns(region_key, roman),
+        "companion_re": warning_header_re("I"),  # default NAVAREA I header
+        "translate_titles": region_key in TITLE_TRANSLATION_REGIONS,
     }
 
 
@@ -88,9 +110,19 @@ def _parse_as_on(text: str):
         return None
 
 
+def _parse_year_hint(text: str):
+    """Bulletin-level year for regions whose headers omit it (NAVAREA XV):
+    'YEAR 2026:' or 'DATE: OCT/16/2026'. None when no hint exists."""
+    m = RE_YEAR_HINT.search(text or "")
+    if not m:
+        return None
+    year = m.group(2) or m.group(3)  # 'YEAR 2026' alt / 'DATE: ...2026' alt
+    return normalize_year(year)
+
+
 def _clean_line(line: str) -> str:
     """Normalizes '(.)' separators into single spaces for title extraction."""
-    return re.sub(r"\(\s*\.\s*\)", " ", line).strip()
+    return re.sub(r"(s*.s*)", " ", line).strip()
 
 
 def _segment_clauses(body: str):
@@ -121,30 +153,57 @@ def _extract_title(body: str, cfg) -> str:
     location / operation description)."""
     m = RE_ITEM_LINE.search(body)
     head = body[:m.start()] if m else body
-    lines = [_clean_line(l) for l in head.split("\n") if l.strip()]
+    lines = [_clean_line(l) for l in head.split("
+") if l.strip()]
     title = " ".join(lines).strip()
-    title = re.sub(r"\b\d{6}Z?\s*/?\s*[A-Z]{3}\s+\d{2}\s*$", "", title).strip()
+    title = re.sub(r"d{6}Z?s*/?s*[A-Z]{3}s+d{2}s*$", "", title).strip()
     return title[:255] or "NAVAREA " + cfg["roman"] + " Warning"
 
 
 def _extract_cross_refs(raw_text: str, cfg):
     refs = []
     seen = set()
-    for m in cfg["cancel_re"].finditer(raw_text or ""):
-        key = (m.group(1), m.group(2))
-        if key in seen:
-            continue
-        seen.add(key)
-        refs.append({"number": m.group(1), "year": m.group(2)})
+    for rex in cfg["cancel_res"]:
+        for m in rex.finditer(raw_text or ""):
+            key = (m.group(1), m.group(2))
+            if key in seen:
+                continue
+            seen.add(key)
+            refs.append({"number": m.group(1), "year": normalize_year(m.group(2))})
     return refs
 
 
-def _block_terminators(text, cfg):
+def _header_matches(text, cfg):
+    """All warning-header matches for the target region, CANCEL-prefixed
+    cross-references excluded: a 'CANCEL NAVAREA II 100/26' reference
+    inside a warning body belongs to that warning — it must never split
+    the block (previously it created a phantom warning). Overlapping
+    matches from different patterns (default + region extra) collapse to
+    the first."""
+    found = []
+    for rex in cfg["header_res"]:
+        for m in rex.finditer(text or ""):
+            prefix = text[max(0, m.start() - 8):m.start()].upper()
+            if "CANCEL" in prefix:
+                continue
+            found.append(m)
+    found.sort(key=lambda m: (m.start(), m.end()))
+    out = []
+    last_end = -1
+    for m in found:
+        if m.start() < last_end:
+            continue  # nested inside an earlier (higher-priority) match
+        out.append(m)
+        last_end = m.end()
+    return out
+
+
+def _block_starts(text, cfg):
     """Start positions that END a warning block: the next header of the
     target region, or a tolerated companion (NAVAREA I) header — CANCEL
     cross-references excluded — so companion blocks are never absorbed
     into the tail of the last regional warning."""
-    starts = [m.start() for m in cfg["header_re"].finditer(text or "")]
+    starts = [m.start() for m in _header_matches(text, cfg)]
     for m in cfg["companion_re"].finditer(text or ""):
         prefix = text[max(0, m.start() - 8):m.start()].upper()
         if "CANCEL" in prefix:
@@ -155,14 +214,14 @@ def _block_terminators(text, cfg):
 
 def split_into_warnings(text: str, cfg):
     """
-    Segments the bulletin into warning blocks on
-    'NAVAREA <roman> [-]n/yy' headers.
-    Returns a list of {warning_id, number, year, raw_text}.
+    Segments the bulletin into warning blocks on the region's header
+    patterns (default + per-region extras). Returns a list of
+    {warning_id, number, year, header_text, raw_text}.
     """
     blocks = []
-    matches = list(cfg["header_re"].finditer(text or ""))
-    starts = _block_terminators(text, cfg)
-    for i, m in enumerate(matches):
+    matches = _header_matches(text, cfg)
+    starts = _block_starts(text, cfg)
+    for m in matches:
         start = m.start()
         end = len(text)
         for s in starts:
@@ -170,11 +229,13 @@ def split_into_warnings(text: str, cfg):
                 end = s
                 break
         raw_text = text[start:end].strip()
+        raw_text = RE_BROADCAST_TAIL.sub("
+", raw_text).strip()
         number, year = m.group(1), m.group(2)
         blocks.append({
-            "warning_id": "NAVAREA " + cfg["roman"] + " " + number + "/" + year,
             "number": number,
-            "year": year,
+            "year": year,  # may be None (NAVAREA XV) — resolved by caller
+            "header_text": m.group(0),
             "raw_text": raw_text,
         })
     return blocks
@@ -182,9 +243,13 @@ def split_into_warnings(text: str, cfg):
 
 def parse_warning(block, cfg):
     """Parses one segmented bulletin block into (raw_message, nav_warning)."""
-    warning_id = block["warning_id"]
-    raw_text = block["raw_text"]
+    number = block["number"]
+    year = normalize_year(block["year"]) or block.get("year_hint")
+    roman = cfg["roman"]
+    warning_id = ("NAVAREA " + roman + " " + str(number)
+                 + (("/" + str(year)) if year else ""))
     canonical_id = warning_id
+    raw_text = block["raw_text"]
 
     checksum = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
     raw_message = {
@@ -196,7 +261,7 @@ def parse_warning(block, cfg):
         "checksum_sha256": checksum,
     }
 
-    body = cfg["header_re"].sub("", raw_text, count=1).strip()
+    body = raw_text.replace(block["header_text"], "", 1).strip()
     clauses = _segment_clauses(body)
 
     geoms = []
@@ -232,12 +297,22 @@ def parse_warning(block, cfg):
 
     categories = classify_hazard_categories(raw_text)
 
+    title = _extract_title(body, cfg) or warning_id
+
+    # Spanish bulletins (XV/XVI): fail-closed title translation. The raw
+    # text stays the original Spanish; on ANY translation problem the
+    # original title is kept and the ingest still succeeds.
+    if cfg.get("translate_titles") and looks_spanish(title):
+        translated = translate_title(title)
+        if translated:
+            title = translated[:255]
+
     nav_warning = {
         "warning_id": warning_id,
         "canonical_id": canonical_id,
         "source_id": cfg["source_id"],
         "navarea": cfg["navarea_id"],
-        "title": _extract_title(body, cfg) or warning_id,
+        "title": title,
         "issued_text": None,
         "coordinates": None,
         "latitude": lat,
@@ -267,7 +342,9 @@ def parse_bulletin_text(bulletin_text: str, region_key: str) -> dict:
     as_on = _parse_as_on(bulletin_text)
     parsed_data["memo"]["in_force_as_on"] = as_on.isoformat() if as_on else None
 
+    year_hint = _parse_year_hint(bulletin_text)
     for block in split_into_warnings(bulletin_text, cfg):
+        block["year_hint"] = year_hint
         raw_msg, nav_warn = parse_warning(block, cfg)
         parsed_data["raw_messages"].append(raw_msg)
         parsed_data["nav_warnings"].append(nav_warn)
