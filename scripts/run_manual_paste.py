@@ -71,6 +71,23 @@ def main(argv=None) -> bool:
     parse_main = importlib.import_module(parser_mod_name).main
     parse_success = parse_main(raw_txt, parsed_json)
 
+    # Fail closed: a paste that yields ZERO warnings almost certainly has
+    # the wrong region selected or an unrecognised format — syncing an
+    # empty snapshot could then drive absence/archive logic for that
+    # source. Never sync an empty manual paste.
+    import json as _json
+    try:
+        with open(parsed_json, "r", encoding="utf-8") as f:
+            parsed = _json.load(f)
+        n_warnings = len(parsed.get("nav_warnings") or [])
+    except (OSError, ValueError):
+        n_warnings = 0
+    if n_warnings == 0:
+        print("\nERROR: pasted text parsed to 0 warnings — wrong region or "
+              "format? Aborting BEFORE sync (empty snapshot not synced).")
+        return False
+    print(f"\nParse OK: {n_warnings} warning(s) extracted.")
+
     print("\n[STAGE 2] Syncing parsed warnings to Supabase...")
     sync_to_supabase = importlib.import_module(sync_mod_name).sync_to_supabase
     sync_success = sync_to_supabase(parsed_json)
