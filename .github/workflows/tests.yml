@@ -5,6 +5,10 @@ on:
     branches: ['**']
   pull_request:
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   unittest:
     runs-on: ubuntu-latest
@@ -14,4 +18,18 @@ jobs:
         with:
           python-version: '3.12'
       - name: Run unittest discovery
-        run: python -m unittest discover tests -v
+        run: |
+          set +e
+          python -m unittest discover tests -v 2>&1 | tee unittest.log
+          exit ${PIPESTATUS[0]}
+      - name: Report failure on PR
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr comment "$PR_URL" --body "❌ **unittest failed** on ${{ github.sha }}
+
+          ```
+          $(tail -n 120 unittest.log)
+          ```"
