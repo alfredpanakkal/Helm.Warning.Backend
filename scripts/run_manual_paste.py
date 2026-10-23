@@ -40,24 +40,24 @@ REGIONS = {
     "iv":     ("scripts.navarea_iv_parser",   "scripts.navarea_iv_sync",   "navarea_iv"),
     "xi":     ("scripts.navarea_xi_parser",   "scripts.navarea_xi_sync",   "navarea_xi"),
     "xii":    ("scripts.navarea_xii_parser",  "scripts.navarea_xii_sync",  "navarea_xii"),
-    "baltic": ("scripts.baltic_parser",       "scripts.baltic_sync",       "baltic"),
+    "baltic": ("scripts.baltic_parser",      "scripts.baltic_sync",      "baltic"),
     # No dedicated scraper yet — universal parser + generic sync:
-    "ii":     ("s", "c", "navarea_ii"),
-    "iii":    ("s", "c", "navarea_iii"),
-    "v":      ("s", "c", "navarea_v"),
-    "vi":     ("s", "c", "navarea_vi"),
-    "vii":    ("s", "c", "navarea_vii"),
-    "ix":     ("s", "c", "navarea_ix"),
-    "x":      ("s", "c", "navarea_x"),
-    "xiii":   ("s", "c", "navarea_xiii"),
-    "xiv":    ("s", "c", "navarea_xiv"),
-    "xv":     ("s", "c", "navarea_xv"),
-    "xvi":    ("s", "c", "navarea_xvi"),
-    "xvii":   ("s", "c", "navarea_xvii"),
-    "xviii":  ("s", "c", "navarea_xviii"),
-    "xix":    ("s", "c", "navarea_xix"),
-    "xx":     ("s", "c", "navarea_xx"),
-    "xxi":    ("s", "c", "navarea_xxi"),
+    "ii":     ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_ii"),
+    "iii":    ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_iii"),
+    "v":      ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_v"),
+    "vi":     ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_vi"),
+    "vii":    ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_vii"),
+    "ix":     ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_ix"),
+    "x":      ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_x"),
+    "xiii":   ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_xiii"),
+    "xiv":    ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_xiv"),
+    "xv":     ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_xv"),
+    "xvi":    ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_xvi"),
+    "xvii":   ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_xvii"),
+    "xviii":  ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_xviii"),
+    "xix":    ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_xix"),
+    "xx":     ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_xx"),
+    "xxi":    ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_xxi"),
 }
 
 # Region auto-detection from the pasted text header. Longest roman numerals
@@ -104,6 +104,19 @@ def detect_navarea(raw_text) -> str | None:
     return None
 
 
+def _resolve_region_modules(navarea: str):
+    """Resolve registry entry and fail closed on placeholder or broken entries."""
+    parser_mod_name, sync_mod_name, subdir = REGIONS[navarea]
+    if not parser_mod_name or not sync_mod_name:
+        raise ValueError(f"Registry entry for region {navarea!r} is missing a module path")
+    if parser_mod_name in {"s", "c"} or sync_mod_name in {"s", "c"}:
+        raise ValueError(
+            f"Registry bug for NAVAREA {navarea}: placeholder module names were left in place "
+            f"(parser={parser_mod_name!r}, sync={sync_mod_name!r})"
+        )
+    return parser_mod_name, sync_mod_name, subdir
+
+
 def main(argv=None) -> bool:
     ap = argparse.ArgumentParser(description="Bulk ingest pasted NAVAREA warning text")
     ap.add_argument("--navarea", required=True, choices=sorted(REGIONS) + ["auto"],
@@ -133,7 +146,7 @@ def main(argv=None) -> bool:
             return False
         print(f"Auto-detected region: {navarea}")
 
-    parser_mod_name, sync_mod_name, subdir = REGIONS[navarea]
+    parser_mod_name, sync_mod_name, subdir = _resolve_region_modules(navarea)
     raw_txt = os.path.join("navareas", "manual", subdir, "pasted_raw.txt")
     parsed_json = os.path.join("navareas", "manual", subdir, "parsed.json")
     os.makedirs(os.path.dirname(raw_txt), exist_ok=True)
@@ -147,7 +160,11 @@ def main(argv=None) -> bool:
     print("=" * 65)
 
     print("[STAGE 1] Parsing pasted text (region parser)...")
-    parse_main = importlib.import_module(parser_mod_name).main
+    try:
+        parse_main = importlib.import_module(parser_mod_name).main
+    except Exception as exc:
+        print(f"ERROR: could not import parser module '{parser_mod_name}' for region {navarea!r}: {exc}")
+        return False
     parse_success = parse_main(raw_txt, parsed_json)
 
     # Fail closed: a paste that yields ZERO warnings almost certainly has
@@ -167,7 +184,11 @@ def main(argv=None) -> bool:
     print(f"Parse OK: {n_warnings} warning(s) extracted.")
 
     print("[STAGE 2] Syncing parsed warnings to Supabase...")
-    sync_to_supabase = importlib.import_module(sync_mod_name).sync_to_supabase
+    try:
+        sync_to_supabase = importlib.import_module(sync_mod_name).sync_to_supabase
+    except Exception as exc:
+        print(f"ERROR: could not import sync module '{sync_mod_name}' for region {navarea!r}: {exc}")
+        return False
     sync_success = sync_to_supabase(parsed_json)
 
     if parse_success is False or sync_success is False:
