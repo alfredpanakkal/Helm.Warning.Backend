@@ -10,6 +10,13 @@ but the rule parser remains the fallback whenever the model is
 unavailable, times out, or returns invalid data. If the Gemini layer is
 absent entirely, this parser degrades to pure rule-first parsing instead
 of crashing on import (PR-A hotfix for the #29 breakage).
+
+NAVAREA I companion exception: NAVAREA I (UK / North Atlantic) warnings
+are routinely bundled by universal-region publishers (e.g. Norwegian
+NAVAREA XIX bulletins also carry North Sea NAVAREA I items). Its headers
+never make a paste mixed-region, and its blocks are truncated out during
+segmentation so the regional snapshot stays pure. A paste that is ONLY
+NAVAREA I still routes to the dedicated NAVAREA 1 parser.
 """
 import sys
 import os
@@ -46,6 +53,12 @@ MONTHS = {
     "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
 }
 
+# NAVAREA I (UK / North Atlantic) is a tolerated COMPANION region: its
+# warning headers never make a paste mixed-region, and its blocks are
+# excluded from segmentation. Pure-NAVAREA-I pastes are still rejected by
+# resolve_region (dedicated parser region).
+COMPANION_ROMANS = {"I"}
+
 
 def _region_config(region_key):
     """Resolves region-dependent constants (regexes, source_id, numeral)."""
@@ -57,6 +70,7 @@ def _region_config(region_key):
         "navarea_id": roman,
         "header_re": warning_header_re(roman),
         "cancel_re": cancel_ref_re(roman),
+        "companion_re": warning_header_re("I"),
     }
 
 
@@ -125,6 +139,20 @@ def _extract_cross_refs(raw_text: str, cfg):
     return refs
 
 
+def _block_terminators(text, cfg):
+    """Start positions that END a warning block: the next header of the
+    target region, or a tolerated companion (NAVAREA I) header — CANCEL
+    cross-references excluded — so companion blocks are never absorbed
+    into the tail of the last regional warning."""
+    starts = [m.start() for m in cfg["header_re"].finditer(text or "")]
+    for m in cfg["companion_re"].finditer(text or ""):
+        prefix = text[max(0, m.start() - 8):m.start()].upper()
+        if "CANCEL" in prefix:
+            continue
+        starts.append(m.start())
+    return sorted(set(starts))
+
+
 def split_into_warnings(text: str, cfg):
     """
     Segments the bulletin into warning blocks on
@@ -133,9 +161,14 @@ def split_into_warnings(text: str, cfg):
     """
     blocks = []
     matches = list(cfg["header_re"].finditer(text or ""))
+    starts = _block_terminators(text, cfg)
     for i, m in enumerate(matches):
         start = m.start()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        end = len(text)
+        for s in starts:
+            if s > start:
+                end = s
+                break
         raw_text = text[start:end].strip()
         number, year = m.group(1), m.group(2)
         blocks.append({
@@ -248,7 +281,12 @@ def parse_bulletin_text(bulletin_text: str, region_key: str) -> dict:
 
 
 def resolve_region(input_filename, text):
-    """Determines the region for this parse. Returns (region_key, error)."""
+    """Determines the region for this parse. Returns (region_key, error).
+
+    NAVAREA I is tolerated as a companion region: its headers never make a
+    paste mixed-region. One NON-companion region per paste is still
+    required; pure-NAVAREA-I pastes route to the dedicated parser.
+    """
     romans = regions_in_text(text)
 
     path_key = None
@@ -262,23 +300,27 @@ def resolve_region(input_filename, text):
 
     if path_key:
         target_roman = UNIVERSAL_REGIONS[path_key]
-        foreign = {r for r in romans if r != target_roman}
+        foreign = {r for r in romans if r != target_roman} - COMPANION_ROMANS
         if foreign:
             return None, (
                 "mixed-region paste: input path targets NAVAREA "
                 + target_roman + " but the text contains warning headers for "
                 + ", ".join(sorted(foreign))
                 + ". Split the paste per region (one region per ingest).")
+        if romans & COMPANION_ROMANS:
+            print("Note: tolerated companion NAVAREA I warning block(s) "
+                  "excluded from this " + target_roman + " snapshot.")
         return path_key, None
 
     if not romans:
         return None, ("could not determine the NAVAREA region: no "
                       "'NAVAREA <numeral> n/yy' warning header found in the text.")
-    if len(romans) > 1:
+    candidates = romans - COMPANION_ROMANS or (romans & COMPANION_ROMANS)
+    if len(candidates) > 1:
         return None, ("mixed-region paste: warning headers for "
-                      + ", ".join(sorted(romans))
+                      + ", ".join(sorted(candidates))
                       + " found. One ingest must cover exactly one region.")
-    roman = next(iter(romans))
+    roman = next(iter(candidates))
     if roman not in UNIVERSAL_REGIONS.values():
         return None, ("NAVAREA " + roman + " has a dedicated parser — ingest it "
                       "with the matching --navarea choice instead of a "
