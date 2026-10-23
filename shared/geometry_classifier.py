@@ -13,7 +13,8 @@ Classification returns one of:
                   never as a connected shape or convex hull
   "linestring"  — sequential track/route; render as an open polyline
   None           — no keyword evidence; caller falls back to legacy
-                  behaviour (polygon >= 4 points, else linestring)
+                  behaviour (polygon if the ring is a valid boundary,
+                  else an open LineString)
 
 Rule-first only (no AI fallback, per pipeline policy). Keyword-derived
 geometry is a display decision, not a provenance claim: it does not alter
@@ -26,6 +27,11 @@ Sequential-vs-scattered detection uses the adjacent-nearest-neighbour test:
   scattered sets score ~0.1-0.15, a realistically sampled survey track ~1.0.
 Threshold 0.70; only trusted for n >= 5 (small scattered sets can pass by
 chance — observed at n=4).
+
+Ring topology (ring_is_simple): pure-Python segment-intersection test
+equivalent to Shapely's Polygon.is_valid / Turf's kinks() — no new
+dependency. NAVAREA VIII 961/26's legacy ring fails this check, which is
+exactly the "crooked polygon" observed on the map.
 """
 
 from __future__ import annotations
@@ -76,6 +82,56 @@ def _is_sequential(points: Sequence[Sequence[float]]) -> bool:
         if abs(best_j - i) == 1:
             adjacent += 1
     return (adjacent / n) >= SEQUENTIAL_NN_THRESHOLD
+
+
+# --- ring topology validation (pure Python; no new dependency) ---------------
+
+
+def _orient(a, b, c) -> float:
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+def _on_segment(a, b, p) -> bool:
+    return (min(a[0], b[0]) <= p[0] <= max(a[0], b[0])
+            and min(a[1], b[1]) <= p[1] <= max(a[1], b[1]))
+
+
+def _segments_intersect(p1, p2, p3, p4) -> bool:
+    d1 = _orient(p3, p4, p1)
+    d2 = _orient(p3, p4, p2)
+    d3 = _orient(p1, p2, p3)
+    d4 = _orient(p1, p2, p4)
+    if ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and \
+       ((d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0)):
+        return True
+    if d1 == 0 and _on_segment(p3, p4, p1):
+        return True
+    if d2 == 0 and _on_segment(p3, p4, p2):
+        return True
+    if d3 == 0 and _on_segment(p1, p2, p3):
+        return True
+    if d4 == 0 and _on_segment(p1, p2, p4):
+        return True
+    return False
+
+
+def ring_is_simple(ring: Sequence[Sequence[float]]) -> bool:
+    """
+    True if a closed coordinate ring forms a non-self-intersecting
+    polygon boundary (no bowties/crossings; adjacent edges excluded).
+    A ring needs >= 4 positions (3 unique vertices + closing vertex).
+    Pure-Python O(n^2) segment test — rings in NAVAREA bulletins are tiny.
+    """
+    if len(ring) < 4:
+        return False
+    n = len(ring) - 1  # number of edges in the closed ring
+    for i in range(n):
+        for j in range(i + 1, n):
+            if j == i + 1 or (i == 0 and j == n - 1):
+                continue  # adjacent edges legitimately share a vertex
+            if _segments_intersect(ring[i], ring[i + 1], ring[j], ring[j + 1]):
+                return False
+    return True
 
 
 def classify_geometry_archetype(
