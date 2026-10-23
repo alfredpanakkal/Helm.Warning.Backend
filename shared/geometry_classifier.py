@@ -181,8 +181,15 @@ def classify_geometry_archetype(
     if RE_POINT_OPS.search(text) or RE_VICINITY.search(text):
         return "multipoint"
 
-    # Linear operations / surveys without 'vicinity'.
-    if RE_LINEAR_OPS.search(text) or RE_SURVEY.search(text):
+    # Declared routes (TRACKLINE / CENTRELINE / ALONG LINE JOINING /
+    # ROUTE / TOW / CABLE LAY / PIPELINE / SWEEP): the text explicitly
+    # states a linear trajectory — force LineString, no heuristic needed.
+    if RE_LINEAR_OPS.search(text):
+        return "linestring"
+
+    # Generic survey wording without 'vicinity': distinguish a sequential
+    # track from a scattered point set via the NN heuristic.
+    if RE_SURVEY.search(text):
         if len(points) == 2:
             return "linestring"
         if len(points) >= MIN_SEQUENTIAL_N and _is_sequential(points):
