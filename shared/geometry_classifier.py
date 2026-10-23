@@ -9,20 +9,28 @@ locations ("IN VICINITY OF" wellhead/platform lists) or a sequential survey
 track.
 
 Classification returns one of:
-  "multipoint"  — discrete, independent locations; render as markers,
-                  never as a connected shape or convex hull
-  "linestring"  — sequential track/route; render as an open polyline
-  None           — no keyword evidence; caller falls back to legacy
-                  behaviour (polygon if the ring is a valid boundary,
-                  else an open LineString)
+  "multipoint"   — discrete, independent locations (buoys, rigs, wrecks,
+                   'VICINITY OF' lists); render as markers, never connected
+  "linestring"   — sequential track/route/trackline; render as open polyline
+  "bounding_box" — "AREA BOUNDED WITHIN <lat> TO <lat> AND <lon> TO <lon>":
+                   two opposite corners define a rectangle (NAVAREA VIII
+                   1102/26 format); caller expands corners into a ring
+  None            — no keyword evidence; caller falls back to legacy
+                   behaviour (polygon if the ring is a valid boundary,
+                   else an open LineString)
 
 Rule-first only (no AI fallback, per pipeline policy). Keyword-derived
 geometry is a display decision, not a provenance claim: it does not alter
 data_quality or triage tiers, which remain governed by shared/models.
 
-Validated against live bulletins (Oct 2026):
-  NAVAREA VIII 961/26  (SEABED SURVEY ... IN VICINITY OF, 9 scattered) -> multipoint
-  NAVAREA VIII 1096/26 (WELL HEAD PLATFORM ... VICINITY OF, 30 pts)     -> multipoint
+Keyword taxonomy (validated against live NAVAREA bulletins, Oct 2026):
+  Area  -> AREA BOUNDED BY / BOUND BY / AREA BOUNDED WITHIN / EXCLUSION
+           ZONE / RESTRICTED AREA / LINES JOINING (boundary enumeration)
+  Line  -> TRACKLINE / CENTRELINE / ALONG LINE JOINING / FOLLOWING ROUTES /
+           TRACK / ROUTE / TOW / TOWING / CABLE LAY / PIPELINE / SWEEP
+  Point -> WELL HEAD / PLATFORM / RIG / BUOY / RACON / BEACON / MOORING /
+           LIGHT VESSEL / WRECK / SHOAL / ROCK (incl. plural forms)
+
 Sequential-vs-scattered detection uses the adjacent-nearest-neighbour test:
   scattered sets score ~0.1-0.15, a realistically sampled survey track ~1.0.
 Threshold 0.70; only trusted for n >= 5 (small scattered sets can pass by
@@ -44,13 +52,22 @@ EARTH_RADIUS_M = 6_371_000.0
 SEQUENTIAL_NN_THRESHOLD = 0.70
 MIN_SEQUENTIAL_N = 5
 
-# Word boundaries are mandatory: without them RIG matches "ORIGINAL"
-# and LINE matches "COASTLINE".
-RE_BOUNDED = re.compile(r"AREA\s+BOUNDED\s+BY|LINES?\s+JOINING|BOUNDING\s+LINES?")
-RE_POINT_OPS = re.compile(
-    r"\b(?:WELL\s*HEAD|WELLHEAD|PLATFORM|RIG|BUOY|LIGHT\s*VESSEL|LV|WRECK)\b"
+# Word boundaries are mandatory: without them RIG matches "ORIGINAL" and
+# LINE matches "COASTLINE". Plurals are explicit (\bRIG\b does NOT match
+# "RIGS" — a bare \b...\\b token fails on word suffixes).
+RE_BOUNDED = re.compile(
+    r"AREA\s+BOUNDED\s+BY|BOUND\s+BY|EXCLUSION\s+ZONE|RESTRICTED\s+AREA"
+    r"|LINES?\s+JOINING"
 )
-RE_LINEAR_OPS = re.compile(r"\b(?:TRACK|ROUTE|TOW|TOWING|CABLE\s*LAY|PIPELINE|SWEEP)\b")
+RE_BBOX = re.compile(r"AREA\s+BOUNDED\s+WITHIN")
+RE_POINT_OPS = re.compile(
+    r"\b(?:WELL\s*HEADS?|WELLHEADS?|PLATFORMS?|RIGS?|BUOYS?|RACONS?|BEACONS?"
+    r"|MOORINGS?|LIGHT\s*VESSELS?|LV|WRECKS?|SHOALS?|ROCKS?)\b"
+)
+RE_LINEAR_OPS = re.compile(
+    r"\b(?:TRACKS?|ROUTES?|TOWS?|TOWING|CABLE\s*LAY|PIPELINES?|SWEEPS?"
+    r"|TRACKLINE|CENTRELINES?|ALONG\s+LINE\s+JOINING|FOLLOWING\s+ROUTES?)\b"
+)
 RE_SURVEY = re.compile(r"\bSURVEY\b")
 RE_VICINITY = re.compile(r"VICINITY\s+OF")
 
@@ -143,18 +160,24 @@ def classify_geometry_archetype(
     raw_text: the clause/body text the coordinates were extracted from
               (the SAME text passed to parse_coordinates — no re-parsing).
     points:   GeoJSON-order [lon, lat] pairs from the shared parser.
-    Returns "multipoint" | "linestring" | None (None -> legacy behaviour).
+    Returns "multipoint" | "linestring" | "bounding_box" | None.
     """
     if not raw_text or len(points) < 2:
         return None
     text = raw_text.upper()
 
-    # Explicit bounded area keeps the legacy polygon rendering.
+    # 'AREA BOUNDED WITHIN <lat> TO <lat> AND <lon> TO <lon>': two opposite
+    # corners (NAVAREA VIII 1102/26). Expand into a rectangle ring.
+    if RE_BBOX.search(text) and len(points) == 2:
+        return "bounding_box"
+
+    # Explicit bounded areas keep the legacy polygon rendering (with the
+    # ring topology guard applied by the caller).
     if RE_BOUNDED.search(text):
         return None
 
-    # Discrete structures (wellheads, rigs, buoys) and 'vicinity of' lists
-    # are scattered individual locations — never a connected shape.
+    # Discrete structures (buoys, rigs, racons, wrecks, moorings) and
+    # 'vicinity of' lists are scattered individual locations.
     if RE_POINT_OPS.search(text) or RE_VICINITY.search(text):
         return "multipoint"
 
