@@ -48,9 +48,7 @@ class TestRunnerGuards(unittest.TestCase):
 
     def test_empty_paste_fails_closed(self):
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
-            f.write("   
-  
-")
+            f.write("   \n  \n")
             path = f.name
         try:
             self.assertFalse(run_manual_paste(["--navarea", "8", "--input", path]))

@@ -23,27 +23,18 @@ from shared.navarea_universal_text import UNIVERSAL_REGIONS
 ALL_REGION_KEYS = ["1", "8", "baltic", "ii", "iii", "iv", "ix", "v", "vi", "vii", "x", "xi", "xii", "xiii", "xiv", "xv", "xvi", "xvii", "xviii", "xix", "xx", "xxi"]
 
 SAMPLE_II = (
-    "WARNINGS IN FORCE AS ON 23 OCT 2026
-"
-    "
-"
-    "NAVAREA II 123/26
-"
+    "WARNINGS IN FORCE AS ON 23 OCT 2026\n"
+    "\n"
+    "NAVAREA II 123/26\n"
     " 1. HYDROGRAPHIC SURVEY IN AREA BOUNDED BY 48-00.0N 006-00.0W, "
-    "48-30.0N 006-30.0W, 48-30.0N 005-30.0W, 48-00.0N 005-30.0W
-"
-    " 2. CANCEL NAVAREA II 100/26
-"
-    "
-"
-    "NAVAREA II 124/26
-"
+    "48-30.0N 006-30.0W, 48-30.0N 005-30.0W, 48-00.0N 005-30.0W\n"
+    " 2. CANCEL NAVAREA II 100/26\n"
+    "\n"
+    "NAVAREA II 124/26\n"
     " BAY OF BISCAY (.) FIRING PRACTICE IN AREA BOUNDED WITHIN "
     "45-10.0N TO 45-20.0N AND 001-00.0W TO 001-10.0W (.) WIDE BERTH "
-    "REQUESTED
-"
-    " 2. CANCEL THIS MSG 311800 UTC DEC 26
-"
+    "REQUESTED\n"
+    " 2. CANCEL THIS MSG 311800 UTC DEC 26\n"
 )
 
 
@@ -57,7 +48,7 @@ class TestUniversalRegistry(unittest.TestCase):
             parser_mod, sync_mod, subdir = REGIONS[key]
             self.assertEqual(parser_mod, "scripts.navarea_universal_parser", key)
             self.assertEqual(sync_mod, "scripts.navarea_generic_sync", key)
-            self.assertEqual(subdir, "navarea_" + key)
+            self.assertEqual(subdir, "navarea_" + key, key)
 
     def test_dedicated_regions_unchanged(self):
         for key in ["1", "8", "iv", "xi", "xii", "baltic"]:
@@ -128,11 +119,9 @@ class TestUniversalParse(unittest.TestCase):
 
     def test_parse_bulletin_text_xxi(self):
         sample = (
-            "NAVAREA XXI 001/26
-"
+            "NAVAREA XXI 001/26\n"
             " FIRING PRACTICE IN AREA BOUNDED WITHIN 80-10.0N TO 80-20.0N "
-            "AND 060-00.0E TO 060-10.0E
-"
+            "AND 060-00.0E TO 060-10.0E\n"
         )
         parsed = parse_bulletin_text(sample, "xxi")
         self.assertEqual(len(parsed["nav_warnings"]), 1)
@@ -142,9 +131,7 @@ class TestUniversalParse(unittest.TestCase):
         self.assertEqual(parsed["memo"]["navarea"], "XXI")
 
     def test_cancel_cross_ref_of_other_region_is_not_mixed(self):
-        text = SAMPLE_II + "
-SEE ALSO CANCEL NAVAREA VIII 1104/26
-"
+        text = SAMPLE_II + "\nSEE ALSO CANCEL NAVAREA VIII 1104/26\n"
         key, error = resolve_region(None, text)
         self.assertEqual(key, "ii")
         self.assertIsNone(error)
@@ -159,9 +146,7 @@ class TestRegionResolutionGuards(unittest.TestCase):
         self.assertIsNone(error)
 
     def test_mixed_region_rejected(self):
-        text = SAMPLE_II + "
-NAVAREA XXI 005/26 SOMETHING
-"
+        text = SAMPLE_II + "\nNAVAREA XXI 005/26 SOMETHING\n"
         key, error = resolve_region(None, text)
         self.assertIsNone(key)
         self.assertIn("mixed-region", error)

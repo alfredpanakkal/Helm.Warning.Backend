@@ -56,7 +56,7 @@ from shared.navarea_universal_text import (
     region_header_patterns, region_cancel_patterns, normalize_year, warning_header_re,
     RE_YEAR_HINT, TITLE_TRANSLATION_REGIONS,
 )
-from shared.translation import looks_spanish, translate_title
+from shared import translation
 
 # Numbered item line: '1. HAZARDOUS ...' / 'A. ...'-adjacent numbering.
 RE_ITEM_LINE = re.compile(r"(?:^|\s)(\d{1,2})\.[\s]+(?=[A-Z])")
@@ -302,8 +302,8 @@ def parse_warning(block, cfg):
     # Spanish bulletins (XV/XVI): fail-closed title translation. The raw
     # text stays the original Spanish; on ANY translation problem the
     # original title is kept and the ingest still succeeds.
-    if cfg.get("translate_titles") and looks_spanish(title):
-        translated = translate_title(title)
+    if cfg.get("translate_titles") and translation.looks_spanish(title):
+        translated = translation.translate_title(title)
         if translated:
             title = translated[:255]
 
