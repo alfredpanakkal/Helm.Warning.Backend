@@ -4,11 +4,26 @@ shared/navarea_universal_text.py — Region-parameterized text primitives
 for the universal NAVAREA parser (scripts/navarea_universal_parser.py).
 
 The universal parser generalizes scripts/navarea_8_parser.py: the IMO
-WWNWS bulletin header ('NAVAREA <NUMERAL> [-]nnn/yy') is a global
-standard covering all 21 NAVAREA / MET areas (I–XXI, incl. the six
-Arctic MET areas XVII–XXI), so only the numeral is parameterized.
-Region-specific quirk handling stays in the dedicated per-region
-parsers (NAVAREA 1 / IV / VIII / XI / XII, Baltic).
+WWNWS bulletin header ('NAVAREA <NUMERAL> [-]nnn/yy') is the baseline
+standard, but the live coordinator bulletins (corpus uploaded Oct 2026)
+deviate per region, so this module now carries:
+
+  * a tolerant default header regex (optional 'WARNING'/'MSG' word,
+    2- OR 4-digit years as used by II / XVII / XVIII),
+  * per-region extra header patterns for the known quirks:
+      V    Brazil publishes bare '0648/26' lines (no NAVAREA numeral)
+      VI   Argentina: 'NAVAREA - 0355-2026' (numeral omitted)
+      VII  South Africa: 'NAVAREA VII 014 OF 2026:' (OF form, year may
+           sit on the next line behind tabs)
+      XV   Chile: 'NAVAREA XV 0142' (no year in the header)
+      XIX  Norway: 'Number:125/26' anchors each warning (the embedded
+           'NAVAREA XIX 125/261.' joined-line header defeats the
+           standard year boundary)
+  * matching per-region cancel-reference patterns (V: 'CANCEL NAVAREA
+    0622/26' with no numeral; VII: '... OF 2025').
+
+Region-specific quirk handling that needs a dedicated parser (NAVAREA
+1 / IV / VIII / XI / XII, Baltic) stays in those parsers.
 """
 import re
 
@@ -66,32 +81,129 @@ NAVAREA_NAMES = {
 _ALL_NUMERALS = ("XXI|XX|XIX|XVIII|XVII|XVI|XV|XIV|XIII"
                  "|XII|XI|X|IX|VIII|VII|VI|V|IV|III|II|I")
 
-# Any 'NAVAREA <numeral> [-]n/yy' header, tolerant of 'NAV AREA' spacing.
+# Any 'NAVAREA <numeral> [-]n/yy' header (or the VII 'n OF yyyy' variant),
+# tolerant of 'NAV AREA' spacing and 2/4-digit years.
 RE_ANY_REGION_HEADER = re.compile(
-    r"NAV\s*AREA\s+(" + _ALL_NUMERALS + r")\b\s*[-\u2013]?\s*(\d{1,4})\s*/\s*(\d{2})",
+    r"NAV\s*AREA\s+(" + _ALL_NUMERALS + r")\b\s*[-\u2013]?\s*"
+    r"(?:WARNING\s+|MSG\s+)?(\d{1,4})\s*(?:/\s*|OF\s+)(\d{4}|\d{2})(?!\d)",
     re.IGNORECASE,
 )
 
 
+def normalize_year(year):
+    """Normalizes a matched header year to its 2-digit form.
+
+    '2026' -> '26' (II / XVII / XVIII publish 4-digit years); 2-digit
+    years and None pass through unchanged. WARNING: never fabricate a
+    year — None stays None (the caller resolves it from a year hint).
+    """
+    if not year:
+        return None
+    y = str(year).strip()
+    if len(y) == 4:
+        return y[-2:]
+    return y
+
+
 def warning_header_re(roman: str):
-    """'NAVAREA <roman> [-]n/yy' header regex for one region.
+    """Default 'NAVAREA <roman> [-]n/yy' header regex for one region.
 
     The trailing \\b after the numeral prevents II from matching inside
-    III, V inside VI/VII, X inside XI/XII, XX inside XXI, etc.
+    III, V inside VI/VII, X inside XI/XII, XX inside XXI, etc. Tolerates
+    the XIV 'NAVAREA XIV WARNING 287/26' word and 4-digit years. Every
+    pattern MUST expose group(1)=number and group(2)=year so the parser
+    can treat all header patterns uniformly.
     """
     return re.compile(
-        r"NAV\s*AREA\s+" + roman + r"\b\s*[-\u2013]?\s*(\d{1,4})\s*/\s*(\d{2})",
+        r"NAV\s*AREA\s+" + roman + r"\b\s*[-\u2013]?\s*(?:WARNING\s+|MSG\s+)?"
+        r"(\d{1,4})\s*/\s*(\d{4}|\d{2})(?!\d)",
         re.IGNORECASE,
     )
 
 
 def cancel_ref_re(roman: str):
-    """'CANCEL NAVAREA <roman> [MSG] [-]n/yy' cross-ref regex for one region."""
+    """'CANCEL NAVAREA <roman> [MSG|WARNING] [-]n/yy' cross-ref regex."""
     return re.compile(
         r"CANCEL\s+NAV\s*AREA\s+" + roman
-        + r"\b\s*(?:MSG\s*)?[-\u2013]?\s*(\d{1,4})\s*/\s*(\d{2})",
+        + r"\b\s*(?:WARNING\s+|MSG\s*)?[-\u2013]?\s*(\d{1,4})\s*/\s*(\d{4}|\d{2})(?!\d)",
         re.IGNORECASE,
     )
+
+
+# --- Per-region header quirks (live coordinator corpus, Oct 2026) -----------
+# Extra warning-header patterns for regions whose bulletins deviate from
+# the WWNWS baseline. Every pattern exposes group(1)=number, group(2)=year
+# (group(2) may be None for regions that omit the year, e.g. XV).
+_EXTRA_HEADER_PATTERNS = {
+    # Brazil publishes bare '0648/26' lines with no NAVAREA numeral. The
+    # strict line anchors keep the in-force index lines
+    # ('0646/26; 0645/26; ...') from matching.
+    "v": [
+        re.compile(r"^(\d{1,4})/(\d{2})[ \t]*$", re.MULTILINE | re.IGNORECASE),
+    ],
+    # Argentina: 'NAVAREA - 0355-2026' (numeral omitted from header).
+    "vi": [
+        re.compile(r"NAV\s*AREA\s*-\s*(\d{3,4})-(\d{4})(?!\d)", re.IGNORECASE),
+    ],
+    # South Africa: 'NAVAREA VII 014 OF 2026:' — year may sit on the
+    # next line behind tabs; the rest of the header line (': (12 JAN
+    # 26)' issue-date suffix) is consumed so it never leaks into the
+    # warning title.
+    "vii": [
+        re.compile(r"NAV\s*AREA\s+VII\b\s*(\d{1,4})\s+OF\s*(\d{4}|\d{2})(?!\d)[^\n]*",
+                   re.IGNORECASE),
+    ],
+    # Chile: 'NAVAREA XV 0142' — no year in the header (resolved from
+    # the bulletin's 'YEAR 2026' / 'DATE: .../2026' hint).
+    "xv": [
+        re.compile(r"NAV\s*AREA\s+XV\b[.\s]*(\d{3,4})\s*(?:/(\d{4}|\d{2}))?(?![\d/])",
+                   re.IGNORECASE),
+    ],
+    # Norway: 'Number:125/26' precedes each warning; the embedded joined
+    # 'NAVAREA XIX 125/261.' header defeats the standard year boundary.
+    "xix": [
+        re.compile(r"Number:\s*(\d{1,4})/(\d{2})(?!\d)", re.IGNORECASE),
+    ],
+}
+
+# Extra cancel-reference patterns per region.
+_EXTRA_CANCEL_PATTERNS = {
+    # Brazil: 'CANCEL NAVAREA 0622/26' (no numeral in the reference).
+    "v": [
+        re.compile(r"CANCEL\s+NAVAREA\s+(\d{3,4})/(\d{2})(?!\d)", re.IGNORECASE),
+    ],
+    # South Africa: 'CANCEL NAVAREA VII 374 OF 2025'.
+    "vii": [
+        re.compile(r"CANCEL\s+NAV\s*AREA\s+VII\b\s*(\d{1,4})\s+OF\s*(\d{4}|\d{2})(?!\d)",
+                   re.IGNORECASE),
+    ],
+}
+
+
+def region_header_patterns(region_key: str, roman: str):
+    """Returns the full ordered list of header regexes for a region:
+    the default pattern first, then any region-specific extras. A match
+    from ANY pattern starts a warning block."""
+    pats = [warning_header_re(roman)]
+    pats.extend(_EXTRA_HEADER_PATTERNS.get(region_key, []))
+    return pats
+
+
+def region_cancel_patterns(region_key: str, roman: str):
+    """Returns the full ordered list of cancel-reference regexes for a
+    region: the default pattern plus any region-specific extras."""
+    pats = [cancel_ref_re(roman)]
+    pats.extend(_EXTRA_CANCEL_PATTERNS.get(region_key, []))
+    return pats
+
+
+# Bulletin-level year hint for regions whose headers omit the year
+# (NAVAREA XV): 'YEAR 2026:' or 'DATE: OCT/16/2026'.
+RE_YEAR_HINT = re.compile(r"\bYEAR\s+(\d{4})\b|DATE:.*?(\d{4})\b", re.IGNORECASE)
+
+# Regions whose bulletins are published in Spanish and whose titles may
+# be machine-translated (fail-closed) for display: Chile, Peru.
+TITLE_TRANSLATION_REGIONS = {"xv", "xvi"}
 
 
 def regions_in_text(text: str) -> set:
