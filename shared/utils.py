@@ -206,6 +206,54 @@ def _is_valid_latlon(lat_deg: Any, lat_min: Any, lon_deg: Any, lon_min: Any) -> 
     return True
 
 
+# Standalone axis tokens for 'AREA BOUNDED WITHIN <lat> TO <lat> AND <lon> TO
+# <lon>' bulletins (NAVAREA VIII 1102/26): latitudes and longitudes are
+# listed SEPARATELY, so the pair-based pattern extracts nothing.
+RE_AXIS_LAT = re.compile(r"(?<![\d.])(\d{1,2})-(\d{2}(?:\.\d+)?)([NS])(?![\d.])")
+RE_AXIS_LON = re.compile(r"(?<![\d.])(\d{1,3})-(\d{2}(?:\.\d+)?)([EW])(?![\d.])")
+
+
+def _bbox_from_axis_tokens(raw_text: str):
+    """
+    Builds a closed rectangle ring for 'AREA BOUNDED WITHIN' bulletins
+    whose latitudes and longitudes are listed as separate axis ranges
+    (e.g. 14-47.2N TO 14-50.9N AND 074-02.8E TO 074-08.15E).
+    Returns (spatial, centroid_lat, centroid_lon) or (None, None, None).
+    Gated on the bbox phrase so unrelated lat/lon mentions never
+    fabricate an area (fail-closed outside the known format).
+    """
+    from shared.geometry_classifier import RE_BBOX
+
+    if not raw_text or not RE_BBOX.search(raw_text.upper()):
+        return None, None, None
+
+    lats = set()
+    for m in RE_AXIS_LAT.finditer(raw_text):
+        deg, mins, hem = m.groups()
+        if _is_valid_latlon(deg, mins, "0", "0"):
+            val = convert_to_decimal(deg, mins, hem)
+            if not math.isnan(val):
+                lats.add(val)
+    lons = set()
+    for m in RE_AXIS_LON.finditer(raw_text):
+        deg, mins, hem = m.groups()
+        if _is_valid_latlon("0", "0", deg, mins):
+            val = convert_to_decimal(deg, mins, hem)
+            if not math.isnan(val):
+                lons.add(val)
+
+    if len(lats) != 2 or len(lons) != 2:
+        return None, None, None  # not a clean two-corner range: fail closed
+
+    lat_s, lat_n = sorted(lats)
+    lon_w, lon_e = sorted(lons)
+    ring = [
+        [lon_w, lat_s], [lon_e, lat_s], [lon_e, lat_n], [lon_w, lat_n], [lon_w, lat_s],
+    ]
+    spatial = {"type": "Polygon", "coordinates": [ring]}
+    return spatial, round((lat_s + lat_n) / 2, 6), round((lon_w + lon_e) / 2, 6)
+
+
 def parse_coordinates(raw_text: str):
     """
     Extracts navigational coordinates from text.
@@ -298,6 +346,14 @@ def parse_coordinates(raw_text: str):
                     spatial = {"type": "Polygon", "coordinates": [ring]}
                 else:
                     spatial = {"type": "LineString", "coordinates": points}
+
+    if not points:
+        # 'AREA BOUNDED WITHIN <lat> TO <lat> AND <lon> TO <lon>' lists its
+        # axes separately (no pairs): fall back to axis tokens so these
+        # bounded-area warnings plot as rectangles instead of nothing.
+        bbox_spatial, bbox_lat, bbox_lon = _bbox_from_axis_tokens(raw_text)
+        if bbox_spatial:
+            return [], bbox_lat, bbox_lon, bbox_spatial
 
     return parsed_coords, primary_lat, primary_lon, spatial
 
