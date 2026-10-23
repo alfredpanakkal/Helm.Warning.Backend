@@ -288,7 +288,7 @@ def parse_bulletin_with_fallback(bulletin_text, region_key, rule_parser):
 
     if region_key not in UNIVERSAL_REGIONS:
         _log("Unknown region key '" + str(region_key) + "' — rule parser only.")
-        return _rule_parse()
+        return rule_parser(bulletin_text, region_key)
     roman = UNIVERSAL_REGIONS[region_key]
 
     if region_key in RULE_FIRST_ONLY_REGIONS:

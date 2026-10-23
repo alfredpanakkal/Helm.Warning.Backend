@@ -22,7 +22,7 @@ ALL_REGION_KEYS = ["1", "8", "baltic", "ii", "iii", "iv", "ix", "v", "vi", "vii"
 class TestRegionRegistry(unittest.TestCase):
 
     def test_all_regions_registered(self):
-        self.assertEqual(sorted(REGIONS), ALL_REGION_KEYS)
+        self.assertEqual(sorted(REGIONS), sorted(ALL_REGION_KEYS))
 
     def test_every_region_parser_has_main_two_arg_signature(self):
         import importlib
@@ -48,9 +48,7 @@ class TestRunnerGuards(unittest.TestCase):
 
     def test_empty_paste_fails_closed(self):
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
-            f.write("   
-  
-")
+            f.write("   \n  \n")
             path = f.name
         try:
             self.assertFalse(run_manual_paste(["--navarea", "8", "--input", path]))
@@ -59,7 +57,7 @@ class TestRunnerGuards(unittest.TestCase):
 
     def test_invalid_region_rejected(self):
         self.assertRaises(SystemExit, run_manual_paste,
-                          ["--navarea", "vii", "--input", "x.txt"])
+                          ["--navarea", "xxii", "--input", "x.txt"])
 
 
 class TestRegionAutoDetect(unittest.TestCase):

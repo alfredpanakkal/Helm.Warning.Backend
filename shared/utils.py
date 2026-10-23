@@ -254,50 +254,137 @@ def _bbox_from_axis_tokens(raw_text: str):
     return spatial, round((lat_s + lat_n) / 2, 6), round((lon_w + lon_e) / 2, 6)
 
 
+# --- Coordinate PAIR extraction (multi-format, priority-ordered) ------------
+#
+# The live coordinator corpus (Oct 2026) uses four pair syntaxes. Patterns
+# are applied in priority order and matched spans are consumed, so a
+# coordinate is never extracted twice or misread by a looser pattern:
+#
+#   1. Peru fractional-hyphen pair (rule-18 semantics, XVI):
+#        '11-49-992S 077-28-025W'  ->  3-digit tail = thousandths of a minute
+#   2. DMS hyphen pair (XIII '51-27-57N 143-26-43E',
+#      XVI '12-01-53.4S 077-10-29.1W' with decimal seconds)
+#   3. Standard hyphen DMM pair — now with tolerant lat/lon separation
+#      (whitespace, ',', '/', or Chile's 'LAT. 52-20.10S. LONG. 069-04.60W.'
+#      wording, Australia's '14-45.98S /159-08.93E', glued 'NN-NN.NNE' tails)
+#   4. Spaced-hyphen pair with separated hemispheres (South Africa VII:
+#      '28 - 35.8 S 013 - 54.7 E')
+#   5. Space/tab-separated DMM pair (Canada XVIII '68 27.660N 113 23.366W',
+#      Pakistan IX '24 43.00N 066 50.40E')
+#
+# Every pattern requires an explicit hemisphere letter: no hemisphere is
+# ever fabricated (Rule 17), and out-of-range values are skipped rather
+# than clamped.
+
+# Lat/lon separation inside a pair: whitespace, comma, slash, a trailing
+# '.' after the latitude, and the Chilean 'LONG.'/'LON.' wording.
+_PAIR_SEP = r"[\s,/]*(?:\.\s*)?(?:LONG\.?\s*|LON\.?\s*)?[\s,/]*"
+
+RE_PAIR_PERU = re.compile(
+    r"(\d{1,2})-(\d{2})-(\d{3})([NS])" + _PAIR_SEP +
+    r"(\d{1,3})-(\d{2})-(\d{3})([EW])",
+    re.IGNORECASE,
+)
+RE_PAIR_DMS = re.compile(
+    r"(\d{1,2})-(\d{2})-(\d{1,2}(?:\.\d+)?)\s*([NS])" + _PAIR_SEP +
+    r"(\d{1,3})-(\d{2})-(\d{1,2}(?:\.\d+)?)\s*([EW])",
+    re.IGNORECASE,
+)
+RE_PAIR_DMM = re.compile(
+    r"(\d{1,2})-(\d{2}(?:\.\d+)?)\s*([NS])" + _PAIR_SEP +
+    r"(\d{1,3})-(\d{2}(?:\.\d+)?)\s*([EW])",
+    re.IGNORECASE,
+)
+RE_PAIR_DMM_SPACED = re.compile(
+    r"(\d{1,3})\s*-\s*(\d{2}(?:\.\d+)?)\s+([NS])\s+"
+    r"(\d{1,3})\s*-\s*(\d{2}(?:\.\d+)?)\s+([EW])",
+    re.IGNORECASE,
+)
+RE_PAIR_SPACE = re.compile(
+    r"(\d{1,2})[ \t]+(\d{1,2}(?:\.\d+)?)\s*([NS])[\s,]+"
+    r"(\d{1,3})[ \t]+(\d{1,2}(?:\.\d+)?)\s*([EW])",
+    re.IGNORECASE,
+)
+
+
+def _extract_coord_pairs(raw_text: str):
+    """Extracts validated coordinate pairs from text in ALL supported
+    syntaxes. Returns a position-ordered list of
+    (kind, lat, lon, canonical_str); out-of-range pairs are skipped
+    (never clamped), and no pair is ever extracted twice."""
+    consumed: list[tuple[int, int]] = []
+    found = []
+
+    for rex, kind in (
+        (RE_PAIR_PERU, "peru"),
+        (RE_PAIR_DMS, "dms"),
+        (RE_PAIR_DMM, "dmm"),
+        (RE_PAIR_DMM_SPACED, "dmm_spaced"),
+        (RE_PAIR_SPACE, "dmm_space"),
+    ):
+        for m in rex.finditer(raw_text):
+            s, e = m.span()
+            if any(s >= a and s < b for a, b in consumed):
+                continue  # already claimed by a higher-priority pattern
+            g = m.groups()
+            if kind == "peru":
+                lat_d, lat_m, lat_tail, lat_h, lon_d, lon_m, lon_tail, lon_h = g
+                lat_min = float(f"{lat_m}.{lat_tail}")
+                lon_min = float(f"{lon_m}.{lon_tail}")
+                if lat_min >= 60.0 or lon_min >= 60.0:
+                    continue
+                if not _is_valid_latlon(lat_d, lat_min, lon_d, lon_min):
+                    continue
+                lat = convert_to_decimal(lat_d, lat_min, lat_h)
+                lon = convert_to_decimal(lon_d, lon_min, lon_h)
+                canon = (f"{lat_d}-{lat_min:06.3f}".rstrip('0').rstrip('.') + lat_h
+                         + " " + f"{lon_d.zfill(3)}-{lon_min:06.3f}".rstrip('0').rstrip('.') + lon_h)
+            elif kind == "dms":
+                lat_d, lat_m, lat_s, lat_h, lon_d, lon_m, lon_s, lon_h = g
+                if not _is_valid_latlon(lat_d, lat_m, lon_d, lon_m):
+                    continue
+                lat = convert_to_decimal(lat_d, lat_m, lat_s, lat_h)
+                lon = convert_to_decimal(lon_d, lon_m, lon_s, lon_h)
+                canon = (f"{lat_d}-{lat_m}-{lat_s}{lat_h} "
+                         f"{lon_d}-{lon_m}-{lon_s}{lon_h}")
+            else:
+                lat_d, lat_m, lat_h, lon_d, lon_m, lon_h = g
+                if not _is_valid_latlon(lat_d, lat_m, lon_d, lon_m):
+                    continue
+                lat = convert_to_decimal(lat_d, lat_m, lat_h)
+                lon = convert_to_decimal(lon_d, lon_m, lon_h)
+                canon = f"{lat_d}-{lat_m}{lat_h} {lon_d}-{lon_m}{lon_h}"
+
+            if lat is None or lon is None or math.isnan(lat) or math.isnan(lon):
+                continue
+            consumed.append((s, e))
+            found.append((m.start(), kind, lat, lon, canon))
+
+    found.sort(key=lambda item: item[0])
+    return [(kind, lat, lon, canon) for _s, kind, lat, lon, canon in found]
+
+
 def parse_coordinates(raw_text: str):
     """
     Extracts navigational coordinates from text.
-    Handles DD-MM.MM[N/S] DDD-MM.MM[E/W] format.
+    Handles the four live-bulletin pair syntaxes (see the pattern block
+    above): hyphen DMM (incl. glued tails and 'LAT./LONG.' wording),
+    DMS with (decimal) seconds, Peru fractional-hyphen, spaced-hyphen
+    (South Africa) and space/tab-separated DMM (Canada, Pakistan).
     Returns: (parsed_coords_list, primary_lat, primary_lon, spatial_geojson)
     For polygons and line segments, primary_lat and primary_lon represent the centroid.
     """
     if not raw_text or not isinstance(raw_text, str):
         return [], None, None, None
 
-    pattern = r'(\d{2,3})-(\d{2}(?:\.\d+)?)[NS]\s+(\d{2,3})-(\d{2}(?:\.\d+)?)[EW]'
-    matches = list(re.finditer(pattern, raw_text, re.IGNORECASE))
+    pairs = _extract_coord_pairs(raw_text)
 
     parsed_coords = []
     points = []
 
-    for match in matches:
-        lat_deg, lat_min, lon_deg, lon_min = match.groups()
-
-        # Extract direction characters from the raw text
-        text_after_lat = raw_text[match.end(2):]
-        lat_dir_char = text_after_lat[0] if text_after_lat and len(text_after_lat) > 0 else ''
-
-        text_after_lon = raw_text[match.end(4):]
-        lon_dir_char = text_after_lon[0] if text_after_lon and len(text_after_lon) > 0 else ''
-
-        lat_dir = lat_dir_char.upper() if lat_dir_char in 'NS' else ''
-        lon_dir = lon_dir_char.upper() if lon_dir_char in 'EW' else ''
-
-        if not lat_dir or not lon_dir:
-            continue
-
-        # Strict range validation: skip invalid pairs instead of clamping
-        if not _is_valid_latlon(lat_deg, lat_min, lon_deg, lon_min):
-            continue
-
-        lat = convert_to_decimal(lat_deg, lat_min, lat_dir)
-        lon = convert_to_decimal(lon_deg, lon_min, lon_dir)
-
-        if math.isnan(lat) or math.isnan(lon):
-            continue
-
+    for _kind, lat, lon, canon in pairs:
         points.append([lon, lat])
-        parsed_coords.append(f"{lat_deg}-{lat_min}{lat_dir} {lon_deg}-{lon_min}{lon_dir}")
+        parsed_coords.append(canon)
 
     spatial = None
     primary_lat = None
@@ -315,8 +402,9 @@ def parse_coordinates(raw_text: str):
             archetype = classify_geometry_archetype(raw_text, points)
             if archetype == "multipoint":
                 # Discrete scattered locations (e.g. 'IN VICINITY OF'
-                # wellhead/platform lists, buoy lists): individual markers,
-                # never a connected shape. Prevents the tangled-polygon bug.
+                # wellhead/platform lists, buoy lists): individual
+                # markers, never a connected shape. Prevents the
+                # tangled-polygon bug.
                 spatial = {"type": "MultiPoint", "coordinates": points}
             elif archetype == "bounding_box":
                 # 'AREA BOUNDED WITHIN <lat> TO <lat> AND <lon> TO <lon>'
@@ -473,4 +561,3 @@ def compute_differential(
         "update": to_update,
         "cancel": to_cancel
     }
-
