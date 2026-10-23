@@ -4,30 +4,10 @@ navarea_universal_parser.py — Deterministic Universal Parser for NAVAREA
 regions without a dedicated parser (II, III, V, VI, VII, IX, X and the
 later MET areas XIII–XXI).
 
-Generalizes scripts/navarea_8_parser.py: the IMO WWNWS bulletin header
-('NAVAREA <NUMERAL> [-]nnn/yy') is a global standard across all 21
-NAVAREA / MET areas, so segmentation, clause splitting, title extraction
-and cross-ref extraction are the proven NAVAREA VIII logic with only the
-numeral parameterized. Coordinate parsing and hazard classification are
-delegated to the shared parser (no-second-parser rule); geometry-ambiguous
-warnings fail closed to Tier C / no_valid_geometry via
-shared/models.build_master_payload.
-
-Region resolution (the two-arg main(input, output) contract carries no
-region parameter):
-  1. The staging subdir of the input path (navareas/manual/navarea_<key>/)
-     names the region.
-  2. Text headers must agree: warning headers from any other NAVAREA
-     region make the paste mixed-region and the parse FAILS CLOSED
-     (returns False) — one paste must be exactly one region. Pastes whose
-     headers belong to a dedicated-parser region (I/IV/VIII/XI/XII) are
-     rejected with a pointer to the right --navarea choice.
-  3. With no path hint, exactly one universal-region header must be
-     present.
-
-Cross-refs (CANCEL NAVAREA <roman> n/yy) are extracted and stored on the
-warning payload for a future supersede pass; this parser applies no
-status transitions.
+This file keeps the repo's deterministic parsing as the final authority.
+A Gemini-first path is layered in front of it, but the rule parser remains
+as the fallback whenever the model is unavailable, times out, or returns
+invalid data.
 """
 import sys
 import os
@@ -43,6 +23,7 @@ if ROOT_DIR not in sys.path:
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
+from shared.gemini_navarea_parser import parse_bulletin_with_fallback
 from shared.utils import parse_coordinates, classify_hazard_categories
 from shared.navarea_universal_text import (
     UNIVERSAL_REGIONS, NAVAREA_NAMES, regions_in_text, warning_header_re, cancel_ref_re,
@@ -122,7 +103,6 @@ def _extract_title(body: str, cfg) -> str:
     head = body[:m.start()] if m else body
     lines = [_clean_line(l) for l in head.split("\n") if l.strip()]
     title = " ".join(lines).strip()
-    # Trim trailing DTG tokens the source may prepend to the next warning.
     title = re.sub(r"\b\d{6}Z?\s*/?\s*[A-Z]{3}\s+\d{2}\s*$", "", title).strip()
     return title[:255] or "NAVAREA " + cfg["roman"] + " Warning"
 
@@ -220,7 +200,7 @@ def parse_warning(block, cfg):
         "navarea": cfg["navarea_id"],
         "title": _extract_title(body, cfg) or warning_id,
         "issued_text": None,
-        "coordinates": None,  # master no longer carries flat coords (20261020 schema)
+        "coordinates": None,
         "latitude": lat,
         "longitude": lon,
         "category": categories[0] if categories else "general",
@@ -236,11 +216,7 @@ def parse_warning(block, cfg):
 
 
 def parse_bulletin_text(bulletin_text: str, region_key: str) -> dict:
-    """Full deterministic parse of the bulletin into pipeline JSON shape.
-
-    memo carries region/source_id so navarea_generic_sync can key the
-    differential sync without hardcoding a region.
-    """
+    """Full deterministic parse of the bulletin into pipeline JSON shape."""
     cfg = _region_config(region_key)
     parsed_data = {"raw_messages": [], "nav_warnings": [], "spatial_features": [],
                    "memo": {"region": region_key, "navarea": cfg["navarea_id"],
@@ -266,12 +242,7 @@ def parse_bulletin_text(bulletin_text: str, region_key: str) -> dict:
 
 
 def resolve_region(input_filename, text):
-    """Determines the region for this parse. Returns (region_key, error).
-
-    Precedence: the input path's staging subdir (navarea_<key>) wins; text
-    headers are used for validation (mixed-region pastes are rejected) and
-    as the fallback when no path hint exists.
-    """
+    """Determines the region for this parse. Returns (region_key, error)."""
     romans = regions_in_text(text)
 
     path_key = None
@@ -294,11 +265,9 @@ def resolve_region(input_filename, text):
                 + ". Split the paste per region (one region per ingest).")
         return path_key, None
 
-    # No path hint: resolve from the text alone.
     if not romans:
         return None, ("could not determine the NAVAREA region: no "
                       "'NAVAREA <numeral> n/yy' warning header found in the text.")
-    universal_romans = {r for r in romans if r in UNIVERSAL_REGIONS.values()}
     if len(romans) > 1:
         return None, ("mixed-region paste: warning headers for "
                       + ", ".join(sorted(romans))
@@ -315,7 +284,7 @@ def resolve_region(input_filename, text):
 def main(input_filename="navareas/manual/navarea_ii/pasted_raw.txt",
          output_filename="navareas/manual/navarea_ii/parsed.json") -> bool:
     print("=" * 60)
-    print("NAVAREA Universal Parser (rule-first — all non-dedicated areas)")
+    print("NAVAREA Universal Parser (Gemini-first with deterministic fallback)")
     print("=" * 60)
     content = ""
     if os.path.exists(input_filename):
@@ -343,9 +312,9 @@ def main(input_filename="navareas/manual/navarea_ii/pasted_raw.txt",
     print("Region: NAVAREA " + cfg["roman"]
           + " (" + region_name + ") — source_id=" + cfg["source_id"])
 
-    parsed_data = parse_bulletin_text(content, region_key)
+    parsed_data = parse_bulletin_with_fallback(content, region_key, parse_bulletin_text)
     n = len(parsed_data["nav_warnings"])
-    n_geom = len([w for w in parsed_data["nav_warnings"] if w["spatial"]])
+    n_geom = len([w for w in parsed_data["nav_warnings"] if w.get("spatial")])
     print("Parsed " + str(n) + " warning(s); " + str(n_geom)
           + " with resolvable geometry (" + str(n - n_geom)
           + " fail closed to Tier C / no_valid_geometry).")
