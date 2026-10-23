@@ -67,6 +67,8 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL_NAME: ${{ vars.GEMINI_MODEL_NAME }}
           PYTHONPATH: ${{ github.workspace }}
         run: |
           python -m scripts.run_paste_queue 2>&1 | tee paste_queue.log
@@ -81,6 +83,8 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL_NAME: ${{ vars.GEMINI_MODEL_NAME }}
           PYTHONPATH: ${{ github.workspace }}
         run: |
           jq -r '.inputs.raw_text' "$GITHUB_EVENT_PATH" > pasted.txt
