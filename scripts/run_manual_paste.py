@@ -8,6 +8,11 @@ pipelines use (no second parser, no parallel logic), so a manually
 pasted warning goes through the same deterministic parse, geometry
 classification and differential sync as a scraped one.
 
+Regions WITHOUT a dedicated scraper/parser (II, III, V, VI, VII, IX, X)
+route through the universal parser + generic sync — same pipeline
+contracts, so a region can be promoted to a dedicated parser later by
+swapping its registry entry only.
+
 Usage:
     python -m scripts.run_manual_paste --navarea 8 --input pasted.txt
     python -m scripts.run_manual_paste --navarea auto --input pasted.txt
@@ -28,6 +33,7 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 # region key -> (parser module, sync module, staging subdir)
+# Dedicated scrapers/parsers:
 REGIONS = {
     "1":      ("scripts.navarea_1_parser",    "scripts.navarea_1_sync",    "navarea_1"),
     "8":      ("scripts.navarea_8_parser",    "scripts.navarea_8_sync",    "navarea_8"),
@@ -35,16 +41,31 @@ REGIONS = {
     "xi":     ("scripts.navarea_xi_parser",   "scripts.navarea_xi_sync",   "navarea_xi"),
     "xii":    ("scripts.navarea_xii_parser",  "scripts.navarea_xii_sync",  "navarea_xii"),
     "baltic": ("scripts.baltic_parser",       "scripts.baltic_sync",       "baltic"),
+    # No dedicated scraper yet — universal parser + generic sync:
+    "ii":     ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_ii"),
+    "iii":    ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_iii"),
+    "v":      ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_v"),
+    "vi":     ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_vi"),
+    "vii":    ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_vii"),
+    "ix":     ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_ix"),
+    "x":      ("scripts.navarea_universal_parser", "scripts.navarea_generic_sync", "navarea_x"),
 }
 
 # Region auto-detection from the pasted text header. Longest roman numerals
 # are checked first so "VIII" never matches as "I"/"IV" etc. A plain
 # "NAVAREA 123/26" (warning number, no numeral) must NOT map anywhere.
 _HEADER_PATTERNS = [
-    (re.compile(r"NAV\s*AREA\s+VIII\b", re.IGNORECASE), "8"),
     (re.compile(r"NAV\s*AREA\s+XII\b", re.IGNORECASE), "xii"),
     (re.compile(r"NAV\s*AREA\s+XI\b", re.IGNORECASE), "xi"),
+    (re.compile(r"NAV\s*AREA\s+X\b", re.IGNORECASE), "x"),
+    (re.compile(r"NAV\s*AREA\s+IX\b", re.IGNORECASE), "ix"),
+    (re.compile(r"NAV\s*AREA\s+VIII\b", re.IGNORECASE), "8"),
+    (re.compile(r"NAV\s*AREA\s+VII\b", re.IGNORECASE), "vii"),
+    (re.compile(r"NAV\s*AREA\s+VI\b", re.IGNORECASE), "vi"),
+    (re.compile(r"NAV\s*AREA\s+V\b", re.IGNORECASE), "v"),
     (re.compile(r"NAV\s*AREA\s+IV\b", re.IGNORECASE), "iv"),
+    (re.compile(r"NAV\s*AREA\s+III\b", re.IGNORECASE), "iii"),
+    (re.compile(r"NAV\s*AREA\s+II\b", re.IGNORECASE), "ii"),
     (re.compile(r"NAV\s*AREA\s+I\b", re.IGNORECASE), "1"),
     (re.compile(r"SWEDISH\s+NAV\s+WARN\b", re.IGNORECASE), "baltic"),
 ]
