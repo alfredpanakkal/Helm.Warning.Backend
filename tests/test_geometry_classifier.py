@@ -145,6 +145,32 @@ class TestKeywordTaxonomy(unittest.TestCase):
         self.assertEqual(len(ring), 5)            # 4 corners + closing
         self.assertEqual(ring[0], ring[-1])       # closed
 
+    def test_v1102_axis_bbox_centroid_is_range_midpoint(self):
+        # The axis-token fallback must also return the rectangle centroid
+        # (midpoint of both ranges) as the primary position.
+        raw = ("HYDROGRAPHIC SURVEY UNDER PROGRESS IN AREA BOUNDED WITHIN "
+               "14-47.2N TO 14-50.9N AND 074-02.8E TO 074-08.15E")
+        _, lat, lon, spatial = parse_coordinates(raw)
+        self.assertEqual(spatial["type"], "Polygon")
+        self.assertAlmostEqual(lat, (14 + 47.2/60 + 14 + 50.9/60) / 2, places=4)
+        self.assertAlmostEqual(lon, (74 + 2.8/60 + 74 + 8.15/60) / 2, places=4)
+
+    def test_axis_bbox_fails_closed_on_three_lons(self):
+        # Not a clean two-corner range (3 distinct longitudes): the
+        # fallback must return no spatial at all, never guess a rectangle.
+        raw = ("AREA BOUNDED WITHIN 14-47.2N TO 14-50.9N AND "
+               "074-02.8E TO 074-08.15E TO 075-00.0E")
+        _, lat, lon, spatial = parse_coordinates(raw)
+        self.assertIsNone(spatial)
+        self.assertIsNone(lat)
+
+    def test_axis_tokens_fail_closed_without_bbox_phrase(self):
+        # Axis-separated ranges WITHOUT the 'AREA BOUNDED WITHIN' phrase
+        # must not fabricate a rectangle (gating on the bbox phrase).
+        raw = "14-47.2N TO 14-50.9N AND 074-02.8E TO 074-08.15E"
+        _, lat, lon, spatial = parse_coordinates(raw)
+        self.assertIsNone(spatial)
+
     def test_exclusion_zone_keeps_polygon(self):
         raw = ("MARITIME EXCLUSION ZONE ENCOMPASSING 18-00N 071-00E, "
                "18-00N 072-00E, 19-00N 072-00E, 19-00N 071-00E")
