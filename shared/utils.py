@@ -10,6 +10,7 @@ import math
 from typing import Dict, List, Tuple, Set, Any, Optional
 
 from shared.exceptions import ParseError, ValidationError
+from shared.geometry_classifier import classify_geometry_archetype, ring_is_simple
 from shared.validation import (
     validate_coordinate_token,
     validate_warning_id,
@@ -205,6 +206,54 @@ def _is_valid_latlon(lat_deg: Any, lat_min: Any, lon_deg: Any, lon_min: Any) -> 
     return True
 
 
+# Standalone axis tokens for 'AREA BOUNDED WITHIN <lat> TO <lat> AND <lon> TO
+# <lon>' bulletins (NAVAREA VIII 1102/26): latitudes and longitudes are
+# listed SEPARATELY, so the pair-based pattern extracts nothing.
+RE_AXIS_LAT = re.compile(r"(?<![\d.])(\d{1,2})-(\d{2}(?:\.\d+)?)([NS])(?![\d.])")
+RE_AXIS_LON = re.compile(r"(?<![\d.])(\d{1,3})-(\d{2}(?:\.\d+)?)([EW])(?![\d.])")
+
+
+def _bbox_from_axis_tokens(raw_text: str):
+    """
+    Builds a closed rectangle ring for 'AREA BOUNDED WITHIN' bulletins
+    whose latitudes and longitudes are listed as separate axis ranges
+    (e.g. 14-47.2N TO 14-50.9N AND 074-02.8E TO 074-08.15E).
+    Returns (spatial, centroid_lat, centroid_lon) or (None, None, None).
+    Gated on the bbox phrase so unrelated lat/lon mentions never
+    fabricate an area (fail-closed outside the known format).
+    """
+    from shared.geometry_classifier import RE_BBOX
+
+    if not raw_text or not RE_BBOX.search(raw_text.upper()):
+        return None, None, None
+
+    lats = set()
+    for m in RE_AXIS_LAT.finditer(raw_text):
+        deg, mins, hem = m.groups()
+        if _is_valid_latlon(deg, mins, "0", "0"):
+            val = convert_to_decimal(deg, mins, hem)
+            if not math.isnan(val):
+                lats.add(val)
+    lons = set()
+    for m in RE_AXIS_LON.finditer(raw_text):
+        deg, mins, hem = m.groups()
+        if _is_valid_latlon("0", "0", deg, mins):
+            val = convert_to_decimal(deg, mins, hem)
+            if not math.isnan(val):
+                lons.add(val)
+
+    if len(lats) != 2 or len(lons) != 2:
+        return None, None, None  # not a clean two-corner range: fail closed
+
+    lat_s, lat_n = sorted(lats)
+    lon_w, lon_e = sorted(lons)
+    ring = [
+        [lon_w, lat_s], [lon_e, lat_s], [lon_e, lat_n], [lon_w, lat_n], [lon_w, lat_s],
+    ]
+    spatial = {"type": "Polygon", "coordinates": [ring]}
+    return spatial, round((lat_s + lat_n) / 2, 6), round((lon_w + lon_e) / 2, 6)
+
+
 def parse_coordinates(raw_text: str):
     """
     Extracts navigational coordinates from text.
@@ -263,11 +312,51 @@ def parse_coordinates(raw_text: str):
             # Centroid calculation for multi-point, polygon, and linestring
             primary_lat = round(sum(p[1] for p in points) / len(points), 6)
             primary_lon = round(sum(p[0] for p in points) / len(points), 6)
-            if len(points) >= 4:
-                closed_points = points if points[0] == points[-1] else points + [points[0]]
-                spatial = {"type": "Polygon", "coordinates": [closed_points]}
-            else:
+            archetype = classify_geometry_archetype(raw_text, points)
+            if archetype == "multipoint":
+                # Discrete scattered locations (e.g. 'IN VICINITY OF'
+                # wellhead/platform lists, buoy lists): individual markers,
+                # never a connected shape. Prevents the tangled-polygon bug.
+                spatial = {"type": "MultiPoint", "coordinates": points}
+            elif archetype == "bounding_box":
+                # 'AREA BOUNDED WITHIN <lat> TO <lat> AND <lon> TO <lon>'
+                # (NAVAREA VIII 1102/26): two opposite corners define the
+                # rectangle — expand into a proper closed ring rather than
+                # misplotting a 2-point corridor LineString.
+                lon_a, lat_a = points[0]
+                lon_b, lat_b = points[1]
+                spatial = {"type": "Polygon", "coordinates": [[
+                    [lon_a, lat_a], [lon_b, lat_a], [lon_b, lat_b],
+                    [lon_a, lat_b], [lon_a, lat_a],
+                ]]}
+            elif archetype == "linestring" or len(points) in (2, 3):
+                # Sequential track/route/trackline: open path, never
+                # auto-closed.
                 spatial = {"type": "LineString", "coordinates": points}
+            else:
+                # Legacy default for bounded areas / unknown multi-vertex
+                # arrays: closed polygon ring — but only if the ring is a
+                # valid, non-self-intersecting boundary (>= 3 unique
+                # vertices). A crooked/bowtie ring means the listed order
+                # is not a genuine perimeter: fall back to an open path
+                # instead of fabricating a filled, tangled hazard zone.
+                ring = points if points[0] == points[-1] else points + [points[0]]
+                unique_vertices = {tuple(p) for p in ring}
+                # >= 3 UNIQUE vertices: a closed triangle listing (A,B,C,A)
+                # has 3 unique corners and is a genuine polygon (Baltic
+                # Skagerrak detonation areas); bowties fail ring_is_simple.
+                if len(unique_vertices) >= 3 and ring_is_simple(ring):
+                    spatial = {"type": "Polygon", "coordinates": [ring]}
+                else:
+                    spatial = {"type": "LineString", "coordinates": points}
+
+    if not points:
+        # 'AREA BOUNDED WITHIN <lat> TO <lat> AND <lon> TO <lon>' lists its
+        # axes separately (no pairs): fall back to axis tokens so these
+        # bounded-area warnings plot as rectangles instead of nothing.
+        bbox_spatial, bbox_lat, bbox_lon = _bbox_from_axis_tokens(raw_text)
+        if bbox_spatial:
+            return [], bbox_lat, bbox_lon, bbox_spatial
 
     return parsed_coords, primary_lat, primary_lon, spatial
 

@@ -1,0 +1,91 @@
+name: Manual Bulk Paste Ingest
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'   # drains the Supabase admin paste queue
+  workflow_dispatch:
+    inputs:
+      navarea:
+        description: 'NAVAREA region (queue runs use auto-detection from text)'
+        required: false
+        type: choice
+        options:
+          - 'auto'
+          - '8'
+          - '1'
+          - 'iv'
+          - 'xi'
+          - 'xii'
+          - 'baltic'
+      raw_text:
+        description: 'Optional: paste raw warning bulletin text directly here'
+        required: false
+        type: string
+
+concurrency:
+  group: manual-ingest
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: 'requirements.txt'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ALWAYS drains pending admin-panel pastes from Supabase.
+      - name: Drain Supabase paste queue
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m scripts.run_paste_queue 2>&1 | tee paste_queue.log
+          QEXIT=${PIPESTATUS[0]}
+          echo "$QEXIT" > /tmp/queue_exit
+          exit 0   # queue failure must not block the optional direct paste
+
+      # Direct paste path (workflow_dispatch with raw_text input).
+      # Multiline inputs cannot pass through env vars — read from event JSON.
+      - name: Direct paste ingest (if provided)
+        if: inputs.raw_text != ''
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          jq -r '.inputs.raw_text' "$GITHUB_EVENT_PATH" > pasted.txt
+          NAVAREA=$(jq -r '.inputs.navarea // "auto"' "$GITHUB_EVENT_PATH")
+          echo "Region selection: $NAVAREA"
+          wc -l pasted.txt
+          python -m scripts.run_manual_paste --navarea "$NAVAREA" --input pasted.txt 2>&1 | tee direct_ingest.log
+          exit ${PIPESTATUS[0]}
+
+      - name: Propagate queue result
+        run: exit $(cat /tmp/queue_exit)
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manual-ingest-${{ github.run_id }}
+          path: |
+            paste_queue.log
+            direct_ingest.log
+            pasted.txt
+            navareas/manual/*/parsed.json
+          if-no-files-found: ignore
+          retention-days: 14
