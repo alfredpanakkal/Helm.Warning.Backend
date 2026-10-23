@@ -74,8 +74,18 @@ jobs:
           python -m scripts.run_manual_paste --navarea "$NAVAREA" --input pasted.txt 2>&1 | tee direct_ingest.log
           exit ${PIPESTATUS[0]}
 
-      - name: Propagate queue result
-        run: exit $(cat /tmp/queue_exit)
+      # Queue row failures are already recorded per-row in
+      # manual_ingest_queue.status (visible in the admin panel), so the job
+      # does NOT fail red on a queue issue. Surface a warning annotation
+      # instead so problems stay visible without masking the run as broken.
+      - name: Report queue result
+        run: |
+          QEXIT=$(cat /tmp/queue_exit)
+          if [ "$QEXIT" != "0" ]; then
+            echo "::warning::Paste queue drain reported failure (exit $QEXIT). Row-level outcomes are in manual_ingest_queue.status; see the paste_queue.log artifact."
+          else
+            echo "Paste queue drained successfully."
+          fi
 
       - name: Upload artifacts
         if: always()

@@ -10,10 +10,12 @@ classification and differential sync as a scraped one.
 
 Usage:
     python -m scripts.run_manual_paste --navarea 8 --input pasted.txt
+    python -m scripts.run_manual_paste --navarea auto --input pasted.txt
 """
 import argparse
 import importlib
 import os
+import re
 import sys
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -35,11 +37,38 @@ REGIONS = {
     "baltic": ("scripts.baltic_parser",       "scripts.baltic_sync",       "baltic"),
 }
 
+# Region auto-detection from the pasted text header. Longest roman numerals
+# are checked first so "VIII" never matches as "I"/"IV" etc. A plain
+# "NAVAREA 123/26" (warning number, no numeral) must NOT map anywhere.
+_HEADER_PATTERNS = [
+    (re.compile(r"NAV\s*AREA\s+VIII\b", re.IGNORECASE), "8"),
+    (re.compile(r"NAV\s*AREA\s+XII\b", re.IGNORECASE), "xii"),
+    (re.compile(r"NAV\s*AREA\s+XI\b", re.IGNORECASE), "xi"),
+    (re.compile(r"NAV\s*AREA\s+IV\b", re.IGNORECASE), "iv"),
+    (re.compile(r"NAV\s*AREA\s+I\b", re.IGNORECASE), "1"),
+    (re.compile(r"SWEDISH\s+NAV\s+WARN\b", re.IGNORECASE), "baltic"),
+]
+
+
+def detect_navarea(raw_text) -> str | None:
+    """Returns the region key implied by the text header, or None.
+
+    The text header is authoritative: the admin's dropdown selection is
+    only a fallback (see scripts/run_paste_queue.py).
+    """
+    if not raw_text:
+        return None
+    for pattern, region in _HEADER_PATTERNS:
+        if pattern.search(raw_text):
+            return region
+    return None
+
 
 def main(argv=None) -> bool:
     ap = argparse.ArgumentParser(description="Bulk ingest pasted NAVAREA warning text")
-    ap.add_argument("--navarea", required=True, choices=sorted(REGIONS),
-                    help="NAVAREA region of the pasted text")
+    ap.add_argument("--navarea", required=True, choices=sorted(REGIONS) + ["auto"],
+                    help="NAVAREA region of the pasted text ('auto' detects "
+                         "from the text header; fails closed if undetectable)")
     ap.add_argument("--input", required=True,
                     help="Path to a text file containing the pasted bulletin")
     args = ap.parse_args(argv)
@@ -54,7 +83,17 @@ def main(argv=None) -> bool:
         print("ERROR: pasted text is empty — nothing to ingest.")
         return False
 
-    parser_mod_name, sync_mod_name, subdir = REGIONS[args.navarea]
+    navarea = args.navarea
+    if navarea == "auto":
+        navarea = detect_navarea(raw_text)
+        if not navarea:
+            print("ERROR: --navarea auto could not detect the region from the "
+                  "text header — no NAVAREA/Baltic header found. Select the "
+                  "region explicitly.")
+            return False
+        print(f"Auto-detected region: {navarea}")
+
+    parser_mod_name, sync_mod_name, subdir = REGIONS[navarea]
     raw_txt = os.path.join("navareas", "manual", subdir, "pasted_raw.txt")
     parsed_json = os.path.join("navareas", "manual", subdir, "parsed.json")
     os.makedirs(os.path.dirname(raw_txt), exist_ok=True)
@@ -63,7 +102,7 @@ def main(argv=None) -> bool:
         f.write(raw_text)
 
     print("=" * 65)
-    print(f"MANUAL BULK PASTE INGEST — NAVAREA {args.navarea.upper()}")
+    print(f"MANUAL BULK PASTE INGEST — NAVAREA {navarea.upper()}")
     print(f"({len(raw_text)} chars, {raw_text.count(chr(10)) + 1} lines)")
     print("=" * 65)
 
