@@ -130,6 +130,57 @@ class TestRingTopologyGuard(unittest.TestCase):
         self.assertFalse(ring_is_simple([[0, 0], [1, 1], [0, 0]]))  # < 3 unique
 
 
+class TestKeywordTaxonomy(unittest.TestCase):
+    """Live-bulletin vocabulary: area/line/point keyword routing."""
+
+    def test_v1102_bounded_within_two_corners_expands_to_rectangle(self):
+        # Real NAVAREA VIII 1102/26 format: two opposite corners after
+        # 'AREA BOUNDED WITHIN' must expand into a closed rectangle ring,
+        # not a 2-point corridor LineString.
+        raw = ("HYDROGRAPHIC SURVEY UNDER PROGRESS IN AREA BOUNDED WITHIN "
+               "14-47.2N TO 14-50.9N AND 074-02.8E TO 074-08.15E")
+        spatial = _spatial(raw)
+        self.assertEqual(spatial["type"], "Polygon")
+        ring = spatial["coordinates"][0]
+        self.assertEqual(len(ring), 5)            # 4 corners + closing
+        self.assertEqual(ring[0], ring[-1])       # closed
+
+    def test_exclusion_zone_keeps_polygon(self):
+        raw = ("MARITIME EXCLUSION ZONE ENCOMPASSING 18-00N 071-00E, "
+               "18-00N 072-00E, 19-00N 072-00E, 19-00N 071-00E")
+        spatial = _spatial(raw)
+        self.assertEqual(spatial["type"], "Polygon")
+
+    def test_trackline_forces_linestring(self):
+        # Declared route: force LineString even with 4 waypoints (below
+        # the NN-heuristic minimum) — the text itself declares a line.
+        raw = ("OPERATIONS ALONG TRACKLINE JOINING 18-30N 071-00E, "
+               "18-31N 071-05E, 18-32N 071-10E, 18-33N 071-15E")
+        spatial = _spatial(raw)
+        self.assertEqual(spatial["type"], "LineString")
+        self.assertEqual(len(spatial["coordinates"]), 4)
+
+    def test_cable_route_forces_linestring(self):
+        raw = ("CABLE RECOVERY OPERATIONS ALONG ROUTE 18-00N 071-00E, "
+               "18-10N 071-20E, 18-20N 071-40E")
+        spatial = _spatial(raw)
+        self.assertEqual(spatial["type"], "LineString")
+
+    def test_racon_buoy_plural_list_is_multipoint(self):
+        # '\bBUOY\b' does NOT match 'BUOYS' — plural forms must route
+        # point-ops lists to MultiPoint, not a legacy polygon.
+        raw = ("BUOYS AND RACONS OFF STATION AT 18-00N 071-00E, "
+               "18-30N 071-30E, 19-00N 072-00E, 19-30N 072-30E")
+        spatial = _spatial(raw)
+        self.assertEqual(spatial["type"], "MultiPoint")
+
+    def test_wreck_shoal_point_ops(self):
+        raw = ("WRECKS AND SHOALS REPORTED AT 18-00N 071-00E, "
+               "18-30N 071-30E, 19-00N 072-00E")
+        spatial = _spatial(raw)
+        self.assertEqual(spatial["type"], "MultiPoint")
+
+
 class TestMultiPointGeometryRows(unittest.TestCase):
 
     def test_multipoint_explodes_to_point_rows_with_buffer(self):
