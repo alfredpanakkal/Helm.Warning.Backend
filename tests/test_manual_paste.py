@@ -16,11 +16,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from scripts.run_manual_paste import REGIONS, main as run_manual_paste
 
+ALL_REGION_KEYS = ["1", "8", "baltic", "ii", "iii", "iv", "ix", "v", "vi", "vii", "x", "xi", "xii", "xiii", "xiv", "xv", "xvi", "xvii", "xviii", "xix", "xx", "xxi"]
+
 
 class TestRegionRegistry(unittest.TestCase):
 
-    def test_all_six_regions_registered(self):
-        self.assertEqual(sorted(REGIONS), ["1", "8", "baltic", "iv", "xi", "xii"])
+    def test_all_regions_registered(self):
+        self.assertEqual(sorted(REGIONS), ALL_REGION_KEYS)
 
     def test_every_region_parser_has_main_two_arg_signature(self):
         import importlib
@@ -46,7 +48,9 @@ class TestRunnerGuards(unittest.TestCase):
 
     def test_empty_paste_fails_closed(self):
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
-            f.write("   \n  \n")
+            f.write("   
+  
+")
             path = f.name
         try:
             self.assertFalse(run_manual_paste(["--navarea", "8", "--input", path]))
@@ -54,8 +58,8 @@ class TestRunnerGuards(unittest.TestCase):
             os.unlink(path)
 
     def test_invalid_region_rejected(self):
-        with self.assertRaises(SystemExit):
-            run_manual_paste(["--navarea", "vii", "--input", "x.txt"])
+        self.assertRaises(SystemExit, run_manual_paste,
+                          ["--navarea", "vii", "--input", "x.txt"])
 
 
 class TestRegionAutoDetect(unittest.TestCase):
@@ -74,6 +78,11 @@ class TestRegionAutoDetect(unittest.TestCase):
     def test_detect_baltic(self):
         from scripts.run_manual_paste import detect_navarea
         self.assertEqual(detect_navarea("SWEDISH NAV WARN 168/26 [Skagerrak]"), "baltic")
+
+    def test_detect_met_areas(self):
+        from scripts.run_manual_paste import detect_navarea
+        self.assertEqual(detect_navarea("NAVAREA XVII 001/26"), "xvii")
+        self.assertEqual(detect_navarea("NAVAREA XXI 001/26"), "xxi")
 
     def test_no_false_positive_on_warning_number(self):
         from scripts.run_manual_paste import detect_navarea
