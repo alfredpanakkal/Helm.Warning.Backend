@@ -41,22 +41,23 @@ def _make_sync_client(warn_rows, raw_rows=()):
         t = MagicMock()
         if name == "nav_warnings":
             t.select.return_value.eq.return_value.execute.return_value = _Exec(list(warn_rows))
-            orig_update = t.update
+            update_builder = MagicMock()
+            update_builder.eq.return_value.execute.return_value = _Exec([])
 
             def update_rec(patch, *a, **k):
                 client.recorded_updates.append({"table": name, "patch": patch})
-                return orig_update(patch, *a, **k)
+                return update_builder
 
             t.update.side_effect = update_rec
         elif name == "raw_messages":
             t.select.return_value.eq.return_value.execute.return_value = _Exec(list(raw_rows))
         else:
-            t.insert.return_value.execute.return_value = _Exec([])
-            orig_insert = t.insert
+            insert_builder = MagicMock()
+            insert_builder.execute.return_value = _Exec([])
 
             def insert_rec(payload, *a, **k):
                 client.recorded_inserts.setdefault(name, []).append(payload)
-                return orig_insert(payload, *a, **k)
+                return insert_builder
 
             t.insert.side_effect = insert_rec
         return t
