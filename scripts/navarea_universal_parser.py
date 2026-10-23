@@ -58,16 +58,18 @@ from shared.navarea_universal_text import (
 )
 from shared.translation import looks_spanish, translate_title
 
-RE_ITEM_LINE = re.compile(r"(?:^|s)(d{1,2}).[s]+(?=[A-Z])")
+# Numbered item line: '1. HAZARDOUS ...' / 'A. ...'-adjacent numbering.
+RE_ITEM_LINE = re.compile(r"(?:^|\s)(\d{1,2})\.[\s]+(?=[A-Z])")
+# 'WARNINGS IN FORCE AS ON 13 OCTOBER 2026' (Australia X bulletin header).
 RE_AS_ON = re.compile(
-    r"WARNINGS?s+INs+FORCEs+ASs+ONs+(d{1,2}s+[A-Za-z]{3,9}s+d{4})",
+    r"WARNINGS?\s+IN\s+FORCE\s+AS\s+ON\s+(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})",
     re.IGNORECASE)
 RE_PATH_REGION = re.compile(r"navarea[_-]([a-z0-9]+)", re.IGNORECASE)
 # Broadcast tail: Australia terminates each message with 'NNNN' (and the
 # Russian XX with '.=' before it). These end-of-message markers must not
-# leak into the last warning's raw text / title.
-RE_BROADCAST_TAIL = re.compile(r"(?:
-[=s]*N{3,6}[=s]*)+s*$")
+# leak into the last warning's raw text / title. Requires a run of 3-6
+# N's so a trailing single-coordinate hemisphere letter is never eaten.
+RE_BROADCAST_TAIL = re.compile(r"(?:[\s=.]*N{3,6}[\s=.]*)+\s*$")
 
 MONTHS = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
@@ -122,7 +124,7 @@ def _parse_year_hint(text: str):
 
 def _clean_line(line: str) -> str:
     """Normalizes '(.)' separators into single spaces for title extraction."""
-    return re.sub(r"(s*.s*)", " ", line).strip()
+    return re.sub(r"\(\s*\.\s*\)", " ", line).strip()
 
 
 def _segment_clauses(body: str):
@@ -153,10 +155,9 @@ def _extract_title(body: str, cfg) -> str:
     location / operation description)."""
     m = RE_ITEM_LINE.search(body)
     head = body[:m.start()] if m else body
-    lines = [_clean_line(l) for l in head.split("
-") if l.strip()]
+    lines = [_clean_line(l) for l in head.split("\n") if l.strip()]
     title = " ".join(lines).strip()
-    title = re.sub(r"d{6}Z?s*/?s*[A-Z]{3}s+d{2}s*$", "", title).strip()
+    title = re.sub(r"\b\d{6}Z?\s*/?\s*[A-Z]{3}\s+\d{2}\s*$", "", title).strip()
     return title[:255] or "NAVAREA " + cfg["roman"] + " Warning"
 
 
@@ -229,8 +230,7 @@ def split_into_warnings(text: str, cfg):
                 end = s
                 break
         raw_text = text[start:end].strip()
-        raw_text = RE_BROADCAST_TAIL.sub("
-", raw_text).strip()
+        raw_text = RE_BROADCAST_TAIL.sub("", raw_text).strip()
         number, year = m.group(1), m.group(2)
         blocks.append({
             "number": number,
