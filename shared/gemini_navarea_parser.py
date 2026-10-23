@@ -28,16 +28,14 @@ Safety rules:
     Never assume a model id remains available — verify against the API
     before relying on it.
   - Grounding (no second parser): a model coordinate is accepted only if
-    shared.utils.parse_coordinates independently reproduces it on the
-    same raw_text (tolerance GROUNDING_TOLERANCE_DEG). Geometry must be
+    shared.utils.parse_coordinates independently reproduces it on the same
+    raw_text (tolerance GROUNDING_TOLERANCE_DEG). Geometry must be
     GeoJSON-valid; if uncertain, the model must omit geometry — invented
     polygons are rejected, the parse fails closed to the rule parser.
 """
 import json
 import os
 import re
-
-import requests
 
 from shared.utils import parse_coordinates
 from shared.navarea_universal_text import UNIVERSAL_REGIONS, warning_header_re
@@ -139,6 +137,11 @@ def try_gemini_parse(bulletin_text, region_key, timeout=TIMEOUT_SECONDS):
     if not api_key:
         _log("GEMINI_API_KEY not found — cannot attempt model parse.")
         return None
+
+    try:
+        import requests  # lazy: the CI unittest runner installs no requirements
+    except ImportError as exc:
+        raise RuntimeError("requests library not available") from exc
 
     url = API_ROOT + "/" + _model_name() + ":generateContent"
     body = {
