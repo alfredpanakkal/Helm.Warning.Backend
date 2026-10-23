@@ -8,6 +8,11 @@ pipelines use (no second parser, no parallel logic), so a manually
 pasted warning goes through the same deterministic parse, geometry
 classification and differential sync as a scraped one.
 
+Regions WITHOUT a dedicated scraper/parser (II, III, V, VI, VII, IX, X
+and the MET areas XIII–XXI) route through the universal parser + generic
+sync — same pipeline contracts, so a region can be promoted to a
+dedicated parser later by swapping its registry entry only.
+
 Usage:
     python -m scripts.run_manual_paste --navarea 8 --input pasted.txt
     python -m scripts.run_manual_paste --navarea auto --input pasted.txt
@@ -28,6 +33,7 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 # region key -> (parser module, sync module, staging subdir)
+# Dedicated scrapers/parsers:
 REGIONS = {
     "1":      ("scripts.navarea_1_parser",    "scripts.navarea_1_sync",    "navarea_1"),
     "8":      ("scripts.navarea_8_parser",    "scripts.navarea_8_sync",    "navarea_8"),
@@ -35,18 +41,52 @@ REGIONS = {
     "xi":     ("scripts.navarea_xi_parser",   "scripts.navarea_xi_sync",   "navarea_xi"),
     "xii":    ("scripts.navarea_xii_parser",  "scripts.navarea_xii_sync",  "navarea_xii"),
     "baltic": ("scripts.baltic_parser",       "scripts.baltic_sync",       "baltic"),
+    # No dedicated scraper yet — universal parser + generic sync:
+    "ii":     ("s", "c", "navarea_ii"),
+    "iii":    ("s", "c", "navarea_iii"),
+    "v":      ("s", "c", "navarea_v"),
+    "vi":     ("s", "c", "navarea_vi"),
+    "vii":    ("s", "c", "navarea_vii"),
+    "ix":     ("s", "c", "navarea_ix"),
+    "x":      ("s", "c", "navarea_x"),
+    "xiii":   ("s", "c", "navarea_xiii"),
+    "xiv":    ("s", "c", "navarea_xiv"),
+    "xv":     ("s", "c", "navarea_xv"),
+    "xvi":    ("s", "c", "navarea_xvi"),
+    "xvii":   ("s", "c", "navarea_xvii"),
+    "xviii":  ("s", "c", "navarea_xviii"),
+    "xix":    ("s", "c", "navarea_xix"),
+    "xx":     ("s", "c", "navarea_xx"),
+    "xxi":    ("s", "c", "navarea_xxi"),
 }
 
 # Region auto-detection from the pasted text header. Longest roman numerals
-# are checked first so "VIII" never matches as "I"/"IV" etc. A plain
-# "NAVAREA 123/26" (warning number, no numeral) must NOT map anywhere.
+# are checked first so "VIII" never matches as "I"/"IV", "XXI" never as
+# "XX" etc. A plain "NAVAREA 123/26" (warning number, no numeral) must NOT
+# map anywhere.
 _HEADER_PATTERNS = [
-    (re.compile(r"NAV\s*AREA\s+VIII\b", re.IGNORECASE), "8"),
-    (re.compile(r"NAV\s*AREA\s+XII\b", re.IGNORECASE), "xii"),
-    (re.compile(r"NAV\s*AREA\s+XI\b", re.IGNORECASE), "xi"),
-    (re.compile(r"NAV\s*AREA\s+IV\b", re.IGNORECASE), "iv"),
-    (re.compile(r"NAV\s*AREA\s+I\b", re.IGNORECASE), "1"),
-    (re.compile(r"SWEDISH\s+NAV\s+WARN\b", re.IGNORECASE), "baltic"),
+    (re.compile(r"NAVs*AREAs+XXI", re.IGNORECASE), "xxi"),
+    (re.compile(r"NAVs*AREAs+XX", re.IGNORECASE), "xx"),
+    (re.compile(r"NAVs*AREAs+XIX", re.IGNORECASE), "xix"),
+    (re.compile(r"NAVs*AREAs+XVIII", re.IGNORECASE), "xviii"),
+    (re.compile(r"NAVs*AREAs+XVII", re.IGNORECASE), "xvii"),
+    (re.compile(r"NAVs*AREAs+XVI", re.IGNORECASE), "xvi"),
+    (re.compile(r"NAVs*AREAs+XV", re.IGNORECASE), "xv"),
+    (re.compile(r"NAVs*AREAs+XIV", re.IGNORECASE), "xiv"),
+    (re.compile(r"NAVs*AREAs+XIII", re.IGNORECASE), "xiii"),
+    (re.compile(r"NAVs*AREAs+XII", re.IGNORECASE), "xii"),
+    (re.compile(r"NAVs*AREAs+XI", re.IGNORECASE), "xi"),
+    (re.compile(r"NAVs*AREAs+X", re.IGNORECASE), "x"),
+    (re.compile(r"NAVs*AREAs+IX", re.IGNORECASE), "ix"),
+    (re.compile(r"NAVs*AREAs+VIII", re.IGNORECASE), "8"),
+    (re.compile(r"NAVs*AREAs+VII", re.IGNORECASE), "vii"),
+    (re.compile(r"NAVs*AREAs+VI", re.IGNORECASE), "vi"),
+    (re.compile(r"NAVs*AREAs+V", re.IGNORECASE), "v"),
+    (re.compile(r"NAVs*AREAs+IV", re.IGNORECASE), "iv"),
+    (re.compile(r"NAVs*AREAs+III", re.IGNORECASE), "iii"),
+    (re.compile(r"NAVs*AREAs+II", re.IGNORECASE), "ii"),
+    (re.compile(r"NAVs*AREAs+I", re.IGNORECASE), "1"),
+    (re.compile(r"SWEDISHs+NAVs+WARN", re.IGNORECASE), "baltic"),
 ]
 
 
@@ -106,7 +146,8 @@ def main(argv=None) -> bool:
     print(f"({len(raw_text)} chars, {raw_text.count(chr(10)) + 1} lines)")
     print("=" * 65)
 
-    print("\n[STAGE 1] Parsing pasted text (region parser)...")
+    print("
+[STAGE 1] Parsing pasted text (region parser)...")
     parse_main = importlib.import_module(parser_mod_name).main
     parse_success = parse_main(raw_txt, parsed_json)
 
@@ -122,20 +163,25 @@ def main(argv=None) -> bool:
     except (OSError, ValueError):
         n_warnings = 0
     if n_warnings == 0:
-        print("\nERROR: pasted text parsed to 0 warnings — wrong region or "
+        print("
+ERROR: pasted text parsed to 0 warnings — wrong region or "
               "format? Aborting BEFORE sync (empty snapshot not synced).")
         return False
-    print(f"\nParse OK: {n_warnings} warning(s) extracted.")
+    print(f"
+Parse OK: {n_warnings} warning(s) extracted.")
 
-    print("\n[STAGE 2] Syncing parsed warnings to Supabase...")
+    print("
+[STAGE 2] Syncing parsed warnings to Supabase...")
     sync_to_supabase = importlib.import_module(sync_mod_name).sync_to_supabase
     sync_success = sync_to_supabase(parsed_json)
 
     if parse_success is False or sync_success is False:
-        print("\nManual paste ingest finished with issues — see log above.")
+        print("
+Manual paste ingest finished with issues — see log above.")
         return False
 
-    print("\nManual paste ingest completed!")
+    print("
+Manual paste ingest completed!")
     return True
 
 
