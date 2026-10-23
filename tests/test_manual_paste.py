@@ -58,5 +58,42 @@ class TestRunnerGuards(unittest.TestCase):
             run_manual_paste(["--navarea", "vii", "--input", "x.txt"])
 
 
+class TestRegionAutoDetect(unittest.TestCase):
+    """The text header is authoritative: a wrong selection must be overridden."""
+
+    def test_detect_viii_from_real_header(self):
+        from scripts.run_manual_paste import detect_navarea
+        self.assertEqual(detect_navarea("NAVAREA VIII -961/26 INDIA WEST COAST (.)"), "8")
+
+    def test_detect_iv_xi_xii(self):
+        from scripts.run_manual_paste import detect_navarea
+        self.assertEqual(detect_navarea("NAVAREA IV 133/26"), "iv")
+        self.assertEqual(detect_navarea("NAVAREA XI 005/26"), "xi")
+        self.assertEqual(detect_navarea("NAVAREA XII 001/26"), "xii")
+
+    def test_detect_baltic(self):
+        from scripts.run_manual_paste import detect_navarea
+        self.assertEqual(detect_navarea("SWEDISH NAV WARN 168/26 [Skagerrak]"), "baltic")
+
+    def test_no_false_positive_on_warning_number(self):
+        from scripts.run_manual_paste import detect_navarea
+        # 'NAVAREA 961/26' style without roman numeral must not map anywhere
+        self.assertIsNone(detect_navarea("NAVAREA 961/26 SOMETHING"))
+
+    def test_no_header_returns_none(self):
+        from scripts.run_manual_paste import detect_navarea
+        self.assertIsNone(detect_navarea("JUST SOME TEXT ABOUT RIGS AT 18-00N 071-00E"))
+
+    def test_auto_choice_accepted_by_argparse(self):
+        # 'auto' must be a valid choice (no SystemExit)
+        import scripts.run_manual_paste as rmp
+        ap_ok = True
+        try:
+            rmp.main(["--navarea", "auto", "--input", "/nonexistent/x.txt"])
+        except SystemExit:
+            ap_ok = False
+        self.assertTrue(ap_ok, "auto must be a valid --navarea choice")
+
+
 if __name__ == "__main__":
     unittest.main()
