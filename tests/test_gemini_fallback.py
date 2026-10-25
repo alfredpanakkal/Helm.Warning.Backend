@@ -143,7 +143,8 @@ class GeminiFallbackTest(unittest.TestCase):
                                side_effect=AssertionError("unknown region must not call the model")):
             out = gem.parse_bulletin_with_fallback(SAMPLE_III, "does-not-exist",
                                                    lambda t, k: {"memo": {}, "nav_warnings": []})
-        self.assertEqual(out, {"memo": {}, "nav_warnings": []})
+        self.assertEqual(out["memo"]["parse_provenance"], "rule")
+        self.assertEqual(out["nav_warnings"], [])
 
 
 class ValidatePayloadTest(unittest.TestCase):

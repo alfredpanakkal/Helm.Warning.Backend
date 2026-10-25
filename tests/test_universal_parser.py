@@ -20,7 +20,9 @@ from scripts.navarea_universal_parser import (
 )
 from shared.navarea_universal_text import UNIVERSAL_REGIONS
 
-ALL_REGION_KEYS = ["1", "8", "baltic", "ii", "iii", "iv", "ix", "v", "vi", "vii", "x", "xi", "xii", "xiii", "xiv", "xv", "xvi", "xvii", "xviii", "xix", "xx", "xxi"]
+from scripts.run_manual_paste import REGIONS
+
+ALL_REGION_KEYS = sorted(REGIONS.keys())
 
 SAMPLE_II = (
     "WARNINGS IN FORCE AS ON 23 OCT 2026\n"
