@@ -1,0 +1,143 @@
+# Manually triggered parsing audit & Gemini-assisted correction pipeline.
+#
+# Modes:
+#   audit_only          - read-only audit of the complete Supabase dataset
+#   propose_corrections - audit + Gemini-assisted evidence-based proposals (still read-only)
+#   apply_approved      - apply previously reviewed proposals via admin_save_nav_warning
+#
+# Required secrets: SUPABASE_URL, SUPABASE_KEY, GEMINI_API_KEY
+# Optional repo variable: GEMINI_MODEL_NAME (fallback for the model input)
+name: Manual Parsing Audit & AI Correction
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "audit_only (read-only), propose_corrections (read-only + AI), or apply_approved (writes via RPC)"
+        required: true
+        type: choice
+        default: audit_only
+        options:
+          - audit_only
+          - propose_corrections
+          - apply_approved
+      navarea:
+        description: "NAVAREA scope, e.g. 'XI' or 'NAVAREA XI' (default: all regions)"
+        required: false
+        type: string
+        default: ""
+      warning_id:
+        description: "Audit a single warning by canonical_id or UUID (overrides NAVAREA scope)"
+        required: false
+        type: string
+        default: ""
+      model:
+        description: "Gemini model identifier (fail-closed: run aborts if the model cannot be verified)"
+        required: false
+        type: string
+        default: "gemini-3.8-flash"
+      batch_size:
+        description: "Records fetched per page during the audit (100-2000)"
+        required: false
+        type: number
+        default: 500
+      max_corrections:
+        description: "Safety cap on AI proposals per run (1-200)"
+        required: false
+        type: number
+        default: 50
+      confirm_apply:
+        description: "Explicit authorization required for apply_approved (leave false for read-only runs)"
+        required: false
+        type: boolean
+        default: false
+      approved_proposals:
+        description: "Reviewed proposals JSON (or JSON list of proposals) reviewed from a propose_corrections artifact"
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  # Prevent concurrent correction runs from racing each other.
+  group: parsing-audit
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+timeout-minutes: 45
+
+jobs:
+  audit:
+    name: Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate apply authorization
+        if: github.event.inputs.mode == 'apply_approved' && github.event.inputs.confirm_apply != 'true'
+        run: |
+          echo "::error::apply_approved requires confirm_apply=true (explicit authorization). Aborting without touching the database."
+          exit 2
+
+      - name: Materialize approved proposals
+        if: github.event.inputs.mode == 'apply_approved'
+        run: |
+          mkdir -p audit-reports
+          # Multi-line workflow input arrives via the event payload; read it there to
+          # avoid shell-quoting issues with embedded JSON.
+          INPUT_JSON="$(jq -r '.inputs.approved_proposals // empty' "$GITHUB_EVENT_PATH")"
+          if [ -z "${INPUT_JSON// }" ]; then
+            echo "::error::apply_approved requires reviewed proposals in the approved_proposals input."
+            exit 2
+          fi
+          # Validate it parses as JSON before handing it to the script.
+          echo "$INPUT_JSON" | jq . > approved_proposals.json
+          echo "Approved proposals materialized ($(jq 'if type=="array" then length else 1 end' approved_proposals.json) proposal(s))."
+
+      - name: Run parsing audit
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL_NAME: ${{ github.event.inputs.model || vars.GEMINI_MODEL_NAME || 'gemini-3.8-flash' }}
+        run: |
+          ARGS=(
+            --mode "${{ github.event.inputs.mode }}"
+            --batch-size "${{ github.event.inputs.batch_size || 500 }}"
+            --max-corrections "${{ github.event.inputs.max_corrections || 50 }}"
+            --max-ai-records "${{ github.event.inputs.max_corrections || 50 }}"
+          )
+          if [ -n "${{ github.event.inputs.warning_id }}" ]; then
+            ARGS+=(--warning-id "${{ github.event.inputs.warning_id }}")
+          elif [ -n "${{ github.event.inputs.navarea }}" ]; then
+            ARGS+=(--navarea "${{ github.event.inputs.navarea }}")
+          fi
+          if [ "${{ github.event.inputs.mode }}" = "apply_approved" ]; then
+            ARGS+=(--approved-file approved_proposals.json --confirm-apply)
+          fi
+          set -o pipefail
+          PYTHONPATH=. python -m scripts.parsing_audit "${ARGS[@]}" 2>&1 | tee parsing_audit.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: Upload audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parsing-audit-${{ github.run_id }}
+          path: |
+            audit-reports/
+            approved_proposals.json
+            parsing_audit.log
+          retention-days: 30
+          if-no-files-found: ignore
