@@ -1,11 +1,12 @@
 # Helm.Warning.Backend — NAVAREA Maritime Safety Information Pipeline
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Tests: 229 Passed](https://img.shields.io/badge/Tests-229%20Passed-brightgreen.svg)](#-quick-start-guide)
+[![Tests: 360+ Passed](https://img.shields.io/badge/Tests-360+_Passed-brightgreen.svg)](#-quick-start-guide)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![Database: PostGIS 3.x](https://img.shields.io/badge/Database-PostGIS_3.x-336791.svg?logo=postgresql&logoColor=white)](https://postgis.net/)
 [![Architecture: Master--Child RPC](https://img.shields.io/badge/Architecture-Master--Child_RPC-orange.svg)](#-data-safety-and-synchronization)
-[![CI Workflows: 8 Active](https://img.shields.io/badge/Workflows-8_Scheduled-brightgreen.svg)](#-supported-navarea-sources)
+[![CI Workflows: 11 Active](https://img.shields.io/badge/Workflows-11_Active-brightgreen.svg)](#-supported-navarea-sources)
+[![Agent Guide: agent.md](https://img.shields.io/badge/Agent_Docs-agent.md-purple.svg)](agent.md)
 
 > **Official Maritime Safety Notice**: Automated extraction, parsing, and classification provided by this system are designed to assist watchstanders and operations personnel. They **do not replace official navigational safety broadcasts, statutory nautical publications, or the professional judgment of a certified Officer of the Watch (OOW)**. Always consult official Navigational Area (NAVAREA) coordinators and national hydrographic offices for navigational decisions.
 
@@ -41,6 +42,8 @@
   - [3. Geometry-Preserving Atomic Upserts (`upsert_nav_warning` RPC)](#3-geometry-preserving-atomic-upserts-upsert_nav_warning-rpc)
   - [4. The H02 Triage Precedence Gate (Tiers A, B, C)](#4-the-h02-triage-precedence-gate-tiers-a-b-c)
   - [5. Verbatim Source Preservation & Immutable Audit Trail](#5-verbatim-source-preservation--immutable-audit-trail)
+  - [6. Supabase Parsing Audit & AI Correction Engine](#6-supabase-parsing-audit--ai-correction-engine)
+- [🤖 Agent Directives & Architecture (agent.md)](#-agent-directives--architecture-agentmd)
 - [🔍 Monitoring and Troubleshooting](#-monitoring-and-troubleshooting)
   - [Operational Health & Run Ledgers](#operational-health--run-ledgers)
   - [Investigating Common Operational Scenarios](#investigating-common-operational-scenarios)
@@ -105,9 +108,12 @@ Your maritime app journey began with vessel trackers, culminating in the first N
 **Oct 21** — **NAVAREA XII** & **NAVAREA IV** built from scratch; geometry validation hardened.
 **Oct 22** — **NAVAREA VIII** full pipeline (full circle — first attempted, last completed); lifecycle-safety layer merged (PR #21).
 
+### Phase 5 · Enterprise Parsing Audit & AI Correction Engine (Oct 26)
+**Oct 26** — Enterprise Supabase Parsing Audit & AI Correction Engine launched (`scripts/audit_supabase_parsing.py`, `.github/workflows/supabase-parsing-audit.yml`, `migrations/20261026_parsing_audit.sql`). Full keyset pagination (`id > last_id`), fail-closed structured Gemini proposals, production-gated atomic conditional update apply, pre-apply domain re-validation, plain `REFERENCES` foreign keys, and zero-secrets logging.
+
 ---
 
-**In one sentence:** One idea (Jun) → one scraper (Sep 18) → standalone repos (Oct 9) → unified backend (Oct 16) → 6 regions + safety layer (Oct 22).
+**In one sentence:** One idea (Jun) → one scraper (Sep 18) → standalone repos (Oct 9) → unified backend (Oct 16) → 7 regions + safety layer (Oct 22) → Enterprise Parsing Audit & AI Correction (Oct 26).
 
 ---
 
@@ -225,13 +231,19 @@ The following seven international maritime warning feeds are implemented, tested
 
 ```text
 .
-├── .github/workflows/       # Production CI/CD automated sync schedules
+├── .github/workflows/       # Automated sync schedules & parsing audit workflows
+│   ├── all-sync.yml         # Master orchestrator workflow (all 7 regions)
+│   ├── supabase-parsing-audit.yml # Manual dispatch: Audit, Propose, Apply (Production-Gated)
+│   └── navarea-*-sync.yml   # Regional sync automation workflows
 ├── migrations/              # Versioned PostgreSQL & PostGIS database migrations
+│   ├── 20261023_lifecycle_safety.sql # Run ledger, cancel guard & geometry preservation RPC
+│   └── 20261026_parsing_audit.sql    # Audit runs & correction proposals (plain REFERENCES)
 ├── scrapers/                # Specialized regional scrapers (e.g., S-124 SECOM XML, table scrapers)
 │   ├── navarea_8.py         # NAVAREA VIII PDF fast-path scraper
 │   ├── navarea_8_table.py   # NAVAREA VIII Playwright table scraper
 │   └── navarea_ii.py        # NAVAREA II S-124 SECOM XML client
 ├── scripts/                 # Scraper wrappers, parsers, and regional sync runners
+│   ├── audit_supabase_parsing.py # Keyset-paginated audit, proposal & atomic apply engine
 │   ├── run_all.py           # Master synchronous runner across all 7 regions
 │   ├── run_all_async.py     # Concurrent asyncio master pipeline runner
 │   ├── async_scraper.py     # Base async HTTP client with rate-limiting semaphores
@@ -252,6 +264,9 @@ The following seven international maritime warning feeds are implemented, tested
 │   └── prometheus.py        # Embedded Prometheus HTTP exposition server (/metrics)
 ├── src/                     # React 19 / TypeScript Maritime Operations Console & Leaflet Portal
 ├── tests/                   # Python regression, property-based fuzzing, and unit test suites
+│   ├── test_supabase_parsing_audit.py # Comprehensive tests for audit pagination, safety & apply
+│   └── ...                  # 360+ automated unit and regression tests
+├── agent.md                 # System prompt, invariants & technical reference for AI coding agents
 ├── requirements.txt         # Pinned Python backend dependencies
 └── package.json             # Frontend dependencies and scripts
 ```
@@ -423,6 +438,50 @@ All extracted warnings pass through the H02 safety gate in [`shared/triage.py`](
 - **Raw Messages**: Scraped text is stored verbatim in `public.raw_messages` along with its source ID, timestamp, and SHA-256 checksum.
 - **Ingestion Generations**: Every execution writes a ledger entry to `public.ingestion_generations`, recording harvested counts, diff stats, evidence hashes, and whether the cancel guard was activated.
 
+### 6. Supabase Parsing Audit & AI Correction Engine
+To detect and safely correct parsing anomalies across historical and newly ingested NAVAREA warnings without altering routine scraper cron jobs, the backend provides an audited, human-gated correction pipeline ([`scripts/audit_supabase_parsing.py`](scripts/audit_supabase_parsing.py), [`.github/workflows/supabase-parsing-audit.yml`](.github/workflows/supabase-parsing-audit.yml), [`migrations/20261026_parsing_audit.sql`](migrations/20261026_parsing_audit.sql)):
+
+#### Three Dedicated Operational Modes
+1. **`audit_only` (100% Read-Only)**:
+   - Performs a complete keyset-paginated scan of all eligible `nav_warnings` records (`WHERE id > last_id ORDER BY id ASC`).
+   - Runs deterministic safety validation across coordinate bounds ($[-90, 90]$ latitude, $[-180, 180]$ longitude), hemisphere presence, GeoJSON validity, canonical ID deduplication, Tier A geometry requirements, and bathymetric sentinel rules (Rule 31).
+   - **Zero writes to `nav_warnings`** and **zero calls to Gemini**. Generates an audit report JSON.
+2. **`propose_corrections` (Fail-Closed AI Proposal)**:
+   - Scans records and validates deterministically. For unresolved ambiguities, invokes Google Gemini with strict structured JSON schema validation.
+   - Generates proposals stored in `public.correction_proposals` with `status = 'proposed'`.
+   - **Zero writes to `nav_warnings`**. High AI confidence alone **NEVER** authorizes a database modification.
+3. **`apply_approved` (Production-Gated Atomic Apply)**:
+   - Requires explicit human approval via GitHub Actions Environment reviewers (`production-corrections`).
+   - Validates every proposal ID with `uuid.UUID()` before querying.
+   - Only processes proposals with `status = 'approved'`.
+   - Enforces strict field allowlist: only non-geometry scalar fields (`title`, `area_text`, `categories`, `triage_tier`, `data_quality`, `unplotted_reason`, `valid_from`, `valid_to`) can be modified. Direct geometry modifications via proposals are **strictly blocked**.
+   - Re-validates proposed values against `raw_text` and domain rules before applying.
+   - Executes an **atomic conditional update**:
+     ```sql
+     UPDATE public.nav_warnings
+     SET {field} = {proposed_val}
+     WHERE id = {warning_record_id} AND {field} = {original_val};
+     ```
+   - If 0 rows are updated, the engine inspects the current database row: if it already equals `proposed_value`, the proposal transitions to `applied`; if the row diverged, it transitions to `stale`.
+
+#### Safety & Data Protection Invariants
+- **Keyset Pagination**: Eliminates offset drift under concurrent writes. Incomplete or failed page scans mark `scan_complete = false` and cause the audit run to fail safely.
+- **Foreign Key Standards**: Both `audit_run_id` and `warning_record_id` use plain `REFERENCES` without `CASCADE` (`migrations/20261026_parsing_audit.sql`), guaranteeing that child proposals cannot inadvertently cascade deletes to master warning envelopes.
+- **Zero Secrets Logging**: Sensitive API tokens (`SUPABASE_KEY`, `GEMINI_API_KEY`) and client connection objects are never output to stdout or persisted in generated audit reports.
+
+---
+
+## 🤖 Agent Directives & Architecture (agent.md)
+
+This repository includes a dedicated guide for AI coding assistants and automation engineers: [**`agent.md`**](agent.md).
+
+Before modifying parsing logic, database schemas, or ingestion workflows, consult `agent.md` for:
+- **Core Invariants & Rule Catalog**: Rule 125 (raw text immutable provenance), Rule 31 (bathymetry/depth sentinel checks), Rule 18/19/20/93 (coordinate repairs and hemisphere inheritance).
+- **Coordinate Bounds Enforcement**: Latitude $[-90, 90]$ and Longitude $[-180, 180]$. Strictly prohibited from clamping (e.g. $91^\circ\text{N}$ is never clamped to $90^\circ\text{N}$).
+- **H02 Triage Precedence Gate**: Tiers A (Auto-Plot), B (Review Queue), and C (Quarantined / Suppressed).
+- **Foreign Key & RLS Policies**: Plain `REFERENCES` without `CASCADE`, service-role access boundaries.
+- **Testing & Command Standards**: CLI commands, dry run scraper flags (`ALLOW_DRY_RUN=1`), and test suite verification commands.
+
 ---
 
 ## 🔍 Monitoring and Troubleshooting
@@ -543,7 +602,9 @@ Contributions are welcome! Please adhere to the following conventions:
 
 ## ✅ Documentation Verification
 
-- **Last Inspected & Verified**: October 22, 2026
+- **Last Inspected & Verified**: October 26, 2026
 - **Verified Working Scrapers**: 7 Regions (Baltic, NAVAREA I, NAVAREA II S-124, NAVAREA IV, NAVAREA VIII, NAVAREA XI, NAVAREA XII)
-- **Active Automation Workflows**: 8 GitHub Actions schedules in `.github/workflows/`
-- **Database Model**: Master-Child PostGIS with `public.upsert_nav_warning` RPC and `ingestion_generations` run ledger
+- **Active Automation Workflows**: 11 GitHub Actions workflows in `.github/workflows/` (including `supabase-parsing-audit.yml` and `all-sync.yml`)
+- **Database Model**: Master-Child PostGIS with `public.upsert_nav_warning` RPC, `ingestion_generations` run ledger, and plain-reference `audit_runs` & `correction_proposals` audit schema
+- **Agent Technical Reference**: Authoritative guidelines maintained in [`agent.md`](agent.md) and [`AGENTS.md`](AGENTS.md)
+
