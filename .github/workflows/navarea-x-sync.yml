@@ -30,7 +30,6 @@ concurrency:
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   ingest-navarea-x-warnings:
@@ -53,8 +52,7 @@ jobs:
 
       - name: Run Unit Tests for NAVAREA X
         run: |
-          set -o pipefail
-          python -m unittest tests.test_navarea_x_scraper -v 2>&1 | tee navarea_x_tests.log
+          python -m unittest tests.test_navarea_x_scraper -v
 
       - name: Scrape, Parse and Sync NAVAREA X
         env:
@@ -76,18 +74,6 @@ jobs:
           fi
           echo "Output files verified successfully."
 
-      - name: Report failure logs to PR
-        if: failure() && github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          {
-            echo "### NAVAREA X workflow failure logs (head ${{ github.sha }})"
-            echo "#### unittest tail (navarea_x_tests.log)"
-            tail -n 150 navarea_x_tests.log || true
-          } > comment.md
-          gh pr comment "$PR_NUMBER" --body-file comment.md
 
       - name: Upload Output Artifacts
         uses: actions/upload-artifact@v4

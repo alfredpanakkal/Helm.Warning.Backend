@@ -109,14 +109,18 @@ class TestExtractMessageText(unittest.TestCase):
         self.assertIn("COMPLETE TEXTS OF ALL WARNINGS IN FORCE", self.text)
 
     def test_blocks_start_at_header_and_drop_preamble(self):
-        # Every block must start at its 'NAVAREA X nnn/yy' header: the
+        # Every message must start at its 'NAVAREA X nnn/yy' header: the
         # SECURITE/FM preamble is discarded by the parser anyway, and
         # keeping it would leak each message's preamble into the
-        # PREVIOUS block's raw_text tail.
-        blocks = self.text.split("\n\n")
-        self.assertEqual(len(blocks), 2)
-        self.assertTrue(blocks[0].startswith("NAVAREA X 113/26\n"), repr(blocks[0][:60]))
-        self.assertTrue(blocks[1].startswith("NAVAREA X 114/26\n"), repr(blocks[1][:60]))
+        # PREVIOUS block's raw_text tail. Line-based assertions on
+        # purpose: the raw HTML may or may not carry blank lines
+        # between its <br>-separated message lines, and the harvest
+        # contract must not depend on that layout.
+        lines = [ln.strip() for ln in self.text.split("\n") if ln.strip()]
+        self.assertEqual(lines[0], "NAVAREA X 113/26")
+        self.assertEqual(lines.count("NAVAREA X 114/26"), 1)
+        self.assertEqual(
+            sum(1 for ln in lines if ln.startswith("NAVAREA X ")), 2)
         self.assertNotIn("SECURITE", self.text)
         self.assertNotIn("FM JRCC", self.text)
         self.assertNotIn("NNNN", self.text)
