@@ -90,6 +90,14 @@ jobs:
           # instead of blocking the job for hours.
           timeout 600 env PYTHONPATH=${{ github.workspace }} python -m scripts.run_navarea_v 2>&1 | tee v_ingest.log
 
+      # Fail-closed observability: surface the blocked state as a
+      # GitHub error annotation, so a failed run reads as 'NAVAREA V
+      # BLOCKED — manual import needed' instead of silently going stale.
+      - name: Annotate blocked state
+        if: failure()
+        run: |
+          echo "::error title=NAVAREA V blocked::NAVAREA V scrape is BLOCKED — no result published (Cloudflare wall or empty snapshot); manual import needed: paste the avradio_NN.json contents via the manual ingest queue (region 'v')."
+
       - name: Verify Output Files
         run: |
           if [ ! -f navareas/navarea_v/latest_raw.txt ]; then
