@@ -17,6 +17,11 @@ Covers:
   - Geometry fields blocked by the allowlist.
   - Two overlapping applies change the row only once.
   - Geometry validation and preservation of historical/inactive warnings.
+  - Apply goes through the admin_save_nav_warning RPC (atomic audit row, freeze
+    flags, optimistic lock) and never a direct nav_warnings update.
+  - audit_only makes ZERO database writes of any kind (no run-ledger row).
+  - Allowlist enforcement: title/dates are not AI-correctable.
+  - Model verification fail-closed: unknown model aborts (exit 3) before any write.
 """
 
 from datetime import datetime, timezone
@@ -195,12 +200,57 @@ class MockSupabaseClient:
         self.tables = initial_tables or {}
         self.recorded_inserts = {}
         self.recorded_updates = {}
+        self.recorded_rpcs = []
         self.query_history = []
         self.fail_on_insert = False
         self.fail_on_update = False
 
     def table(self, table_name):
         return MockTableQueryBuilder(table_name, self)
+
+    def rpc(self, fn: str, params: dict = None):
+        """Minimal emulation of PostgREST rpc(). Implements the
+        admin_save_nav_warning contract: optimistic lock, whitelisted
+        p_update fields, atomic nav_warning_audits row."""
+        return MockRpcCall(self, fn, params or {})
+
+
+class MockRpcCall:
+    def __init__(self, client: "MockSupabaseClient", fn: str, params: dict):
+        self.client = client
+        self.fn = fn
+        self.params = params
+
+    def execute(self):
+        client, params, fn = self.client, self.params, self.fn
+        client.recorded_rpcs.append({"fn": fn, "params": params})
+        if fn != "admin_save_nav_warning":
+            raise RuntimeError(f"Unexpected RPC '{fn}'")
+
+        target = None
+        for r in client.tables.get("nav_warnings", []):
+            if r.get("id") == params.get("p_warning_id"):
+                target = r
+                break
+        if target is None:
+            raise RuntimeError("WARNING_NOT_FOUND")
+
+        expected = params.get("p_expected_updated_at")
+        if expected is not None and target.get("updated_at") != expected:
+            raise RuntimeError("STALE_UPDATED_AT")
+
+        for k, v in (params.get("p_update") or {}).items():
+            target[k] = v
+        target["updated_at"] = "rpc-now"
+
+        # Atomic audit row in the SAME transaction
+        client.tables.setdefault("nav_warning_audits", []).append({
+            "warning_id": params.get("p_warning_id"),
+            "operator_id": params.get("p_operator"),
+            "action": params.get("p_action"),
+            "diff_patch": params.get("p_diff_patch"),
+        })
+        return MockResult([{"warning": dict(target), "geometry": "unchanged"}])
 
 
 class TestSupabaseParsingAudit(unittest.TestCase):
@@ -222,6 +272,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             "valid_to": "2026-10-30T12:00:00Z",
             "categories": ["offshore"],
             "qa_flags": [],
+            "updated_at": "2026-10-26T00:00:00Z",
         }
 
         self.sample_geometry = {
@@ -334,7 +385,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
 
         proposals = assess_warning_with_gemini(
             self.sample_active_warning,
-            model_name="gemini-2.5-flash",
+            model_name="gemini-3.8-flash",
             issues=[{"code": "TEST_ISSUE"}]
         )
         self.assertEqual(proposals, [])
@@ -345,7 +396,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
     def test_gemini_unavailable_fails_safely(self, mock_urlopen):
         proposals = assess_warning_with_gemini(
             self.sample_active_warning,
-            model_name="gemini-2.5-flash",
+            model_name="gemini-3.8-flash",
             issues=[{"code": "TEST_ISSUE"}]
         )
         self.assertEqual(proposals, [])
@@ -367,6 +418,11 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertEqual(len(client.recorded_updates.get("nav_warnings", [])), 0)
         # Proposals table should have zero inserts
         self.assertEqual(len(client.recorded_inserts.get("parsing_correction_proposals", [])), 0)
+        # audit_only is fully read-only: no run-ledger row, no RPC, no inserts at all
+        self.assertEqual(len(client.recorded_inserts.get("parsing_audit_runs", [])), 0)
+        self.assertEqual(len(client.recorded_inserts), 0)
+        self.assertEqual(len(client.recorded_rpcs), 0)
+        self.assertIsNone(report.get("audit_run_id"))
         # Gemini assessment must NOT be called in audit_only
         mock_gemini.assert_not_called()
 
@@ -377,11 +433,11 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         raw_snippet = "GULF OF MEXICO"
         llm_output = json.dumps([{
             "canonical_id": self.sample_active_warning["canonical_id"],
-            "field_name": "area_text",
-            "original_value": "GULF OF MEXICO",
-            "proposed_value": "GULF OF MEXICO (CENTRAL)",
+            "field_name": "data_quality",
+            "original_value": "AMBIGUOUS",
+            "proposed_value": "EXPLICIT",
             "raw_evidence": raw_snippet,
-            "explanation": "Refined zone from text",
+            "explanation": "Coordinates are explicitly stated in the bulletin",
             "confidence": 0.95,
             "requires_review": True
         }])
@@ -414,7 +470,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         proposals = client.tables.get("parsing_correction_proposals", [])
         self.assertEqual(len(proposals), 1)
         self.assertEqual(proposals[0]["status"], "pending")
-        self.assertEqual(proposals[0]["field_name"], "area_text")
+        self.assertEqual(proposals[0]["field_name"], "data_quality")
 
     # 10. Proposal not approved: apply is REJECTED
     def test_apply_rejected_if_not_approved(self):
@@ -441,15 +497,15 @@ class TestSupabaseParsingAudit(unittest.TestCase):
     # 11. Optimistic concurrency: original value changed marks proposal STALE
     def test_apply_marks_stale_when_db_value_changed(self):
         current_warn = dict(self.sample_active_warning)
-        current_warn["title"] = "CONCURRENTLY CHANGED TITLE"
+        current_warn["data_quality"] = "AMBIGUOUS"  # changed concurrently
 
         proposal = {
             "id": "44444444-4444-4444-4444-444444444444",
             "status": "approved",
             "warning_record_id": current_warn["id"],
-            "field_name": "title",
-            "original_value": "ORIGINAL TITLE EXPECTED", # Does not match DB!
-            "proposed_value": "GULF OF MEXICO. NEW TITLE PROPOSED.",
+            "field_name": "data_quality",
+            "original_value": "EXPLICIT",  # Does not match DB!
+            "proposed_value": "INVALID",
             "raw_evidence": "GULF OF MEXICO",
         }
         client = MockSupabaseClient({
@@ -461,21 +517,24 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertEqual(len(res["stale"]), 1)
         self.assertEqual(len(res["applied"]), 0)
         self.assertEqual(proposal["status"], "stale")
+        # No RPC, no direct update was issued
+        self.assertEqual(len(client.recorded_rpcs), 0)
+        self.assertEqual(len(client.recorded_updates.get("nav_warnings", [])), 0)
 
-    # 12. Successful apply updates warning and marks proposal applied
+    # 12. Successful apply goes through admin_save_nav_warning (RPC) with audit row
     def test_apply_approved_success(self):
         current_warn = dict(self.sample_active_warning)
-        current_warn["title"] = "GULF OF MEXICO. DRILLING RIG OPERATIONS."
+        current_warn["data_quality"] = "AMBIGUOUS"
 
         proposal = {
             "id": "55555555-5555-5555-5555-555555555555",
             "status": "approved",
             "canonical_id": current_warn["canonical_id"],
             "warning_record_id": current_warn["id"],
-            "field_name": "title",
-            "original_value": "GULF OF MEXICO. DRILLING RIG OPERATIONS.",
-            "proposed_value": "GULF OF MEXICO. DEEPWATER RIG DRILLING OPERATIONS.",
-            "raw_evidence": "GULF OF MEXICO",
+            "field_name": "data_quality",
+            "original_value": "AMBIGUOUS",
+            "proposed_value": "EXPLICIT",
+            "raw_evidence": "DRILLING RIG AT 27-45.0N 091-15.0W",
         }
         client = MockSupabaseClient({
             "nav_warnings": [current_warn],
@@ -485,7 +544,69 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         res = apply_approved_corrections(client, [proposal["id"]])
         self.assertEqual(len(res["applied"]), 1)
         self.assertEqual(proposal["status"], "applied")
-        self.assertEqual(current_warn["title"], "GULF OF MEXICO. DEEPWATER RIG DRILLING OPERATIONS.")
+        self.assertEqual(current_warn["data_quality"], "EXPLICIT")
+        # The write MUST go through the RPC, never a direct table update
+        self.assertEqual(len(client.recorded_rpcs), 1)
+        self.assertEqual(client.recorded_rpcs[0]["fn"], "admin_save_nav_warning")
+        self.assertEqual(len(client.recorded_updates.get("nav_warnings", [])), 0)
+        # An atomic nav_warning_audits row must exist in the same transaction
+        audits = client.tables.get("nav_warning_audits", [])
+        self.assertEqual(len(audits), 1)
+        self.assertEqual(audits[0]["action"], "AI_CORRECTION_APPLIED")
+        self.assertEqual(audits[0]["operator_id"], "supabase-parsing-audit")
+        # Freeze flags appended so the scraper overwrite guard keeps the correction
+        self.assertIn("edited_by_admin", current_warn["qa_flags"])
+        self.assertIn("ai_correction_applied", current_warn["qa_flags"])
+
+    # 12b. Allowlist enforcement: title/dates are NOT AI-correctable
+    def test_apply_rejects_non_allowlisted_field(self):
+        proposal = {
+            "id": "55555555-5555-5555-5555-555555555556",
+            "status": "approved",
+            "warning_record_id": self.sample_active_warning["id"],
+            "field_name": "title",
+            "original_value": "OLD TITLE",
+            "proposed_value": "AI-PROPOSED TITLE",
+            "raw_evidence": "GULF OF MEXICO",
+        }
+        client = MockSupabaseClient({
+            "nav_warnings": [dict(self.sample_active_warning)],
+            "parsing_correction_proposals": [proposal],
+        })
+
+        res = apply_approved_corrections(client, [proposal["id"]])
+        self.assertEqual(len(res["applied"]), 0)
+        self.assertEqual(len(res["failed"]), 1)
+        self.assertEqual(proposal["status"], "failed")
+        self.assertIn("allowlist", str(proposal.get("error_message", "")))
+        self.assertEqual(len(client.recorded_rpcs), 0)
+
+    # 12c. Model verification is fail-closed: unknown model aborts before any DB write
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    @patch("urllib.request.urlopen")
+    def test_propose_mode_fails_closed_on_unknown_model(self, mock_urlopen):
+        import io
+        from urllib.error import HTTPError
+
+        mock_urlopen.side_effect = HTTPError(
+            "https://api", 404, "Not Found", None, io.BytesIO(b"{}")
+        )
+        client = MockSupabaseClient({
+            "nav_warnings": [dict(self.sample_active_warning)],
+            "nav_warning_geometries": [dict(self.sample_geometry)],
+            "parsing_audit_runs": [],
+            "parsing_correction_proposals": [],
+        })
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with self.assertRaises(SystemExit) as ctx:
+                run_audit(
+                    mode="propose_corrections", client=client, report_dir=tmp_dir,
+                    model_name="gemini-9.9-nonexistent",
+                )
+        self.assertEqual(ctx.exception.code, 3)
+        # Fail-closed: no ledger row, no inserts, no writes at all
+        self.assertEqual(len(client.recorded_inserts.get("parsing_audit_runs", [])), 0)
+        self.assertEqual(len(client.recorded_rpcs), 0)
 
     # 13. Historical/inactive warning remains preserved
     def test_historical_warning_preserved(self):
@@ -519,16 +640,17 @@ class TestSupabaseParsingAudit(unittest.TestCase):
     # 15. NEW TEST: duplicate apply is a no-op
     def test_duplicate_apply_is_noop(self):
         current_warn = dict(self.sample_active_warning)
+        current_warn["data_quality"] = "AMBIGUOUS"
         prop_id = "66666666-6666-6666-6666-666666666666"
         proposal = {
             "id": prop_id,
             "status": "approved",
             "canonical_id": current_warn["canonical_id"],
             "warning_record_id": current_warn["id"],
-            "field_name": "title",
-            "original_value": current_warn["title"],
-            "proposed_value": "GULF OF MEXICO. UPDATED TITLE.",
-            "raw_evidence": "GULF OF MEXICO",
+            "field_name": "data_quality",
+            "original_value": "AMBIGUOUS",
+            "proposed_value": "EXPLICIT",
+            "raw_evidence": "DRILLING RIG AT 27-45.0N 091-15.0W",
         }
         client = MockSupabaseClient({
             "nav_warnings": [current_warn],
@@ -539,14 +661,14 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         res1 = apply_approved_corrections(client, [prop_id])
         self.assertEqual(len(res1["applied"]), 1)
         self.assertEqual(proposal["status"], "applied")
-        initial_updates = len(client.recorded_updates.get("nav_warnings", []))
+        initial_rpcs = len(client.recorded_rpcs)
 
         # Second apply on the exact same proposal ID must be a no-op
         res2 = apply_approved_corrections(client, [prop_id])
         self.assertEqual(len(res2["applied"]), 0)
         self.assertEqual(len(res2["rejected"]), 1)
-        # Ensure no additional updates were made to nav_warnings
-        self.assertEqual(len(client.recorded_updates.get("nav_warnings", [])), initial_updates)
+        # Ensure no additional RPC write was issued
+        self.assertEqual(len(client.recorded_rpcs), initial_rpcs)
 
     # 16. NEW TEST: non-UUID IDs rejected without a DB call
     def test_non_uuid_proposal_id_rejected_without_db_call(self):
@@ -591,28 +713,29 @@ class TestSupabaseParsingAudit(unittest.TestCase):
     # 18. NEW TEST: two overlapping applies change the row once
     def test_two_overlapping_applies_change_row_once(self):
         current_warn = dict(self.sample_active_warning)
+        current_warn["data_quality"] = "AMBIGUOUS"
         prop1_id = "88888888-8888-8888-8888-888888888881"
         prop2_id = "88888888-8888-8888-8888-888888888882"
-        # Both proposals target the same original title concurrently
+        # Both proposals target the same original data_quality concurrently
         proposal1 = {
             "id": prop1_id,
             "status": "approved",
             "canonical_id": current_warn["canonical_id"],
             "warning_record_id": current_warn["id"],
-            "field_name": "title",
-            "original_value": current_warn["title"],
-            "proposed_value": "GULF OF MEXICO. TITLE REVISION 1.",
-            "raw_evidence": "GULF OF MEXICO",
+            "field_name": "data_quality",
+            "original_value": "AMBIGUOUS",
+            "proposed_value": "EXPLICIT",
+            "raw_evidence": "DRILLING RIG AT 27-45.0N 091-15.0W",
         }
         proposal2 = {
             "id": prop2_id,
             "status": "approved",
             "canonical_id": current_warn["canonical_id"],
             "warning_record_id": current_warn["id"],
-            "field_name": "title",
-            "original_value": current_warn["title"],
-            "proposed_value": "GULF OF MEXICO. TITLE REVISION 2.",
-            "raw_evidence": "GULF OF MEXICO",
+            "field_name": "data_quality",
+            "original_value": "AMBIGUOUS",
+            "proposed_value": "INVALID",
+            "raw_evidence": "DRILLING RIG AT 27-45.0N 091-15.0W",
         }
         client = MockSupabaseClient({
             "nav_warnings": [current_warn],
@@ -624,20 +747,21 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         # First proposal succeeds
         self.assertEqual(len(res["applied"]), 1)
         self.assertEqual(res["applied"][0]["proposal_id"], prop1_id)
-        # Second proposal is detected as stale because DB title was updated by proposal1
+        # Second proposal is detected as stale because DB was updated by proposal1
         self.assertEqual(len(res["stale"]), 1)
         self.assertEqual(res["stale"][0]["proposal_id"], prop2_id)
         # Warning row reflects proposal1 and was never overwritten by proposal2
-        self.assertEqual(current_warn["title"], "GULF OF MEXICO. TITLE REVISION 1.")
-        # Only one update was made to nav_warnings
-        self.assertEqual(len(client.recorded_updates.get("nav_warnings", [])), 1)
+        self.assertEqual(current_warn["data_quality"], "EXPLICIT")
+        # Exactly one RPC write was made; no direct updates at all
+        self.assertEqual(len(client.recorded_rpcs), 1)
+        self.assertEqual(len(client.recorded_updates.get("nav_warnings", [])), 0)
 
 
-    # 19. If conditional update matches 0 rows and row already has proposed_value, mark proposal applied
+    # 19. If the row already has the proposed value, mark proposal applied without writing
     def test_apply_marks_applied_when_row_already_has_proposed_value(self):
         current_warn = dict(self.sample_active_warning)
-        # Warning already has the proposed title in the DB
-        current_warn["title"] = "GULF OF MEXICO. ALREADY CONVERTED TITLE."
+        # Warning already has the proposed data_quality in the DB
+        current_warn["data_quality"] = "EXPLICIT"
 
         prop_id = "99999999-9999-9999-9999-999999999991"
         proposal = {
@@ -645,10 +769,10 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             "status": "approved",
             "canonical_id": current_warn["canonical_id"],
             "warning_record_id": current_warn["id"],
-            "field_name": "title",
-            "original_value": "OLD TITLE THAT WAS ALREADY CHANGED",
-            "proposed_value": "GULF OF MEXICO. ALREADY CONVERTED TITLE.",
-            "raw_evidence": "GULF OF MEXICO",
+            "field_name": "data_quality",
+            "original_value": "AMBIGUOUS",  # Stale snapshot: field already moved on
+            "proposed_value": "EXPLICIT",
+            "raw_evidence": "DRILLING RIG AT 27-45.0N 091-15.0W",
         }
         client = MockSupabaseClient({
             "nav_warnings": [current_warn],
@@ -659,7 +783,10 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertEqual(len(res["applied"]), 1)
         self.assertEqual(proposal["status"], "applied")
         self.assertIsNotNone(proposal.get("applied_at"))
+        # Idempotent: no RPC write was issued for an already-correct value
+        self.assertEqual(len(client.recorded_rpcs), 0)
 
 
 if __name__ == "__main__":
     unittest.main()
+
