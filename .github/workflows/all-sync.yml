@@ -55,9 +55,9 @@ jobs:
             navareas/navarea_iii/latest_raw.xml
             navareas/navarea_iii/latest_raw.txt
             navareas/navarea_iii/parsed.json
-            navareas/navarea_vii/latest_raw.html
-            navareas/navarea_vii/latest_raw.txt
-            navareas/navarea_vii/parsed.json
+            navareas/ix/latest_raw.html
+            navareas/ix/latest_raw.txt
+            navareas/ix/parsed.json
             navareas/navarea_xi/navarea_xi_warnings.txt
             navareas/navarea_xi/parsed_navarea_xi_warnings.json
             navareas/navarea_xii/navarea_xii_warnings.txt

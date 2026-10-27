@@ -131,19 +131,6 @@ def main() -> int:
         all_success = False
 
     print("\n" + "=" * 70)
-    print("🚀 NAVAREA VII (SOUTH AFRICA SANHO HTML)")
-    print("=" * 70)
-    try:
-        from scripts.run_navarea_vii import main as run_vii
-        res = run_vii()
-        if res is False:
-            all_success = False
-    except Exception as e:
-        logger.error(f"NAVAREA VII pipeline failed: {e}", exc_info=True)
-        print(f"❌ NAVAREA VII failed: {e}")
-        all_success = False
-
-    print("\n" + "=" * 70)
     print("🚀 NAVAREA VIII (NHO INDIA IN-FORCE BULLETIN)")
     print("=" * 70)
     try:
@@ -154,6 +141,19 @@ def main() -> int:
     except Exception as e:
         logger.error(f"NAVAREA VIII pipeline failed: {e}", exc_info=True)
         print(f"❌ NAVAREA VIII failed: {e}")
+        all_success = False
+
+    print("\n" + "=" * 70)
+    print("🚀 NAVAREA IX (PAKISTAN NHO HTML TABLE)")
+    print("=" * 70)
+    try:
+        from scripts.run_navarea_ix import main as run_ix
+        res = run_ix()
+        if res is False:
+            all_success = False
+    except Exception as e:
+        logger.error(f"NAVAREA IX pipeline failed: {e}", exc_info=True)
+        print(f"❌ NAVAREA IX failed: {e}")
         all_success = False
 
     total_duration = time.time() - start_total
