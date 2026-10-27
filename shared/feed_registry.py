@@ -38,8 +38,9 @@ FEEDS = {
     # Pakistan — NHO 'NAVAREA IX Warnings' page. The page is a metadata
     # table; each row links a plain-text document that is already the
     # exact region 'ix' bulletin block format (verified 2026-10-27).
-    # A dedicated scraper follows the row links and runs the universal
-    # parser + generic sync:
+    # A dedicated scraper follows the row links (or derives them from
+    # the row DTG when the raw HTML ships no href) and runs the
+    # universal parser + generic sync:
     #   scripts/navarea_ix_scraper.py  (entry: scripts/run_navarea_ix.py)
     "ix": {
         "url": "https://hydrography.paknavy.gov.pk/navarea-ix-warnings/",
@@ -48,17 +49,61 @@ FEEDS = {
         "note": "In-force NAVAREA IX metadata table; each 'View "
                 "Document' link points to a plain-text warning file "
                 "under the navarea-warnings plugin. Scraped by "
-                "scripts/navarea_ix_scraper.py, which follows the row "
-                "links and concatenates the documents. NOT url_text: "
+                "scripts/navarea_ix_scraper.py, which resolves the row "
+                "documents and concatenates them. NOT url_text: "
                 "the generic scraper must not feed the table HTML into "
                 "the text pipeline.",
     },
-    # Australia — AMSA NAVAREA X warnings are published as web pages.
-    "x": {
-        "url": "https://www.amsa.gov.au",
+    # Brazil — CHM 'Avisos-Radio Nauticos e SAR' portal. The page is
+    # fed by a Drupal JSON attachment ('avradio_NN.json', NN increments
+    # per publish); a dedicated scraper discovers the link, keeps the
+    # bare-numbered NAVAREA V records and runs the universal parser +
+    # generic sync:
+    #   scripts/navarea_v_scraper.py  (entry: scripts/run_navarea_v.py)
+    "v": {
+        "url": "https://www.marinha.mil.br/chm/dados-do-segnav-aviso-radio-nautico-tela/avisos-radio-nauticos-e-sar",
+        "type": "json",
+        "status": "reference_only",
+        "note": "In-force Brazilian radio navigational warnings (bare "
+                "NAVAREA V series, SAR, costeiros), one record per "
+                "warning, bilingual. Scraped by "
+                "scripts/navarea_v_scraper.py, which synthesizes the "
+                "universal bulletin text. NOT url_text: the generic "
+                "scraper must not feed raw JSON into the text pipeline.",
+    },
+    # South Africa — SANHO 'NAVAREA VII Messages' page. The in-force
+    # messages are plain text inside a static HTML page (verified
+    # 2026-10-27) — already the exact region 'vii' bulletin format; a
+    # dedicated scraper strips and slices the page and runs the
+    # universal parser + generic sync:
+    #   scripts/navarea_vii_scraper.py  (entry: scripts/run_navarea_vii.py)
+    "vii": {
+        "url": "https://www.sanho.co.za/notices_mariners/navarea_v11_messages.htm?b2=NAVAREA+VII",
         "type": "html",
         "status": "reference_only",
-        "note": "NAVAREA X 112/26: complete texts at WWW.AMSA.GOV.AU.",
+        "note": "In-force NAVAREA VII messages as text in a static HTML "
+                "page. Scraped by scripts/navarea_vii_scraper.py, which "
+                "extracts the message region (page-anchor slicing) and "
+                "feeds the universal parser. NOT url_text: the generic "
+                "scraper must not feed raw HTML into the text pipeline.",
+    },
+    # Australia — AMSA publishes in-force NAVAREA X warnings inside
+    # the RCC Australia MSI publication page (the backend behind the
+    # amsa.gov.au 'Maritime safety information database'); verified
+    # 2026-10-27. A dedicated scraper slices 'Part 2. NAVAREA X
+    # warnings' out of the page and runs the universal parser +
+    # generic sync:
+    #   scripts/navarea_x_scraper.py  (entry: scripts/run_navarea_x.py)
+    "x": {
+        "url": "https://www.operations.amsa.gov.au/AMSA.Web.MSIPublication/Home",
+        "type": "html",
+        "status": "reference_only",
+        "note": "In-force NAVAREA X warnings (Part 2 of the RCC Australia "
+                "MSI publication) as text inside a static HTML page. "
+                "Scraped by scripts/navarea_x_scraper.py, which slices "
+                "Part 2 between the page's own anchors and feeds the "
+                "universal parser. NOT url_text: the generic scraper must "
+                "not feed raw HTML into the text pipeline.",
     },
     # Norway — Kystverket NAVAREA XIX report page (HTML table view).
     "xix": {
