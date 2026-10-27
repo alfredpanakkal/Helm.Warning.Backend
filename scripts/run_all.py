@@ -157,7 +157,7 @@ def main() -> int:
         all_success = False
 
     print("\n" + "=" * 70)
-    print("U0001F680 NAVAREA X (AUSTRALIA AMSA RCC MSI)")
+    print("🚀 NAVAREA X (AUSTRALIA AMSA RCC MSI)")
     print("=" * 70)
     try:
         from scripts.run_navarea_x import main as run_x
