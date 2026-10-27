@@ -142,6 +142,7 @@ def main() -> int:
         logger.error(f"NAVAREA V pipeline failed: {e}", exc_info=True)
         print(f"❌ NAVAREA V failed: {e}")
         all_success = False
+
     print("\n" + "=" * 70)
     print("🚀 NAVAREA VIII (NHO INDIA IN-FORCE BULLETIN)")
     print("=" * 70)
