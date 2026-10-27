@@ -57,6 +57,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # CI/CD compute trim: the ~170 MB Chromium download is the
+      # single biggest per-run cost of the browser fallback layer.
+      # Cache it between runs; `patchright install` no-ops on hit.
+      - name: Cache Patchright Chromium
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: patchright-chromium-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            patchright-chromium-${{ runner.os }}-
       # StealthyFetcher runs on Patchright (patched Chromium) and
       # needs the browser binary for the Cloudflare-solving fetch
       # layer in scripts/navarea_v_scraper.py (CI 2026-10-27:
