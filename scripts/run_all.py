@@ -131,6 +131,18 @@ def main() -> int:
         all_success = False
 
     print("\n" + "=" * 70)
+    print("🚀 NAVAREA V (BRAZIL CHM JSON)")
+    print("=" * 70)
+    try:
+        from scripts.run_navarea_v import main as run_v
+        res = run_v()
+        if res is False:
+            all_success = False
+    except Exception as e:
+        logger.error(f"NAVAREA V pipeline failed: {e}", exc_info=True)
+        print(f"❌ NAVAREA V failed: {e}")
+        all_success = False
+    print("\n" + "=" * 70)
     print("🚀 NAVAREA VIII (NHO INDIA IN-FORCE BULLETIN)")
     print("=" * 70)
     try:

@@ -35,6 +35,23 @@ FEEDS = {
                 "universal bulletin text. NOT url_text: the generic "
                 "scraper must not feed raw XML into the text pipeline.",
     },
+    # Brazil — CHM 'Avisos-Radio Nauticos e SAR' portal. The page is
+    # fed by a Drupal JSON attachment ('avradio_NN.json', NN increments
+    # per publish); a dedicated scraper discovers the link, keeps the
+    # bare-numbered NAVAREA V records and runs the universal parser +
+    # generic sync:
+    #   scripts/navarea_v_scraper.py  (entry: scripts/run_navarea_v.py)
+    "v": {
+        "url": "https://www.marinha.mil.br/chm/dados-do-segnav-aviso-radio-nautico-tela/avisos-radio-nauticos-e-sar",
+        "type": "json",
+        "status": "reference_only",
+        "note": "In-force Brazilian radio navigational warnings (bare "
+                "NAVAREA V series, SAR, costeiros), one record per "
+                "warning, bilingual. Scraped by "
+                "scripts/navarea_v_scraper.py, which synthesizes the "
+                "universal bulletin text. NOT url_text: the generic "
+                "scraper must not feed raw JSON into the text pipeline.",
+    },
     # Australia — AMSA NAVAREA X warnings are published as web pages.
     "x": {
         "url": "https://www.amsa.gov.au",
