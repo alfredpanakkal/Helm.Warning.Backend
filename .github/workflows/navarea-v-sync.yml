@@ -25,7 +25,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: navarea-v-sync-engine
+  # Renamed 2026-10-27 (was 'navarea-v-sync-engine'): a StealthyFetcher
+  # Cloudflare-solve run hung on the old group and would have queued
+  # every later run behind it for hours. Keep this name.
+  group: navarea-v-sync-engine-bounded
   cancel-in-progress: false
 
 permissions:
@@ -35,6 +38,9 @@ permissions:
 jobs:
   ingest-navarea-v-warnings:
     runs-on: ubuntu-latest
+    # Hard bound: the StealthyFetcher Cloudflare-solve layer can hang
+    # indefinitely on an unsolvable challenge (seen 2026-10-27).
+    timeout-minutes: 30
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -70,7 +76,9 @@ jobs:
           ALLOW_DRY_RUN: ${{ github.event_name == 'pull_request' && '1' || '' }}
         run: |
           set -o pipefail
-          PYTHONPATH=${{ github.workspace }} python -m scripts.run_navarea_v 2>&1 | tee v_ingest.log
+          # 10-min bound: a hung browser-layer fetch must fail loudly
+          # instead of blocking the job for hours.
+          timeout 600 env PYTHONPATH=${{ github.workspace }} python -m scripts.run_navarea_v 2>&1 | tee v_ingest.log
 
       - name: Verify Output Files
         run: |
