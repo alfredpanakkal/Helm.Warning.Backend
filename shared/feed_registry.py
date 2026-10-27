@@ -20,13 +20,20 @@ scrapers):
 """
 
 FEEDS = {
-    # Spain — NAVAREA III warnings portal (HTML/XML page; the bulletin
-    # itself advertises this URL). Plain-text endpoint not yet verified.
+    # Spain — NAVAREA III warnings portal. The interactive page renders
+    # its 'display all' view from a plain XML snapshot (verified
+    # 2026-10-27); a dedicated scraper converts it to the region 'iii'
+    # bulletin text and runs the universal parser + generic sync:
+    #   scripts/navarea_iii_scraper.py  (entry: scripts/run_navarea_iii.py)
     "iii": {
-        "url": "https://armada.defensa.gob.es/ihm/aplicaciones/navareas/index_navareas_xml_en.html",
-        "type": "html",
+        "url": "https://armada.defensa.gob.es/ihm/XML/navareas_crudo.xml",
+        "type": "xml",
         "status": "reference_only",
-        "note": "NAVAREA III 0157/26 advertises this page for full texts.",
+        "note": "In-force NAVAREA III XML snapshot (one NAVAREASVIGOR record "
+                "per warning, bilingual). Scraped by "
+                "scripts/navarea_iii_scraper.py, which synthesizes the "
+                "universal bulletin text. NOT url_text: the generic "
+                "scraper must not feed raw XML into the text pipeline.",
     },
     # Australia — AMSA NAVAREA X warnings are published as web pages.
     "x": {
@@ -50,8 +57,8 @@ FEEDS = {
 def get_text_feed(region_key: str):
     """Returns the verified plain-text feed config for a region, or None.
 
-    Fail-closed: 'reference_only' and 'html*' entries return None — only
-    verified plain-text endpoints are scrapable by the generic scraper.
+    Fail-closed: 'reference_only' and non-'url_text' entries return None —
+    only verified plain-text endpoints are scrapable by the generic scraper.
     """
     feed = FEEDS.get(region_key)
     if not feed:
