@@ -143,9 +143,9 @@ The backend uses a PostGIS Master-Child relational model managed by versioned SQ
    - Immutable audit ledger. Unique on `(warning_id, source_id, checksum_sha256)`.
 4. **`public.ingestion_generations`**:
    - Execution ledger recording source, timestamp, harvest count, diff stats, snapshot credibility, and cancel guard activation.
-5. **`public.audit_runs` & `public.correction_proposals`** (`migrations/20261026_parsing_audit.sql`):
+5. **`public.parsing_audit_runs` & `public.parsing_correction_proposals`** (`migrations/20261026_parsing_audit.sql`):
    - Parsing audit run ledger and staged correction proposals.
-   - **Foreign Key Invariant**: Must use plain `REFERENCES` without `CASCADE` (`audit_run_id REFERENCES public.audit_runs(id)` and `warning_record_id REFERENCES public.nav_warnings(id)`).
+   - **Foreign Key Invariant**: Must use plain `REFERENCES` without `CASCADE` (`audit_run_id REFERENCES public.parsing_audit_runs(id)` and `warning_record_id REFERENCES public.nav_warnings(id)`).
    - RLS enabled; service-role only, zero public/anon access.
 6. **`public.nav_warnings_active_spatial`**:
    - High-performance view joining `nav_warnings` and `nav_warning_geometries` on `status = 'active' AND triage_tier = 'A'`.
@@ -164,13 +164,22 @@ Located in `scripts/audit_supabase_parsing.py` and automated via `.github/workfl
 ### The Three Execution Modes
 ```text
 1. audit_only           --> Keyset scan + Deterministic Validation
-                            Zero writes to DB. Zero Gemini API calls. Generates report.
+                            ZERO writes to the DB of any kind (no run-ledger row,
+                            no proposals, no nav_warnings writes). Zero Gemini calls.
+                            Generates a report artifact.
 2. propose_corrections  --> Keyset scan + Validation + Gemini structured proposals
-                            Writes proposals to public.correction_proposals (status='proposed').
-                            Zero writes to nav_warnings.
+                            Writes proposals to parsing_correction_proposals
+                            (status='pending'). The Gemini model is verified
+                            fail-closed before any DB access (exit 3 on failure,
+                            never silently substituted). Zero writes to nav_warnings.
 3. apply_approved       --> Production-gated human review required.
                             Applies only proposals with status = 'approved'.
-                            Atomic conditional update matching (id, original_value).
+                            Applies through the admin_save_nav_warning RPC:
+                            atomic row update + nav_warning_audits audit row in
+                            ONE transaction, optimistic lock via
+                            p_expected_updated_at, appended edited_by_admin +
+                            ai_correction_applied qa_flags (scraper freeze guard).
+                            Direct UPDATE on nav_warnings is FORBIDDEN.
 ```
 
 ### Critical Engineering Safeguards
@@ -179,18 +188,25 @@ Located in `scripts/audit_supabase_parsing.py` and automated via `.github/workfl
    - Never uses offset pagination (which suffers from pagination drift and dropped records under concurrent writes).
    - If a page fails midway, the run record is marked `status = 'failed'` or `'partial'` with `scan_complete = false`. It NEVER reports success on partial scans.
 2. **Strict Field Allowlist**:
-   - Only scalar metadata fields can be corrected via proposal apply:
-     `{"title", "area_text", "categories", "triage_tier", "data_quality", "unplotted_reason", "valid_from", "valid_to"}`
-   - Geometry fields (`geom_postgis`, `geojson_blob`, coordinates) are **strictly forbidden** from direct proposal application.
+   - Only these fields can be corrected via proposal apply:
+     `{"categories", "triage_tier", "data_quality", "unplotted_reason"}`
+     (a subset of the columns the `admin_save_nav_warning` RPC accepts in `p_update`).
+   - `title`, `area_text`, `valid_from`, `valid_to`, `status` and all geometry
+     fields are **strictly forbidden** from AI proposal application — they are
+     lifecycle-authoritative fields owned by the sync engine and human admins.
 3. **Pre-Apply Re-Validation**:
-   - Before executing an update, the proposed value is re-validated against domain rules and verified against the warning's `raw_text`.
-4. **Atomic Conditional Updates**:
-   - Executed as: `UPDATE nav_warnings SET {field} = {proposed_val} WHERE id = {warning_id} AND {field} = {original_val}`.
-   - If 0 rows are updated, the engine re-inspects the record:
-     - If the DB already has the `proposed_value`, it marks the proposal `status = 'applied'` with `applied_at = now()`.
-     - If the DB value has diverged to another value, it marks the proposal `status = 'stale'` with an error log.
+   - Before executing an update, the proposed value is re-validated against domain rules and verified against the warning's `raw_text` (verbatim `raw_evidence` substring required).
+4. **Atomic RPC Updates**:
+   - Executed via `admin_save_nav_warning(p_warning_id, p_update, p_geometries, p_expected_updated_at, p_operator, p_action, p_reason, p_previous_tier, p_new_tier, p_diff_patch)`.
+   - The RPC re-checks `p_expected_updated_at` under `FOR UPDATE` and writes the
+     `nav_warning_audits` row in the same transaction (an edit without an audit
+     row is structurally impossible).
+   - Idempotent: a row already holding the proposed value is skipped without a write.
+   - If the DB value has diverged from the proposal snapshot, the proposal is marked `stale`.
 5. **UUID Validation**:
    - Every proposal ID passed via CLI or workflow is validated using `uuid.UUID(str_id)` before any database query is issued. Invalid strings fail fast.
+6. **Model Fail-Closed Verification**:
+   - In propose mode the model identifier is verified against the Gemini API (`GET /v1beta/models/{model}`) before any database access; 404/403/network failure aborts the run with exit 3. A model is never silently substituted.
 
 ---
 
@@ -202,7 +218,7 @@ SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_KEY=your-service-role-key-here
 ALLOW_DRY_RUN=1                          # Set to 1 for safe local testing without DB writes
 GEMINI_API_KEY=your-gemini-api-key       # Optional; for AI escalation and proposal generation
-GEMINI_MODEL_NAME=gemini-3.1-flash-lite  # Default model alias
+GEMINI_MODEL_NAME=gemini-3.8-flash  # Verified fail-closed at runtime; never silently substituted
 ```
 
 ### Running the Test Suite
@@ -264,3 +280,4 @@ python3 scripts/audit_supabase_parsing.py --mode apply_approved --proposal-ids "
 4. **ALWAYS VALIDATE BUILDS**:
    - Run `python3 -m unittest discover tests` and confirm test suite counts before completing tasks.
    - Run `compile_applet` and `lint_applet` to verify that frontend and backend build cleanly.
+
