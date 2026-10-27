@@ -536,6 +536,9 @@ Every applied proposal must show `status = 'applied'`, and its warning row must 
 correction) and an audit row in `nav_warning_audits` written atomically by `admin_save_nav_warning`.
 Proposals whose row diverged since the audit show `stale` — re-run the audit before re-approving them.
 
+---
+
+
 ## 🤖 Agent Directives & Architecture (agent.md)
 
 This repository includes a dedicated guide for AI coding assistants and automation engineers: [**`agent.md`**](agent.md).
