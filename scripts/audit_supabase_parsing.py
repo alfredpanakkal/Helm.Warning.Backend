@@ -8,10 +8,19 @@ evaluates ambiguous cases with Gemini (grounded in source text), produces struct
 correction proposals, and safely applies explicitly approved proposals under atomic optimistic concurrency.
 
 Modes:
-  1. audit_only: Scan records & geometries, flag issues, generate audit report (zero mutations).
+  1. audit_only: Scan records & geometries, flag issues, generate audit report.
+     Zero database writes of ANY kind (no run-ledger row is created).
   2. propose_corrections: Deterministic audit + Gemini analysis, persists pending proposals in
-     parsing_correction_proposals (zero mutations to nav_warnings).
-  3. apply_approved: Safely apply approved, validated, non-stale proposals to nav_warnings.
+     parsing_correction_proposals (zero writes to nav_warnings).
+  3. apply_approved: Safely apply approved, validated, non-stale proposals to nav_warnings
+     through the admin_save_nav_warning RPC (atomic row update + nav_warning_audits audit row,
+     optimistic lock, edited_by_admin flag so the scraper freeze guard keeps the correction).
+
+Safety invariants:
+  - The Gemini model identifier is verified against the Gemini API before use; an invalid or
+    unavailable model fails the run closed (exit 3) and is never silently substituted.
+  - The AI-correctable field set is whitelist-only and must stay a subset of the columns the
+    admin_save_nav_warning RPC accepts in p_update. Titles, dates and status are never AI-edited.
 """
 
 from __future__ import annotations
@@ -33,23 +42,20 @@ if REPO_ROOT not in sys.path:
 from shared.validation import validate_lat_lon, validate_warning_id
 from shared.utils import parse_coordinates, repair_coordinate_token
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.8-flash"
 API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
 
-# Allowlisted fields that can be safely updated on nav_warnings via approved proposals
+EXIT_MODEL_UNAVAILABLE = 3  # fail-closed: the Gemini model could not be verified
+
+# Allowlisted fields that can be corrected on nav_warnings via approved proposals.
+# This must remain a subset of the columns accepted by admin_save_nav_warning(p_update).
+# title / area_text / valid_from / valid_to are deliberately EXCLUDED: they are
+# lifecycle-authoritative fields owned by the sync engine and human admins.
 ALLOWED_PROPOSAL_FIELDS = {
-    "title",
-    "area_text",
     "categories",
-    "valid_from",
-    "valid_to",
-    "shoal_depth_m",
-    "tow_length_m",
-    "tow_speed_kts",
-    "applicable_vessel_filter",
-    "unplotted_reason",
     "triage_tier",
     "data_quality",
+    "unplotted_reason",
 }
 
 # Regex for ungrounded coordinate patterns with missing hemispheres (e.g. 54-12.0 011-14.5 without N/S/E/W)
@@ -439,6 +445,57 @@ def validate_warning_geometry(
     return issues
 
 
+def gemini_verify_model(model: str, api_key: str, timeout: float = 15.0) -> Tuple[bool, Optional[str]]:
+    """Verify the model identifier exists on the Gemini API before use.
+
+    Fail-closed: returns (False, reason) on 404/403/network failure. The caller
+    must abort the run; never silently substitute another model.
+    """
+    import urllib.error
+    import urllib.request
+
+    url = f"{API_ROOT}/{model}"
+    req = urllib.request.Request(url, headers={"x-goog-api-key": api_key}, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        # The response names the model it describes; a mismatch means the API
+        # silently resolved a different model, which we must not accept.
+        name = (data.get("name") or "").rsplit("/", 1)[-1]
+        if name and name != model:
+            return False, f"API resolved model '{name}' instead of requested '{model}'"
+        return True, None
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False, f"model '{model}' does not exist on the Gemini API (404)"
+        if exc.code == 403:
+            return False, f"API key rejected for model '{model}' (403)"
+        return False, f"model verification failed: HTTP {exc.code}"
+    except Exception as exc:
+        return False, f"model verification failed: {type(exc).__name__}: {exc}"
+
+
+def verify_model_fail_closed(model: str) -> None:
+    """Verify the configured Gemini model or abort with EXIT_MODEL_UNAVAILABLE."""
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        print(
+            f"[error] GEMINI_API_KEY is not set; cannot verify model '{model}'. "
+            f"Aborting without any database access (exit {EXIT_MODEL_UNAVAILABLE}).",
+            file=sys.stderr,
+        )
+        raise SystemExit(EXIT_MODEL_UNAVAILABLE)
+    ok, err = gemini_verify_model(model, api_key)
+    if not ok:
+        print(
+            f"[error] Gemini model '{model}' could not be verified: {err}. "
+            f"Refusing to substitute a different model (exit {EXIT_MODEL_UNAVAILABLE}).",
+            file=sys.stderr,
+        )
+        raise SystemExit(EXIT_MODEL_UNAVAILABLE)
+    print(f"[audit] Gemini model verified: {model}")
+
+
 def assess_warning_with_gemini(
     record: Dict[str, Any],
     model_name: Optional[str] = None,
@@ -507,10 +564,11 @@ def assess_warning_with_gemini(
         try:
             from google import genai
             client = genai.Client(api_key=api_key)
+            # Gemini 3.x removed temperature/top_p/top_k sampling controls.
             resp = client.models.generate_content(
                 model=model,
                 contents=prompt,
-                config={"temperature": 0.0}
+                config={"response_mime_type": "application/json"}
             )
             response_text = resp.text or ""
         except ImportError:
@@ -518,7 +576,7 @@ def assess_warning_with_gemini(
             url = f"{API_ROOT}/{model}:generateContent"
             payload = {
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.0, "responseMimeType": "application/json"}
+                "generationConfig": {"responseMimeType": "application/json"}
             }
             req = urllib.request.Request(
                 url,
@@ -672,31 +730,6 @@ def validate_proposed_field_value(
         if proposed_val not in allowed_unplotted:
             return False, f"Invalid unplotted_reason '{proposed_val}'."
 
-    elif field_name in ("valid_from", "valid_to"):
-        if proposed_val is not None:
-            try:
-                datetime.fromisoformat(str(proposed_val).replace("Z", "+00:00"))
-            except Exception:
-                return False, f"Invalid ISO datetime format for {field_name}: '{proposed_val}'."
-
-    elif field_name == "shoal_depth_m":
-        if proposed_val is not None:
-            try:
-                d = float(proposed_val)
-                if d == -9999.0 or d <= -50.0 or d >= 12000.0:
-                    return False, f"shoal_depth_m out of valid range: {d}."
-            except (ValueError, TypeError):
-                return False, f"shoal_depth_m must be a numeric float, got {proposed_val}."
-
-    elif field_name in ("tow_length_m", "tow_speed_kts"):
-        if proposed_val is not None:
-            try:
-                v = float(proposed_val)
-                if v < 0.0:
-                    return False, f"{field_name} cannot be negative: {v}."
-            except (ValueError, TypeError):
-                return False, f"{field_name} must be numeric, got {proposed_val}."
-
     elif field_name == "categories":
         if not isinstance(proposed_val, list):
             return False, f"categories must be a list of strings, got {type(proposed_val).__name__}."
@@ -714,9 +747,12 @@ def apply_approved_corrections(
       - Verifies proposal status is 'approved'.
       - Reloads current warning by stable UUID.
       - Revalidates proposed value against raw_text and domain rules.
-      - Performs an atomic conditional update matching id and expected original_value.
-      - Treats zero rows updated as stale or already applied.
-      - Marks proposal applied ONLY after warning update succeeds.
+      - Applies through the admin_save_nav_warning RPC: atomic row update +
+        nav_warning_audits audit row in one transaction, optimistic lock via
+        p_expected_updated_at, appended edited_by_admin freeze flag.
+      - Skips proposals whose field already equals the proposed value (idempotent)
+        or whose original value has diverged (stale).
+      - Marks proposal applied ONLY after the RPC (update + audit row) succeeds.
     """
     summary = {
         "applied": [],
@@ -817,55 +853,81 @@ def apply_approved_corrections(
                 })
                 continue
 
-            # Step 6: Atomic conditional update matching id and expected original_value
-            patch = {
-                field_name: proposed_val,
-                "updated_at": now_iso,
-            }
-            warn_query = client.table("nav_warnings").update(patch).eq("id", wid)
-            if original_val is None:
-                warn_query = warn_query.is_(field_name, "null")
-            else:
-                warn_query = warn_query.eq(field_name, original_val)
-
-            warn_update_res = warn_query.execute()
-            updated_warnings = warn_update_res.data or []
-
-            # Step 7: Treat zero rows updated as stale or already applied
-            if len(updated_warnings) == 0:
-                curr_res = client.table("nav_warnings").select(field_name).eq("id", wid).execute()
-                curr_val = curr_res.data[0].get(field_name) if curr_res.data else None
-
-                if curr_val == proposed_val:
-                    if current_status == "approved":
-                        client.table("parsing_correction_proposals").update({
-                            "status": "applied",
-                            "applied_at": now_iso,
-                        }).eq("id", clean_uuid).execute()
-                    summary["applied"].append({
-                        "proposal_id": clean_uuid,
-                        "canonical_id": prop.get("canonical_id"),
-                        "field_name": field_name,
-                        "new_value": proposed_val,
-                    })
-                else:
+            # Step 6: Idempotency + optimistic concurrency pre-check on the just-read row
+            cur_val = current_warning.get(field_name)
+            if cur_val == proposed_val:
+                # Idempotent no-op: the row already carries the proposed value.
+                if current_status == "approved":
                     client.table("parsing_correction_proposals").update({
-                        "status": "stale",
-                        "error_message": (
-                            f"Conditional update matched 0 rows. Expected {json.dumps(original_val)}, "
-                            f"found {json.dumps(curr_val)} in database."
-                        )
+                        "status": "applied",
+                        "applied_at": now_iso,
                     }).eq("id", clean_uuid).execute()
-                    summary["stale"].append({
-                        "proposal_id": clean_uuid,
-                        "canonical_id": prop.get("canonical_id"),
-                        "field_name": field_name,
-                        "expected": original_val,
-                        "actual": curr_val,
-                    })
+                summary["applied"].append({
+                    "proposal_id": clean_uuid,
+                    "canonical_id": prop.get("canonical_id"),
+                    "field_name": field_name,
+                    "new_value": proposed_val,
+                    "reason": "already_applied",
+                })
+                continue
+            if original_val is not None and cur_val != original_val:
+                client.table("parsing_correction_proposals").update({
+                    "status": "stale",
+                    "error_message": (
+                        f"Field value changed since the audit. Expected {json.dumps(original_val)}, "
+                        f"found {json.dumps(cur_val)} in database."
+                    )
+                }).eq("id", clean_uuid).execute()
+                summary["stale"].append({
+                    "proposal_id": clean_uuid,
+                    "canonical_id": prop.get("canonical_id"),
+                    "field_name": field_name,
+                    "expected": original_val,
+                    "actual": cur_val,
+                })
                 continue
 
-            # Step 8: Mark proposal applied ONLY AFTER warning update succeeds
+            # Step 7: Append freeze flags so the scraper overwrite guard keeps the
+            # correction, matching the qa_flags semantics of the admin save path.
+            qf = current_warning.get("qa_flags") or []
+            if not isinstance(qf, list):
+                qf = list(qf)
+            new_flags = qf + [f for f in ("ai_correction_applied", "edited_by_admin") if f not in qf]
+
+            prev_tier = current_warning.get("triage_tier") or "B"
+            new_tier = (
+                proposed_val
+                if (field_name == "triage_tier" and proposed_val in ("A", "B", "C"))
+                else prev_tier
+            )
+
+            # Step 8: Apply through the admin_save_nav_warning RPC — atomic row
+            # update + nav_warning_audits audit row in ONE transaction. The
+            # RPC re-checks p_expected_updated_at under FOR UPDATE, closing the
+            # race between the read above and this write. Direct table updates
+            # that bypass the audit trail are forbidden.
+            client.rpc("admin_save_nav_warning", {
+                "p_warning_id": wid,
+                "p_update": {"qa_flags": new_flags, field_name: proposed_val},
+                "p_geometries": None,
+                "p_expected_updated_at": current_warning.get("updated_at"),
+                "p_operator": "supabase-parsing-audit",
+                "p_action": "AI_CORRECTION_APPLIED",
+                "p_reason": (prop.get("explanation") or "parsing audit correction")[:500],
+                "p_previous_tier": prev_tier,
+                "p_new_tier": new_tier,
+                "p_diff_patch": {
+                    "proposal_id": clean_uuid,
+                    "audit_run_id": prop.get("audit_run_id"),
+                    "field": field_name,
+                    "before": original_val,
+                    "after": proposed_val,
+                    "raw_evidence": raw_evidence,
+                    "confidence": prop.get("confidence"),
+                },
+            }).execute()
+
+            # Step 9: Mark proposal applied ONLY AFTER the RPC (update + audit row) succeeds
             client.table("parsing_correction_proposals").update({
                 "status": "applied",
                 "applied_at": now_iso,
@@ -879,18 +941,32 @@ def apply_approved_corrections(
             })
 
         except Exception as exc:
-            print(f"[error] Failed to apply proposal {clean_uuid}: {exc}", file=sys.stderr)
+            msg = str(exc)
+            print(f"[error] Failed to apply proposal {clean_uuid}: {msg}", file=sys.stderr)
             try:
-                client.table("parsing_correction_proposals").update({
-                    "status": "failed",
-                    "error_message": str(exc),
-                }).eq("id", clean_uuid).execute()
+                if "STALE_UPDATED_AT" in msg:
+                    # The record changed between our read and the RPC write.
+                    client.table("parsing_correction_proposals").update({
+                        "status": "stale",
+                        "error_message": "Record changed since the audit (RPC optimistic lock).",
+                    }).eq("id", clean_uuid).execute()
+                    summary["stale"].append({
+                        "proposal_id": clean_uuid,
+                        "canonical_id": prop.get("canonical_id") if isinstance(prop, dict) else None,
+                        "reason": "record changed since the audit (RPC optimistic lock)",
+                    })
+                else:
+                    client.table("parsing_correction_proposals").update({
+                        "status": "failed",
+                        "error_message": msg,
+                    }).eq("id", clean_uuid).execute()
+                    summary["failed"].append({
+                        "proposal_id": clean_uuid,
+                        "reason": msg,
+                    })
             except Exception:
                 pass
-            summary["failed"].append({
-                "proposal_id": clean_uuid,
-                "reason": str(exc),
-            })
+            continue
 
     return summary
 
@@ -905,7 +981,8 @@ def run_audit(
     model_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Orchestrate parsing audit, proposal generation, or approved correction application.
-    Generates a full report and records results in public.parsing_audit_runs.
+    Generates a full report; propose/apply modes record results in public.parsing_audit_runs
+    (audit_only is fully read-only and persists nothing to the database).
     """
     if mode not in ("audit_only", "propose_corrections", "apply_approved"):
         raise ValueError(f"Invalid mode '{mode}'. Choose from 'audit_only', 'propose_corrections', 'apply_approved'.")
@@ -914,21 +991,33 @@ def run_audit(
     now_iso = datetime.now(timezone.utc).isoformat()
     selected_model = model_name or os.getenv("GEMINI_MODEL_NAME") or DEFAULT_MODEL
 
-    # Initialize audit run record in database
+    # Fail-closed model verification before ANY database access: an invalid or
+    # unavailable model aborts the run (never silently substituted).
+    if mode == "propose_corrections":
+        verify_model_fail_closed(selected_model)
+
+    # audit_only is strictly read-only: no run-ledger row is created at all.
+    # propose/apply modes persist a ledger row; failure there is fail-closed
+    # (proposals could not otherwise be tracked, approved, or applied).
     run_id = None
-    try:
-        run_record = {
-            "mode": mode,
-            "navarea_filter": navarea,
-            "model_name": selected_model if mode == "propose_corrections" else None,
-            "status": "running",
-            "started_at": now_iso,
-        }
-        res = supabase_client.table("parsing_audit_runs").insert(run_record).execute()
-        if res.data:
-            run_id = res.data[0].get("id")
-    except Exception as exc:
-        print(f"[warning] Could not initialize parsing_audit_runs row: {exc}", file=sys.stderr)
+    if mode != "audit_only":
+        try:
+            run_record = {
+                "mode": mode,
+                "navarea_filter": navarea,
+                "model_name": selected_model if mode == "propose_corrections" else None,
+                "status": "running",
+                "started_at": now_iso,
+            }
+            res = supabase_client.table("parsing_audit_runs").insert(run_record).execute()
+            run_id = (res.data or [{}])[0].get("id")
+            if not run_id:
+                raise RuntimeError("parsing_audit_runs insert returned no row id")
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not initialize parsing_audit_runs row (mode={mode}): {exc}. "
+                "Failing closed — has migrations/20261026_parsing_audit.sql been applied to Supabase?"
+            ) from exc
 
     report: Dict[str, Any] = {
         "audit_run_id": run_id,
@@ -1153,3 +1242,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

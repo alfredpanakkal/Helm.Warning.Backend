@@ -109,7 +109,7 @@ Your maritime app journey began with vessel trackers, culminating in the first N
 **Oct 22** — **NAVAREA VIII** full pipeline (full circle — first attempted, last completed); lifecycle-safety layer merged (PR #21).
 
 ### Phase 5 · Enterprise Parsing Audit & AI Correction Engine (Oct 26)
-**Oct 26** — Enterprise Supabase Parsing Audit & AI Correction Engine launched (`scripts/audit_supabase_parsing.py`, `.github/workflows/supabase-parsing-audit.yml`, `migrations/20261026_parsing_audit.sql`). Full keyset pagination (`id > last_id`), fail-closed structured Gemini proposals, production-gated atomic conditional update apply, pre-apply domain re-validation, plain `REFERENCES` foreign keys, and zero-secrets logging.
+**Oct 26** — Enterprise Supabase Parsing Audit & AI Correction Engine launched (`scripts/audit_supabase_parsing.py`, `.github/workflows/supabase-parsing-audit.yml`, `migrations/20261026_parsing_audit.sql`). Full keyset pagination (`id > last_id`), fail-closed structured Gemini proposals, production-gated atomic RPC apply (admin_save_nav_warning + fail-closed model verification), pre-apply domain re-validation, plain `REFERENCES` foreign keys, and zero-secrets logging.
 
 ---
 
@@ -445,24 +445,20 @@ To detect and safely correct parsing anomalies across historical and newly inges
 1. **`audit_only` (100% Read-Only)**:
    - Performs a complete keyset-paginated scan of all eligible `nav_warnings` records (`WHERE id > last_id ORDER BY id ASC`).
    - Runs deterministic safety validation across coordinate bounds ($[-90, 90]$ latitude, $[-180, 180]$ longitude), hemisphere presence, GeoJSON validity, canonical ID deduplication, Tier A geometry requirements, and bathymetric sentinel rules (Rule 31).
-   - **Zero writes to `nav_warnings`** and **zero calls to Gemini**. Generates an audit report JSON.
+   - **Zero database writes of any kind** (no run-ledger row, no proposals, no `nav_warnings` writes) and **zero calls to Gemini**. Generates an audit report JSON.
 2. **`propose_corrections` (Fail-Closed AI Proposal)**:
    - Scans records and validates deterministically. For unresolved ambiguities, invokes Google Gemini with strict structured JSON schema validation.
-   - Generates proposals stored in `public.correction_proposals` with `status = 'proposed'`.
+   - The Gemini model identifier (default `gemini-3.8-flash`) is **verified against the Gemini API before any database access**; an unknown or unavailable model aborts the run (exit 3) and is never silently substituted.
+   - Generates proposals stored in `public.parsing_correction_proposals` with `status = 'pending'`.
    - **Zero writes to `nav_warnings`**. High AI confidence alone **NEVER** authorizes a database modification.
 3. **`apply_approved` (Production-Gated Atomic Apply)**:
-   - Requires explicit human approval via GitHub Actions Environment reviewers (`production-corrections`).
+   - Requires explicit human approval via the `confirm_apply` workflow input plus GitHub Actions Environment reviewers (`production-corrections`).
    - Validates every proposal ID with `uuid.UUID()` before querying.
    - Only processes proposals with `status = 'approved'`.
-   - Enforces strict field allowlist: only non-geometry scalar fields (`title`, `area_text`, `categories`, `triage_tier`, `data_quality`, `unplotted_reason`, `valid_from`, `valid_to`) can be modified. Direct geometry modifications via proposals are **strictly blocked**.
+   - Enforces strict field allowlist: only `categories`, `triage_tier`, `data_quality`, and `unplotted_reason` can be corrected. `title`, `area_text`, `valid_from`, `valid_to`, `status`, and all geometry fields are **strictly blocked** from AI proposals — they are lifecycle-authoritative fields owned by the sync engine and human admins.
    - Re-validates proposed values against `raw_text` and domain rules before applying.
-   - Executes an **atomic conditional update**:
-     ```sql
-     UPDATE public.nav_warnings
-     SET {field} = {proposed_val}
-     WHERE id = {warning_record_id} AND {field} = {original_val};
-     ```
-   - If 0 rows are updated, the engine inspects the current database row: if it already equals `proposed_value`, the proposal transitions to `applied`; if the row diverged, it transitions to `stale`.
+   - Applies **only through the `admin_save_nav_warning` RPC**: atomic row update + `nav_warning_audits` audit row in ONE transaction, with the RPC-side optimistic lock re-check (`p_expected_updated_at`), and appended `edited_by_admin` + `ai_correction_applied` qa_flags so the scraper overwrite guard keeps corrections. Direct `UPDATE` statements on `nav_warnings` are forbidden.
+   - Idempotent: a row already holding the proposed value is skipped without a write; a diverged row marks the proposal `stale`.
 
 #### Safety & Data Protection Invariants
 - **Keyset Pagination**: Eliminates offset drift under concurrent writes. Incomplete or failed page scans mark `scan_complete = false` and cause the audit run to fail safely.
@@ -605,6 +601,7 @@ Contributions are welcome! Please adhere to the following conventions:
 - **Last Inspected & Verified**: October 26, 2026
 - **Verified Working Scrapers**: 7 Regions (Baltic, NAVAREA I, NAVAREA II S-124, NAVAREA IV, NAVAREA VIII, NAVAREA XI, NAVAREA XII)
 - **Active Automation Workflows**: 11 GitHub Actions workflows in `.github/workflows/` (including `supabase-parsing-audit.yml` and `all-sync.yml`)
-- **Database Model**: Master-Child PostGIS with `public.upsert_nav_warning` RPC, `ingestion_generations` run ledger, and plain-reference `audit_runs` & `correction_proposals` audit schema
+- **Database Model**: Master-Child PostGIS with `public.upsert_nav_warning` RPC, `ingestion_generations` run ledger, and plain-reference `parsing_audit_runs` & `parsing_correction_proposals` audit schema
 - **Agent Technical Reference**: Authoritative guidelines maintained in [`agent.md`](agent.md) and [`AGENTS.md`](AGENTS.md)
+
 
