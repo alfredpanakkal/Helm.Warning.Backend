@@ -7,10 +7,12 @@ main(raw_txt, parsed_json) and its sync module sync_to_supabase(parsed_json),
 so run_manual_paste can never silently diverge from the scheduled pipelines.
 """
 import inspect
+import json
 import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -100,6 +102,83 @@ class TestRegionAutoDetect(unittest.TestCase):
         except SystemExit:
             ap_ok = False
         self.assertTrue(ap_ok, "auto must be a valid --navarea choice")
+
+
+class TestNavareaVManualImport(unittest.TestCase):
+    """NAVAREA V manual import: the admin pastes the raw CHM
+    avradio_NN.json snapshot copied from the browser (the Cloudflare wall
+    blocks the scheduled scrape); it must flow through the SAME filter +
+    parser + sync as the scheduled pipeline — with an empty or invalid
+    payload failing closed (never an empty sync)."""
+
+    _CHM_JSON = json.dumps(
+        {"atualizado": "27/10/2026 04:00",
+         "avisos": [
+             {"numero": "0648/26", "costa": "", "tipo": "L",
+              "textoPT": "A LESTE DE SANTA CATARINA ...",
+              "textoEN": ("EAST OF SANTA CATARINA. LAST POSITION IN "
+                          "28-07.87S 026-56.90W AT 151906 UTC OCT 26."),
+              "geometry": ""},
+             {"numero": "SAR 0105/26", "costa": "SAR", "tipo": "Z",
+              "textoPT": "HOMEM AO MAR ...",
+              "textoEN": "MAN OVERBOARD.",
+              "geometry": ""},
+         ]}, ensure_ascii=False)
+
+    def test_detect_navarea_from_chm_json(self):
+        from scripts.run_manual_paste import detect_navarea
+        self.assertEqual(detect_navarea(self._CHM_JSON), "v")
+
+    def test_unrelated_json_stays_undetected(self):
+        from scripts.run_manual_paste import detect_navarea
+        self.assertIsNone(detect_navarea(json.dumps({"unrelated": [1, 2]})))
+
+    def test_chm_json_paste_ingests_through_parser_and_sync(self):
+        old_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as td:
+            os.chdir(td)
+            try:
+                inp = os.path.join(td, "pasted.json")
+                with open(inp, "w", encoding="utf-8") as f:
+                    f.write(self._CHM_JSON)
+                with mock.patch(
+                        "scripts.navarea_generic_sync.sync_to_supabase",
+                        return_value=True) as sync_mock:
+                    self.assertTrue(run_manual_paste(
+                        ["--navarea", "v", "--input", inp]))
+                sync_mock.assert_called_once()
+                # the parser received the SYNTHESIZED bulletin (bare
+                # '0648/26' header), not the raw CHM JSON
+                with open(os.path.join("navareas", "manual", "navarea_v",
+                                      "pasted_raw.txt"),
+                          encoding="utf-8") as f:
+                    first_line = f.read().splitlines()[0]
+                self.assertEqual(first_line, "0648/26")
+            finally:
+                os.chdir(old_cwd)
+
+    def test_all_national_records_paste_fails_closed(self):
+        only_sar = json.dumps(
+            {"atualizado": "27/10/2026 04:00",
+             "avisos": [{"numero": "SAR 0105/26", "costa": "SAR", "tipo": "Z",
+                         "textoPT": "x", "textoEN": "MAN OVERBOARD.",
+                         "geometry": ""}]},
+            ensure_ascii=False)
+        old_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as td:
+            os.chdir(td)
+            try:
+                inp = os.path.join(td, "pasted.json")
+                with open(inp, "w", encoding="utf-8") as f:
+                    f.write(only_sar)
+                with mock.patch(
+                        "scripts.navarea_generic_sync.sync_to_supabase",
+                        return_value=True) as sync_mock:
+                    self.assertFalse(run_manual_paste(
+                        ["--navarea", "v", "--input", inp]))
+                sync_mock.assert_not_called()
+            finally:
+                os.chdir(old_cwd)
 
 
 if __name__ == "__main__":
