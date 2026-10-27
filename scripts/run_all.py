@@ -8,10 +8,10 @@ ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-if hasattr(sys.stdout, 'reconfigure'):
-    sys.stdout.reconfigure(encoding='utf-8')
-if hasattr(sys.stderr, 'reconfigure'):
-    sys.stderr.reconfigure(encoding='utf-8')
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
 
 from shared.config import AppConfig
 from shared.logging import setup_logging, get_logger
@@ -115,6 +115,19 @@ def main() -> int:
         run_navarea_ii_pipeline()
     except Exception as e:
         print(f"[!] NAVAREA II sync failed: {e}")
+        all_success = False
+
+    print("\n" + "=" * 70)
+    print("🚀 NAVAREA III (SPAIN IHM XML)")
+    print("=" * 70)
+    try:
+        from scripts.run_navarea_iii import main as run_iii
+        res = run_iii()
+        if res is False:
+            all_success = False
+    except Exception as e:
+        logger.error(f"NAVAREA III pipeline failed: {e}", exc_info=True)
+        print(f"❌ NAVAREA III failed: {e}")
         all_success = False
 
     print("\n" + "=" * 70)
