@@ -1,0 +1,87 @@
+name: NAVAREA VII Ingestion Pipeline
+
+on:
+  schedule:
+    # SANHO updates the page during working hours 0730-1600 SAST
+    # (0530-1400 UTC), Mon-Fri.
+    - cron: '30 8 * * 1-5'
+  push:
+    branches:
+      - main
+    paths:
+      - 'scripts/navarea_vii_scraper.py'
+      - 'scripts/run_navarea_vii.py'
+      - 'scripts/navarea_universal_parser.py'
+      - 'scripts/navarea_generic_sync.py'
+      - 'shared/navarea_universal_text.py'
+      - 'shared/sync_engine.py'
+      - 'shared/models.py'
+      - 'shared/utils.py'
+      - 'requirements.txt'
+      - '.github/workflows/navarea-vii-sync.yml'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: navarea-vii-sync-engine
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  ingest-navarea-vii-warnings:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: 'requirements.txt'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Unit Tests for NAVAREA VII
+        run: |
+          python -m unittest tests.test_navarea_vii_scraper -v
+
+      - name: Scrape, Parse and Sync NAVAREA VII
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ALLOW_DRY_RUN: ${{ github.event_name == 'pull_request' && '1' || '' }}
+        run: |
+          PYTHONPATH=${{ github.workspace }} python -m scripts.run_navarea_vii
+
+      - name: Verify Output Files
+        run: |
+          if [ ! -f navareas/vii/latest_raw.txt ]; then
+            echo "Scraper error: navareas/vii/latest_raw.txt not generated!"
+            exit 1
+          fi
+          if [ ! -f navareas/vii/parsed.json ]; then
+            echo "Parser error: navareas/vii/parsed.json not generated!"
+            exit 1
+          fi
+          echo "Output files verified successfully."
+
+      - name: Upload Output Artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: navarea-vii-warnings-data
+          path: |
+            navareas/vii/latest_raw.html
+            navareas/vii/latest_raw.txt
+            navareas/vii/parsed.json
+          retention-days: 7
+          if-no-files-found: ignore
