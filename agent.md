@@ -33,6 +33,7 @@ Helm.Warning.Backend/
 ├── .github/workflows/
 │   ├── all-sync.yml               # Master scheduled sync (all 7 regions)
 │   ├── baltic-sync.yml            # Baltic Subarea (SMA Sweden, 15m)
+│   ├── manual-ingest.yml          # Manual Bulk Paste Ingest (drains Supabase admin paste queue, 15m)
 │   ├── navarea-1-sync.yml         # NAVAREA I (UKHO Admiralty, 30m)
 │   ├── navarea_ii.yml             # NAVAREA II (SHOM France S-124 SECOM XML, 30m)
 │   ├── navarea-iv-sync.yml        # NAVAREA IV (NGA US East Coast, 6h)
@@ -71,7 +72,7 @@ Helm.Warning.Backend/
 │   ├── circuit_breaker.py        # Fault-tolerance state machine for upstream authorities
 │   ├── gemini_navarea_parser.py  # Structured Gemini LLM coordinate grounding
 │   └── logging.py                # Machine-readable JSON logger
-└── tests/                        # 360+ automated regression & property-based tests
+└── tests/                        # 456 automated regression & property-based tests
 ```
 
 ---
@@ -223,7 +224,7 @@ GEMINI_MODEL_NAME=gemini-3.8-flash  # Verified fail-closed at runtime; never sil
 
 ### Running the Test Suite
 ```bash
-# Run complete test suite (360+ tests)
+# Run complete test suite (456 tests)
 python3 -m unittest discover tests
 
 # Run specific audit & safety tests
@@ -233,8 +234,8 @@ python3 -m unittest tests.test_repairs_and_triage -v
 python3 -m unittest tests.test_validation -v
 ```
 
-> **Note on Test Suite Baseline**:
-> In `tests/test_gemini_fallback.py`, `test_unknown_region_rule_only` produces a known pre-existing `KeyError: 'parse_provenance'`. All 361 other unit and regression tests pass cleanly. Do not alter core parsers without explicit user instruction.
+> **Note on Test Suite Baseline (updated PRs #36-#37, 2026-10-27)**:
+> The suite is **fully green: 456 tests, 0 errors, 0 failures**. The previously known `KeyError: 'parse_provenance'` in `tests/test_gemini_fallback.py::test_unknown_region_rule_only` was fixed (the unknown-region fallback now stamps `parse_provenance='rule'`), and the 15 universal-parser fixture files under `tests/fixtures/` were restored byte-exact. Treat ANY failure as a regression. Do not alter core parsers or reformat `tests/fixtures/` without explicit user instruction.
 
 ### Running Safe Local Scrapes
 ```bash
@@ -256,7 +257,7 @@ python3 scripts/audit_supabase_parsing.py --mode audit_only --report-dir reports
 # 2. Audit specific NAVAREA
 python3 scripts/audit_supabase_parsing.py --mode audit_only --navarea "NAVAREA IV"
 
-# 3. Proposal mode (generates proposals into public.correction_proposals)
+# 3. Proposal mode (generates proposals into public.parsing_correction_proposals)
 python3 scripts/audit_supabase_parsing.py --mode propose_corrections
 
 # 4. Apply approved proposals (applies only status='approved')

@@ -1,7 +1,7 @@
 # Helm.Warning.Backend — NAVAREA Maritime Safety Information Pipeline
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Tests: 360+ Passed](https://img.shields.io/badge/Tests-360+_Passed-brightgreen.svg)](#-quick-start-guide)
+[![Tests: 456 Passed](https://img.shields.io/badge/Tests-456_Passed-brightgreen.svg)](#-quick-start-guide)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![Database: PostGIS 3.x](https://img.shields.io/badge/Database-PostGIS_3.x-336791.svg?logo=postgresql&logoColor=white)](https://postgis.net/)
 [![Architecture: Master--Child RPC](https://img.shields.io/badge/Architecture-Master--Child_RPC-orange.svg)](#-data-safety-and-synchronization)
@@ -111,9 +111,12 @@ Your maritime app journey began with vessel trackers, culminating in the first N
 ### Phase 5 · Enterprise Parsing Audit & AI Correction Engine (Oct 26)
 **Oct 26** — Enterprise Supabase Parsing Audit & AI Correction Engine launched (`scripts/audit_supabase_parsing.py`, `.github/workflows/supabase-parsing-audit.yml`, `migrations/20261026_parsing_audit.sql`). Full keyset pagination (`id > last_id`), fail-closed structured Gemini proposals, production-gated atomic RPC apply (admin_save_nav_warning + fail-closed model verification), pre-apply domain re-validation, plain `REFERENCES` foreign keys, and zero-secrets logging.
 
+### Phase 6 · Safety Hardening & First Fully Green CI (Oct 27)
+**Oct 27** — Parsing-audit engine safety-hardened (PR #34: RPC-gated atomic apply via `admin_save_nav_warning`, zero-write `audit_only` mode, fail-closed `gemini-3.8-flash` model verification, reduced AI allowlist, `confirm_apply` gate); duplicate audit implementation removed (PR #35); unknown-region `parse_provenance` stamp fixed (PR #36); 15 universal-parser fixture files restored byte-exact from git history (PR #37) — bringing the suite to its **first fully green CI run: 456 tests, 0 errors**.
+
 ---
 
-**In one sentence:** One idea (Jun) → one scraper (Sep 18) → standalone repos (Oct 9) → unified backend (Oct 16) → 7 regions + safety layer (Oct 22) → Enterprise Parsing Audit & AI Correction (Oct 26).
+**In one sentence:** One idea (Jun) → one scraper (Sep 18) → standalone repos (Oct 9) → unified backend (Oct 16) → 7 regions + safety layer (Oct 22) → Enterprise Parsing Audit & AI Correction (Oct 26) → safety-hardened audit engine & first fully green CI (Oct 27).
 
 ---
 
@@ -265,7 +268,7 @@ The following seven international maritime warning feeds are implemented, tested
 ├── src/                     # React 19 / TypeScript Maritime Operations Console & Leaflet Portal
 ├── tests/                   # Python regression, property-based fuzzing, and unit test suites
 │   ├── test_supabase_parsing_audit.py # Comprehensive tests for audit pagination, safety & apply
-│   └── ...                  # 360+ automated unit and regression tests
+│   └── ...                  # 456 automated unit and regression tests
 ├── agent.md                 # System prompt, invariants & technical reference for AI coding agents
 ├── requirements.txt         # Pinned Python backend dependencies
 └── package.json             # Frontend dependencies and scripts
@@ -319,7 +322,7 @@ Follow these steps to set up and run the backend locally in a safe, non-destruct
 ### Running Tests
 Execute the automated test suite to ensure your environment is functioning correctly:
 ```bash
-# Run the complete test suite (220+ tests)
+# Run the complete test suite (456 tests)
 python3 -m unittest discover tests
 
 # Or run specific test modules
@@ -598,7 +601,7 @@ Contributions are welcome! Please adhere to the following conventions:
 
 ## ✅ Documentation Verification
 
-- **Last Inspected & Verified**: October 26, 2026
+- **Last Inspected & Verified**: October 27, 2026
 - **Verified Working Scrapers**: 7 Regions (Baltic, NAVAREA I, NAVAREA II S-124, NAVAREA IV, NAVAREA VIII, NAVAREA XI, NAVAREA XII)
 - **Active Automation Workflows**: 11 GitHub Actions workflows in `.github/workflows/` (including `supabase-parsing-audit.yml` and `all-sync.yml`)
 - **Database Model**: Master-Child PostGIS with `public.upsert_nav_warning` RPC, `ingestion_generations` run ledger, and plain-reference `parsing_audit_runs` & `parsing_correction_proposals` audit schema
