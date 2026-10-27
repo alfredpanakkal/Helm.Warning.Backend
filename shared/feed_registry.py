@@ -51,12 +51,23 @@ FEEDS = {
                 "feeds the universal parser. NOT url_text: the generic "
                 "scraper must not feed raw HTML into the text pipeline.",
     },
-    # Australia — AMSA NAVAREA X warnings are published as web pages.
+    # Australia — AMSA publishes in-force NAVAREA X warnings inside
+    # the RCC Australia MSI publication page (the backend behind the
+    # amsa.gov.au 'Maritime safety information database'); verified
+    # 2026-10-27. A dedicated scraper slices 'Part 2. NAVAREA X
+    # warnings' out of the page and runs the universal parser +
+    # generic sync:
+    #   scripts/navarea_x_scraper.py  (entry: scripts/run_navarea_x.py)
     "x": {
-        "url": "https://www.amsa.gov.au",
+        "url": "https://www.operations.amsa.gov.au/AMSA.Web.MSIPublication/Home",
         "type": "html",
         "status": "reference_only",
-        "note": "NAVAREA X 112/26: complete texts at WWW.AMSA.GOV.AU.",
+        "note": "In-force NAVAREA X warnings (Part 2 of the RCC Australia "
+                "MSI publication) as text inside a static HTML page. "
+                "Scraped by scripts/navarea_x_scraper.py, which slices "
+                "Part 2 between the page's own anchors and feeds the "
+                "universal parser. NOT url_text: the generic scraper must "
+                "not feed raw HTML into the text pipeline.",
     },
     # Norway — Kystverket NAVAREA XIX report page (HTML table view).
     "xix": {

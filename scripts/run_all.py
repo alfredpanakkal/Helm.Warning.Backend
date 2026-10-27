@@ -156,6 +156,19 @@ def main() -> int:
         print(f"❌ NAVAREA VIII failed: {e}")
         all_success = False
 
+    print("\n" + "=" * 70)
+    print("U0001F680 NAVAREA X (AUSTRALIA AMSA RCC MSI)")
+    print("=" * 70)
+    try:
+        from scripts.run_navarea_x import main as run_x
+        res = run_x()
+        if res is False:
+            all_success = False
+    except Exception as e:
+        logger.error(f"NAVAREA X pipeline failed: {e}", exc_info=True)
+        print(f"❌ NAVAREA X failed: {e}")
+        all_success = False
+
     total_duration = time.time() - start_total
     print("\n" + "=" * 70)
     if all_success:
