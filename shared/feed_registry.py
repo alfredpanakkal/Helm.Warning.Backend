@@ -52,6 +52,22 @@ FEEDS = {
                 "universal bulletin text. NOT url_text: the generic "
                 "scraper must not feed raw JSON into the text pipeline.",
     },
+    # South Africa — SANHO 'NAVAREA VII Messages' page. The in-force
+    # messages are plain text inside a static HTML page (verified
+    # 2026-10-27) — already the exact region 'vii' bulletin format; a
+    # dedicated scraper strips and slices the page and runs the
+    # universal parser + generic sync:
+    #   scripts/navarea_vii_scraper.py  (entry: scripts/run_navarea_vii.py)
+    "vii": {
+        "url": "https://www.sanho.co.za/notices_mariners/navarea_v11_messages.htm?b2=NAVAREA+VII",
+        "type": "html",
+        "status": "reference_only",
+        "note": "In-force NAVAREA VII messages as text in a static HTML "
+                "page. Scraped by scripts/navarea_vii_scraper.py, which "
+                "extracts the message region (page-anchor slicing) and "
+                "feeds the universal parser. NOT url_text: the generic "
+                "scraper must not feed raw HTML into the text pipeline.",
+    },
     # Australia — AMSA NAVAREA X warnings are published as web pages.
     "x": {
         "url": "https://www.amsa.gov.au",
