@@ -22,8 +22,8 @@ Strategy (fail-closed, mirrors scripts/navarea_iii_scraper.py):
   1. Fetch the listing page, locate the avradio_NN.json link by name
      (highest NN wins — the publish number increments) and fetch the
      JSON through the anti-bot ladder in _fetch_text: curl_cffi Chrome
-     impersonation -> Scrapling StealthyFetcher (Camoufox, Cloudflare
-     solving) -> Scrapling Fetcher -> requests. The portal sits behind
+     impersonation -> Scrapling StealthyFetcher (Patchright Chromium,
+     Cloudflare solving) -> Scrapling Fetcher -> requests. The portal sits behind
      a Cloudflare 'Just a moment...' wall that 403-blocks plain HTTP
      clients (verified in CI 2026-10-27). Any error -> non-zero exit,
      harvest untouched, parse and sync NEVER run (never sync a partial
@@ -136,9 +136,10 @@ def _fetch_text(url: str, expect: str) -> Optional[str]:
     """Fetches a URL through the anti-bot ladder (fail-closed):
 
       1. curl_cffi impersonating Chrome — browser TLS fingerprint.
-      2. Scrapling's StealthyFetcher (Camoufox) with Cloudflare
-         solving — a real patched browser; needs the camoufox binary
-         (workflow step: python -m camoufox fetch).
+      2. Scrapling's StealthyFetcher (Patchright Chromium) with
+         Cloudflare solving — a real patched browser; needs the
+         browser binary (workflow step: python -m patchright install
+         chromium).
       3. Scrapling's stealthy Fetcher (retries, browser-ish headers).
       4. Plain requests (last resort).
 
@@ -169,7 +170,7 @@ def _fetch_text(url: str, expect: str) -> Optional[str]:
         except Exception as e:
             errors.append(f"curl_cffi failed ({e})")
 
-    # --- 2. Scrapling StealthyFetcher (Camoufox, Cloudflare) ---------
+    # --- 2. Scrapling StealthyFetcher (Patchright, Cloudflare) ------
     if HAS_SCRAPLING and HAS_STEALTHY:
         try:
             try:
@@ -183,7 +184,7 @@ def _fetch_text(url: str, expect: str) -> Optional[str]:
                 body = body.decode("utf-8", errors="replace")
             text = str(body or "")
             if expect in text:
-                print("Fetched via Scrapling StealthyFetcher (Camoufox).")
+                print("Fetched via Scrapling StealthyFetcher (Patchright).")
                 return text
             errors.append(f"StealthyFetcher without {expect!r}")
         except Exception as e:

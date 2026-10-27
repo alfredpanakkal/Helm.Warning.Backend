@@ -51,11 +51,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # StealthyFetcher (Camoufox) needs the browser binary for the
-      # Cloudflare-solving fetch layer in scripts/navarea_v_scraper.py.
-      - name: Fetch Camoufox browser
+      # StealthyFetcher runs on Patchright (patched Chromium) and
+      # needs the browser binary for the Cloudflare-solving fetch
+      # layer in scripts/navarea_v_scraper.py (CI 2026-10-27:
+      # 'Executable doesn't exist ... Please run: patchright install').
+      - name: Install Patchright browser for StealthyFetcher
         run: |
-          python -m camoufox fetch || echo "camoufox fetch failed; StealthyFetcher layer unavailable"
+          python -m patchright install chromium || patchright install chromium || echo "patchright install failed; StealthyFetcher layer unavailable"
       - name: Run Unit Tests for NAVAREA V
         run: |
           set -o pipefail
