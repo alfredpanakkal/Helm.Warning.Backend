@@ -470,6 +470,75 @@ To detect and safely correct parsing anomalies across historical and newly inges
 
 ---
 
+#### Operator Runbook: From Audit to Applied Correction
+
+This is the step-by-step operating procedure for the three modes, including the exact
+SQL used between the propose and apply steps (run all SQL in the Supabase SQL editor,
+which uses the service role — both audit tables are RLS-protected with no anon/authenticated policies).
+
+**Step 1 — Audit (read-only, zero risk).**
+Dispatch the workflow (`Supabase Parsing Audit`) with `mode = audit_only`.
+Read the report artifact (`supabase-parsing-audit-<run_id>`). Nothing is written — no run row, no proposals.
+
+**Step 2 — Generate proposals (read-only for `nav_warnings`).**
+Dispatch with `mode = propose_corrections`. Proposals are stored in
+`public.parsing_correction_proposals` with `status = 'pending'`. No warning row is touched.
+
+**Step 3 — Review pending proposals.**
+```sql
+SELECT id, canonical_id, field_name, original_value, proposed_value,
+       raw_evidence, explanation, confidence, created_at
+FROM public.parsing_correction_proposals
+WHERE status = 'pending'
+ORDER BY created_at DESC;
+```
+Check `raw_evidence` against the warning's actual text. The allowlist guarantees only
+`categories`, `triage_tier`, `data_quality`, and `unplotted_reason` are ever proposed.
+
+**Step 4 — Approve or reject (required: the apply job only processes `status = 'approved'`).**
+```sql
+-- Approve the proposals you reviewed (copy the UUIDs from Step 3):
+UPDATE public.parsing_correction_proposals
+SET status = 'approved', reviewed_by = '<your-name>', reviewed_at = now()
+WHERE id IN ('<uuid-1>', '<uuid-2>');
+
+-- Optionally mark the rest reviewed-and-rejected:
+UPDATE public.parsing_correction_proposals
+SET status = 'rejected', reviewed_by = '<your-name>', reviewed_at = now()
+WHERE id IN ('<uuid-3>');
+```
+
+**Step 5 — Apply.**
+Dispatch with `mode = apply_approved`, `confirm_apply = true`, and the approved UUIDs
+in `proposal_ids` (comma-separated). To copy them in one go:
+```sql
+SELECT string_agg(id::text, ', ' ORDER BY created_at) AS approved_uuids
+FROM public.parsing_correction_proposals
+WHERE status = 'approved';
+```
+The `production-corrections` environment gate asks a required reviewer to approve the run
+before any step executes; the job exits 2 without `confirm_apply`, and exits 1 with no UUIDs.
+
+**Step 6 — Verify the applied corrections.**
+```sql
+SELECT canonical_id, field_name, status, applied_at, error_message
+FROM public.parsing_correction_proposals
+WHERE id IN ('<uuid-1>', '<uuid-2>');
+
+SELECT canonical_id, qa_flags, updated_at
+FROM public.nav_warnings
+WHERE id IN (SELECT warning_record_id
+             FROM public.parsing_correction_proposals
+             WHERE id IN ('<uuid-1>', '<uuid-2>'));
+```
+Every applied proposal must show `status = 'applied'`, and its warning row must carry the
+`ai_correction_applied` qa_flag (which keeps the scraper overwrite guard from reverting the
+correction) and an audit row in `nav_warning_audits` written atomically by `admin_save_nav_warning`.
+Proposals whose row diverged since the audit show `stale` — re-run the audit before re-approving them.
+
+---
+
+
 ## 🤖 Agent Directives & Architecture (agent.md)
 
 This repository includes a dedicated guide for AI coding assistants and automation engineers: [**`agent.md`**](agent.md).
