@@ -14,8 +14,9 @@ One <NAVAREASVIGOR> record per in-force warning, bilingual:
   ntees / ntein  full text (ES/EN)   nasun/nasuni subject (ES/EN)
 
 Strategy (fail-closed, mirrors scripts/navarea_universal_scraper.py):
-  1. Fetch the XML; any network/HTTP error -> non-zero exit, harvest
-     untouched, parse and sync NEVER run (never sync a partial snapshot).
+  1. Fetch the XML (Scrapling Fetcher — stealthy headers, retries;
+     requests fallback); any error -> non-zero exit, harvest untouched,
+     parse and sync NEVER run (never sync a partial snapshot).
   2. Synthesize the plain-text bulletin in the exact 'NAVAREA III -
      nnn/yy' block format the universal parser ingests for region 'iii'
      (see tests/fixtures/navarea_iii_sample.txt): newest first, English
@@ -30,11 +31,23 @@ Run:
 import os
 import re
 import sys
-import urllib.error
-import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import List, Optional
+
+# Scrapling Fetcher: stealthy HTTP client with retries/impersonation
+# (https://github.com/D4Vinci/Scrapling) — same idiom as scrapers/navarea_ii.py.
+try:
+    from scrapling.fetchers import Fetcher
+    HAS_SCRAPLING = True
+except ImportError:
+    HAS_SCRAPLING = False
+
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT_DIR not in sys.path:
@@ -50,16 +63,17 @@ RAW_XML_PATH = os.path.join(HARVEST_DIR, "latest_raw.xml")
 RAW_TXT_PATH = os.path.join(HARVEST_DIR, "latest_raw.txt")
 PARSED_PATH = os.path.join(HARVEST_DIR, "parsed.json")
 
-_TIMEOUT_S = 60
+_TIMEOUT_S = 45
 _MIN_WARNINGS = 1  # a live-but-empty feed fails loudly; never sync 0.
 
-_HEADERS = {
-    "User-Agent": (
+_BROWSER_HEADERS = {
+    "accept": "text/xml,application/xml;q=0.9,*/*;q=0.8",
+    "user-agent": (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
     ),
-    "Accept": "application/xml,text/xml,*/*;q=0.8",
-    "Accept-Language": "en;q=0.9,es;q=0.8",
+    "referer": "https://armada.defensa.gob.es/ihm/Aplicaciones/Navareas/Index_Navareas_xml_en.html",
+    "accept-language": "en,es;q=0.8",
 }
 
 
@@ -83,15 +97,58 @@ def _repair_ihm_tag_names(xml_text: str) -> str:
 
 def fetch_crudo_xml() -> Optional[str]:
     """Fetches the IHM in-force NAVAREA III XML snapshot.
-    Returns the XML text, or None (fail-closed; the error is printed)."""
-    req = urllib.request.Request(NAVAREA_III_XML_URL, headers=_HEADERS)
-    try:
-        with urllib.request.urlopen(req, timeout=_TIMEOUT_S) as resp:
-            return resp.read().decode("utf-8", errors="replace")
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
-        print(f"ERROR: fetch failed for NAVAREA III XML "
-              f"({type(exc).__name__}); harvest untouched.")
+
+    Scrapling's stealthy Fetcher when available, plain requests otherwise.
+    Returns the XML text, or None (fail-closed; the error is printed).
+    """
+    text = ""
+
+    if HAS_SCRAPLING:
+        try:
+            page = Fetcher.get(
+                NAVAREA_III_XML_URL,
+                headers=_BROWSER_HEADERS,
+                timeout=_TIMEOUT_S,
+                retries=3,
+                stealthy_headers=True,
+            )
+            status = getattr(page, "status", None)
+            body = page.body
+            if isinstance(body, bytes):
+                body = body.decode("utf-8", errors="replace")
+            text = str(body or "")
+            if status != 200:
+                snippet = text[:200].replace("\n", " ")
+                print(f"WARNING: crudo XML returned HTTP {status}: {snippet}")
+                return None
+        except Exception as e:
+            print(f"WARNING: Scrapling fetch failed ({e}); falling back to requests...")
+            text = ""
+
+    if not text:
+        if not HAS_REQUESTS:
+            print("ERROR: no HTTP client available "
+                  "(install scrapling or requests).")
+            return None
+        try:
+            resp = requests.get(NAVAREA_III_XML_URL,
+                                headers=_BROWSER_HEADERS, timeout=_TIMEOUT_S)
+        except Exception as e:
+            print(f"ERROR: fetch failed for NAVAREA III XML ({e}); harvest untouched.")
+            return None
+        if resp.status_code != 200:
+            snippet = (resp.text or "")[:200].replace("\n", " ")
+            print(f"ERROR: crudo XML returned HTTP {resp.status_code}: {snippet}")
+            return None
+        text = resp.text or ""
+
+    if "NAVAREASVIGOR" not in text:
+        # An HTML error page / captive portal would otherwise be archived
+        # as the harvest and fail obscurely in the parser.
+        print(f"ERROR: response did not contain NAVAREASVIGOR records: {text[:200]}")
         return None
+
+    return text
 
 
 def parse_xml_records(xml_text: str) -> List[dict]:
@@ -160,6 +217,7 @@ def main() -> bool:
     print("=" * 60)
     print("NAVAREA III (Spain / IHM) XML Scraper")
     print(f"Endpoint: {NAVAREA_III_XML_URL}")
+    print(f"HTTP Fetcher: {'Scrapling' if HAS_SCRAPLING else 'requests' if HAS_REQUESTS else 'none'}")
     print("=" * 60)
 
     xml_text = fetch_crudo_xml()
