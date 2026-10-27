@@ -35,25 +35,6 @@ FEEDS = {
                 "universal bulletin text. NOT url_text: the generic "
                 "scraper must not feed raw XML into the text pipeline.",
     },
-    # Pakistan — NHO 'NAVAREA IX Warnings' page. The page is a metadata
-    # table; each row links a plain-text document that is already the
-    # exact region 'ix' bulletin block format (verified 2026-10-27).
-    # A dedicated scraper follows the row links (or derives them from
-    # the row DTG when the raw HTML ships no href) and runs the
-    # universal parser + generic sync:
-    #   scripts/navarea_ix_scraper.py  (entry: scripts/run_navarea_ix.py)
-    "ix": {
-        "url": "https://hydrography.paknavy.gov.pk/navarea-ix-warnings/",
-        "type": "html_table",
-        "status": "reference_only",
-        "note": "In-force NAVAREA IX metadata table; each 'View "
-                "Document' link points to a plain-text warning file "
-                "under the navarea-warnings plugin. Scraped by "
-                "scripts/navarea_ix_scraper.py, which resolves the row "
-                "documents and concatenates them. NOT url_text: "
-                "the generic scraper must not feed the table HTML into "
-                "the text pipeline.",
-    },
     # Brazil — CHM 'Avisos-Radio Nauticos e SAR' portal. The page is
     # fed by a Drupal JSON attachment ('avradio_NN.json', NN increments
     # per publish); a dedicated scraper discovers the link, keeps the
@@ -113,6 +94,25 @@ FEEDS = {
         "note": "Renders the same 'Number:n/yy' corpus the universal "
                 "parser ingests; needs an HTML-to-text extractor before "
                 "it can be a url_text feed.",
+    },
+    # Pakistan — NHO 'NAVAREA IX Warnings' page. The page is a metadata
+    # table; each row links a plain-text document that is already the
+    # exact region 'ix' bulletin block format (verified 2026-10-27).
+    # A dedicated scraper resolves the row documents (follows the row
+    # links, or derives the URLs from the row DTG when the raw HTML
+    # ships no href) and runs the universal parser + generic sync:
+    #   scripts/navarea_ix_scraper.py  (entry: scripts/run_navarea_ix.py)
+    "ix": {
+        "url": "https://hydrography.paknavy.gov.pk/navarea-ix-warnings/",
+        "type": "html_table",
+        "status": "reference_only",
+        "note": "In-force NAVAREA IX metadata table; each 'View "
+                "Document' link points to a plain-text warning file "
+                "under the navarea-warnings plugin. Scraped by "
+                "scripts/navarea_ix_scraper.py, which resolves the row "
+                "documents and concatenates them. NOT url_text: "
+                "the generic scraper must not feed the table HTML into "
+                "the text pipeline.",
     },
 }
 
