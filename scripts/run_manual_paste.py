@@ -16,9 +16,17 @@ dedicated parser later by swapping its registry entry only.
 Usage:
     python -m scripts.run_manual_paste --navarea 8 --input pasted.txt
     python -m scripts.run_manual_paste --navarea auto --input pasted.txt
+
+NAVAREA V accepts BOTH plain bulletin text and the raw CHM avradio_NN.json
+snapshot (what the admin copies from the browser when the Cloudflare wall
+blocks the scheduled scrape): the JSON is converted with the scraper's OWN
+filter+synthesis (scripts.navarea_v_scraper.to_bulletin_text), so the
+manual and scheduled pipelines can never diverge. Zero usable records or
+a malformed payload fails closed — an empty snapshot is never synced.
 """
 import argparse
 import importlib
+import json
 import os
 import re
 import sys
@@ -98,6 +106,15 @@ def detect_navarea(raw_text) -> str | None:
     """
     if not raw_text:
         return None
+    # CHM avradio JSON snapshot (Brazil): unambiguous shape, no header.
+    stripped = raw_text.strip()
+    if stripped.startswith("{"):
+        try:
+            data = json.loads(stripped)
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and isinstance(data.get("avisos"), list):
+            return "v"
     for pattern, region in _HEADER_PATTERNS:
         if pattern.search(raw_text):
             return region
@@ -145,6 +162,22 @@ def main(argv=None) -> bool:
                   "region explicitly.")
             return False
         print(f"Auto-detected region: {navarea}")
+
+    # NAVAREA V manual import: accept the raw CHM avradio_NN.json snapshot
+    # (copied from the browser — the Cloudflare wall lets humans through).
+    # It is converted with the scraper's OWN filter+synthesis; plain
+    # bulletin text passes through unchanged.
+    if navarea == "v":
+        from scripts.navarea_v_scraper import to_bulletin_text
+        try:
+            converted = to_bulletin_text(raw_text)
+        except ValueError as exc:
+            print(f"ERROR: NAVAREA V paste rejected — {exc}")
+            return False
+        if converted is not None:
+            print("[V ADAPTER] CHM avradio JSON recognized -> synthesized "
+                  "bare-number bulletin via the scraper's own filter.")
+            raw_text = converted
 
     parser_mod_name, sync_mod_name, subdir = _resolve_region_modules(navarea)
     raw_txt = os.path.join("navareas", "manual", subdir, "pasted_raw.txt")

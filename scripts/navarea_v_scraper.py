@@ -46,6 +46,10 @@ NOTE the harvest dir is 'navareas/navarea_v/': region resolution is
 PATH-based for this feed — the bare-number bulletin carries no NAVAREA
 numeral, so resolve_region() must find the region in the dir name.
 
+to_bulletin_text() is the manual-import adapter: scripts/run_manual_paste.py
+feeds a pasted avradio_NN.json snapshot through it, so a manual import uses
+the SAME record filter and bulletin synthesis as the scheduled scrape.
+
 Run:
     python -m scripts.navarea_v_scraper
     python -m scripts.run_navarea_v
@@ -312,6 +316,41 @@ def synthesize_bulletin(records: List[dict]) -> str:
     for r in records:
         blocks.append(f"{r['number']}/{r['year']}\n{r['text']}")
     return "\n\n\n".join(blocks) + "\n"
+
+
+def to_bulletin_text(payload_text: str) -> Optional[str]:
+    """Manual-import adapter: converts a pasted CHM avradio_NN.json
+    snapshot into the region-'v' bare-number bulletin text using the
+    SAME record filter and synthesis as the scrape path (a manual import
+    must never diverge from the scheduled pipeline).
+
+    Returns None when the payload is NOT a CHM JSON snapshot — the
+    caller then treats it as plain bulletin text. Fails closed on a
+    CHM-shaped payload: malformed JSON, a missing 'avisos' array or
+    zero usable bare-number records raise ValueError — an empty or
+    broken manual paste must never reach the parser/sync."""
+    stripped = (payload_text or "").lstrip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        data = json.loads(payload_text)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"CHM JSON did not parse: {exc}")
+    if not isinstance(data, dict) or not isinstance(data.get("avisos"), list):
+        raise ValueError("payload is JSON but carries no 'avisos' array")
+    parsed = parse_aviso_records(payload_text)
+    records = parsed["records"]
+    if len(records) < _MIN_WARNINGS:
+        raise ValueError(
+            f"CHM JSON carried {len(records)} usable NAVAREA V record(s); "
+            f"refusing to ingest an empty snapshot")
+    if parsed["skipped"]:
+        parts = ", ".join(f"{k}={v}"
+                          for k, v in sorted(parsed["skipped"].items()))
+        print(f"Skipped non-NAVAREA / unusable record(s): {parts}")
+    if parsed["atualizado"]:
+        print(f"Source snapshot updated at: {parsed['atualizado']}")
+    return synthesize_bulletin(records)
 
 
 def main() -> bool:

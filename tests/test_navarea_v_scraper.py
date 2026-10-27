@@ -10,7 +10,9 @@ with numero / costa / tipo / textoPT / textoEN / geometry).
 import json
 import os
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT_DIR not in sys.path:
@@ -20,6 +22,7 @@ from scripts.navarea_v_scraper import (
     find_latest_avradio_url,
     parse_aviso_records,
     synthesize_bulletin,
+    to_bulletin_text,
 )
 from scripts.navarea_universal_parser import parse_bulletin_text, resolve_region
 from shared.feed_registry import get_text_feed
@@ -189,6 +192,73 @@ class TestRegionResolution(unittest.TestCase):
         # The CHM JSON feed is reference_only: the generic url_text
         # scraper must keep refusing it.
         self.assertIsNone(get_text_feed("v"))
+
+
+class TestManualImportAdapter(unittest.TestCase):
+    """to_bulletin_text() backs the NAVAREA V manual import: a pasted
+    avradio_NN.json snapshot must go through the SAME record filter and
+    bulletin synthesis as the scrape (run_manual_paste feeds the result
+    to the universal parser — the manual and scheduled paths never
+    diverge)."""
+
+    def test_chm_json_becomes_the_scrapers_bulletin(self):
+        self.assertEqual(
+            to_bulletin_text(_MINI_JSON),
+            synthesize_bulletin(parse_aviso_records(_MINI_JSON)["records"]))
+
+    def test_adapted_bulletin_is_universal_parser_input(self):
+        parsed = parse_bulletin_text(to_bulletin_text(_MINI_JSON), "v")
+        self.assertEqual(len(parsed["nav_warnings"]), 2)
+
+    def test_plain_bulletin_text_passes_through_as_none(self):
+        # Not a CHM JSON payload: the caller keeps treating it as
+        # plain bulletin text.
+        self.assertIsNone(to_bulletin_text("0648/26\nSOME TEXT"))
+        self.assertIsNone(to_bulletin_text(""))
+
+    def test_malformed_json_raises(self):
+        with self.assertRaises(ValueError):
+            to_bulletin_text('{"avisos": [broken')
+
+    def test_json_without_avisos_raises(self):
+        with self.assertRaises(ValueError):
+            to_bulletin_text(json.dumps({"foo": [1, 2]}))
+
+    def test_national_records_only_fail_closed(self):
+        # Zero usable NAVAREA V records must NEVER become an empty
+        # bulletin (empty snapshots are not ingested, ever).
+        only_sar = json.dumps(
+            {"atualizado": "27/10/2026 04:00", "avisos": [_MINI_AVISOS[2]]},
+            ensure_ascii=False)
+        with self.assertRaises(ValueError):
+            to_bulletin_text(only_sar)
+
+
+class TestFailClosedScrape(unittest.TestCase):
+    """The scrape itself must never publish an empty or broken snapshot:
+    zero usable records -> non-zero exit, harvest untouched, no sync."""
+
+    def test_zero_usable_records_refuse_harvest(self):
+        from scripts.navarea_v_scraper import main as scraper_main
+        listing = ('<a href="https://assets.marinha.mil.br/chm/avradio_79.json">'
+                   "avradio_79.json (541.53 KB)</a>")
+        only_sar = json.dumps(
+            {"atualizado": "27/10/2026 04:00", "avisos": [_MINI_AVISOS[2]]},
+            ensure_ascii=False)
+        old_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as td:
+            os.chdir(td)
+            try:
+                with mock.patch("scripts.navarea_v_scraper._fetch_text",
+                                side_effect=[listing, only_sar]):
+                    self.assertFalse(scraper_main())
+                # fail-closed: nothing written, nothing published
+                self.assertFalse(os.path.exists(
+                    os.path.join("navareas", "navarea_v", "latest_raw.txt")))
+                self.assertFalse(os.path.exists(
+                    os.path.join("navareas", "navarea_v", "latest_raw.json")))
+            finally:
+                os.chdir(old_cwd)
 
 
 if __name__ == "__main__":
