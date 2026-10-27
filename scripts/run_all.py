@@ -39,6 +39,10 @@ def main() -> int:
     print("=" * 70)
 
     all_success = True
+    # Per-region outcome for the final REGION STATUS SUMMARY — a
+    # blocked region must be VISIBLE (fail-closed observability),
+    # never a fake 'healthy' state and never a silently stale feed.
+    region_status = {}
     start_total = time.time()
 
     print("\n" + "=" * 70)
@@ -49,8 +53,12 @@ def main() -> int:
         res = run_baltic()
         if res is False:
             all_success = False
+            region_status["Baltic"] = "failed"
+        else:
+            region_status["Baltic"] = "ok"
     except Exception as e:
         logger.error(f"Baltic pipeline failed: {e}", exc_info=True)
+        region_status["Baltic"] = "failed"
         print(f"❌ Baltic failed: {e}")
         all_success = False
 
@@ -62,8 +70,12 @@ def main() -> int:
         res = run_nav1()
         if res is False:
             all_success = False
+            region_status["NAVAREA I"] = "failed"
+        else:
+            region_status["NAVAREA I"] = "ok"
     except Exception as e:
         logger.error(f"NAVAREA I pipeline failed: {e}", exc_info=True)
+        region_status["NAVAREA I"] = "failed"
         print(f"❌ NAVAREA I failed: {e}")
         all_success = False
 
@@ -75,8 +87,12 @@ def main() -> int:
         res = run_xi()
         if res is False:
             all_success = False
+            region_status["NAVAREA XI"] = "failed"
+        else:
+            region_status["NAVAREA XI"] = "ok"
     except Exception as e:
         logger.error(f"NAVAREA XI pipeline failed: {e}", exc_info=True)
+        region_status["NAVAREA XI"] = "failed"
         print(f"❌ NAVAREA XI failed: {e}")
         all_success = False
 
@@ -88,8 +104,12 @@ def main() -> int:
         res = run_xii()
         if res is False:
             all_success = False
+            region_status["NAVAREA XII"] = "failed"
+        else:
+            region_status["NAVAREA XII"] = "ok"
     except Exception as e:
         logger.error(f"NAVAREA XII pipeline failed: {e}", exc_info=True)
+        region_status["NAVAREA XII"] = "failed"
         print(f"❌ NAVAREA XII failed: {e}")
         all_success = False
 
@@ -101,8 +121,12 @@ def main() -> int:
         res = run_iv()
         if res is False:
             all_success = False
+            region_status["NAVAREA IV"] = "failed"
+        else:
+            region_status["NAVAREA IV"] = "ok"
     except Exception as e:
         logger.error(f"NAVAREA IV pipeline failed: {e}", exc_info=True)
+        region_status["NAVAREA IV"] = "failed"
         print(f"❌ NAVAREA IV failed: {e}")
         all_success = False
 
@@ -113,9 +137,11 @@ def main() -> int:
         print("[*] Running NAVAREA II S-124 sync...")
         from scrapers.navarea_ii import run_navarea_ii_pipeline
         run_navarea_ii_pipeline()
+        region_status["NAVAREA II"] = "ok"
     except Exception as e:
         print(f"[!] NAVAREA II sync failed: {e}")
         all_success = False
+        region_status["NAVAREA II"] = "failed"
 
     print("\n" + "=" * 70)
     print("🚀 NAVAREA III (SPAIN IHM XML)")
@@ -125,9 +151,30 @@ def main() -> int:
         res = run_iii()
         if res is False:
             all_success = False
+            region_status["NAVAREA III"] = "failed"
+        else:
+            region_status["NAVAREA III"] = "ok"
     except Exception as e:
         logger.error(f"NAVAREA III pipeline failed: {e}", exc_info=True)
+        region_status["NAVAREA III"] = "failed"
         print(f"❌ NAVAREA III failed: {e}")
+        all_success = False
+
+    print("\n" + "=" * 70)
+    print("🚀 NAVAREA V (BRAZIL CHM JSON)")
+    print("=" * 70)
+    try:
+        from scripts.run_navarea_v import main as run_v
+        res = run_v()
+        if res is False:
+            all_success = False
+            region_status["NAVAREA V"] = "failed"
+        else:
+            region_status["NAVAREA V"] = "ok"
+    except Exception as e:
+        logger.error(f"NAVAREA V pipeline failed: {e}", exc_info=True)
+        region_status["NAVAREA V"] = "failed"
+        print(f"❌ NAVAREA V failed: {e}")
         all_success = False
 
     print("\n" + "=" * 70)
@@ -151,12 +198,35 @@ def main() -> int:
         res = run_viii()
         if res is False:
             all_success = False
+            region_status["NAVAREA VIII"] = "failed"
+        else:
+            region_status["NAVAREA VIII"] = "ok"
     except Exception as e:
         logger.error(f"NAVAREA VIII pipeline failed: {e}", exc_info=True)
+        region_status["NAVAREA VIII"] = "failed"
         print(f"❌ NAVAREA VIII failed: {e}")
         all_success = False
 
     total_duration = time.time() - start_total
+
+    # Fail-closed observability: a blocked region must be VISIBLE in the
+    # orchestrator output — never a fake 'healthy' state, never a
+    # silently stale feed. Blocked regions need a manual import.
+    print("\n" + "=" * 70)
+    print("📋 REGION STATUS SUMMARY")
+    print("=" * 70)
+    for region, status in region_status.items():
+        if status == "ok":
+            print(f"✅ {region} OK")
+        elif region == "NAVAREA V":
+            print(f"🚫 {region} BLOCKED — manual import needed: open the "
+                  f"CHM page in a browser, copy the avradio_NN.json "
+                  f"contents and paste via the manual ingest queue "
+                  f"(same filter/parser/validation as the scrape)")
+        else:
+            print(f"🚫 {region} BLOCKED — manual import needed")
+    print("=" * 70)
+
     print("\n" + "=" * 70)
     if all_success:
         print(f"🎉 ALL PIPELINES COMPLETED SUCCESSFULLY in {total_duration:.2f}s")
