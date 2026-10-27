@@ -51,6 +51,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # StealthyFetcher (Camoufox) needs the browser binary for the
+      # Cloudflare-solving fetch layer in scripts/navarea_v_scraper.py.
+      - name: Fetch Camoufox browser
+        run: |
+          python -m camoufox fetch || echo "camoufox fetch failed; StealthyFetcher layer unavailable"
       - name: Run Unit Tests for NAVAREA V
         run: |
           set -o pipefail

@@ -21,9 +21,13 @@ carries one 'atualizado' timestamp plus an 'avisos' array; each record:
 Strategy (fail-closed, mirrors scripts/navarea_iii_scraper.py):
   1. Fetch the listing page, locate the avradio_NN.json link by name
      (highest NN wins — the publish number increments) and fetch the
-     JSON (Scrapling Fetcher — stealthy headers, retries; requests
-     fallback). Any error -> non-zero exit, harvest untouched, parse
-     and sync NEVER run (never sync a partial snapshot).
+     JSON through the anti-bot ladder in _fetch_text: curl_cffi Chrome
+     impersonation -> Scrapling StealthyFetcher (Camoufox, Cloudflare
+     solving) -> Scrapling Fetcher -> requests. The portal sits behind
+     a Cloudflare 'Just a moment...' wall that 403-blocks plain HTTP
+     clients (verified in CI 2026-10-27). Any error -> non-zero exit,
+     harvest untouched, parse and sync NEVER run (never sync a partial
+     snapshot).
   2. Keep ONLY the bare-numbered records ('0648/26') — the NAVAREA V
      series. SAR ('SAR 0169/26') and costeiro ('I 9179/26', 'N', 'E',
      'S', ...) records are Brazilian national warnings outside the
@@ -62,6 +66,22 @@ try:
     HAS_SCRAPLING = True
 except ImportError:
     HAS_SCRAPLING = False
+
+try:
+    from scrapling.fetchers import StealthyFetcher
+    HAS_STEALTHY = True
+except ImportError:
+    HAS_STEALTHY = False
+
+# curl_cffi impersonates Chrome's TLS fingerprint — same idiom as
+# scripts/navarea_xi_scraper.py. The marinha portal is behind a
+# Cloudflare 'Just a moment...' wall that 403-blocks plain HTTP
+# clients (verified in CI 2026-10-27).
+try:
+    from curl_cffi import requests as cffi_requests
+    HAS_CURL_CFFI = True
+except ImportError:
+    HAS_CURL_CFFI = False
 
 try:
     import requests
@@ -113,12 +133,63 @@ RE_BARE_NAVAREA_NUMBER = re.compile(r"^\d{1,4}/\d{2}$")
 
 
 def _fetch_text(url: str, expect: str) -> Optional[str]:
-    """Fetches a URL. Scrapling's stealthy Fetcher when available, plain
-    requests otherwise. Returns the body text, or None (fail-closed;
-    the error is printed). 'expect' is a marker the body must contain
-    (guards against bot-check / captive-portal HTML pages)."""
-    text = ""
+    """Fetches a URL through the anti-bot ladder (fail-closed):
 
+      1. curl_cffi impersonating Chrome — browser TLS fingerprint.
+      2. Scrapling's StealthyFetcher (Camoufox) with Cloudflare
+         solving — a real patched browser; needs the camoufox binary
+         (workflow step: python -m camoufox fetch).
+      3. Scrapling's stealthy Fetcher (retries, browser-ish headers).
+      4. Plain requests (last resort).
+
+    Returns the body text, or None (the errors are printed).
+    'expect' is a marker the body must contain (guards against
+    bot-check / captive-portal HTML pages)."""
+    errors = []
+
+    # --- 1. curl_cffi Chrome impersonation ----------------------------
+    if HAS_CURL_CFFI:
+        try:
+            # impersonation sets a matching User-Agent itself; a stale
+            # custom UA would break the fingerprint/header coherence.
+            cffi_headers = {k: v for k, v in _BROWSER_HEADERS.items()
+                            if k != "user-agent"}
+            resp = cffi_requests.get(url, headers=cffi_headers,
+                                     impersonate="chrome",
+                                     timeout=_TIMEOUT_S)
+            if resp.status_code == 200:
+                if expect in (resp.text or ""):
+                    print("Fetched via curl_cffi (chrome impersonation).")
+                    return resp.text
+                errors.append(f"curl_cffi 200 without {expect!r}")
+            else:
+                snippet = (resp.text or "")[:120].replace("\n", " ")
+                errors.append(f"curl_cffi HTTP {resp.status_code}: "
+                              f"{snippet}")
+        except Exception as e:
+            errors.append(f"curl_cffi failed ({e})")
+
+    # --- 2. Scrapling StealthyFetcher (Camoufox, Cloudflare) ---------
+    if HAS_SCRAPLING and HAS_STEALTHY:
+        try:
+            try:
+                page = StealthyFetcher.fetch(url, headless=True,
+                                             solve_cloudflare=True)
+            except TypeError:
+                # older Scrapling without the solve_cloudflare kwarg
+                page = StealthyFetcher.fetch(url, headless=True)
+            body = page.body
+            if isinstance(body, bytes):
+                body = body.decode("utf-8", errors="replace")
+            text = str(body or "")
+            if expect in text:
+                print("Fetched via Scrapling StealthyFetcher (Camoufox).")
+                return text
+            errors.append(f"StealthyFetcher without {expect!r}")
+        except Exception as e:
+            errors.append(f"StealthyFetcher failed ({e})")
+
+    # --- 3. Scrapling plain Fetcher ------------------------------------
     if HAS_SCRAPLING:
         try:
             page = Fetcher.get(
@@ -133,41 +204,33 @@ def _fetch_text(url: str, expect: str) -> Optional[str]:
             if isinstance(body, bytes):
                 body = body.decode("utf-8", errors="replace")
             text = str(body or "")
-            if status != 200:
-                snippet = text[:200].replace("\n", " ")
-                print(f"WARNING: {url} returned HTTP {status}: {snippet}")
-                return None
+            if status == 200 and expect in text:
+                print("Fetched via Scrapling Fetcher.")
+                return text
+            errors.append(f"Fetcher HTTP {status} without {expect!r}")
         except Exception as e:
-            print(f"WARNING: Scrapling fetch failed ({e}); "
-                  f"falling back to requests...")
-            text = ""
+            errors.append(f"Scrapling Fetcher failed ({e})")
 
-    if not text:
-        if not HAS_REQUESTS:
-            print("ERROR: no HTTP client available "
-                  "(install scrapling or requests).")
-            return None
+    # --- 4. plain requests ----------------------------------------------
+    if HAS_REQUESTS:
         try:
             resp = requests.get(url, headers=_BROWSER_HEADERS,
                                 timeout=_TIMEOUT_S)
+            if resp.status_code == 200 and expect in (resp.text or ""):
+                print("Fetched via plain requests.")
+                return resp.text
+            errors.append(f"requests HTTP {resp.status_code} without "
+                          f"{expect!r}")
         except Exception as e:
-            print(f"ERROR: fetch failed for {url} ({e}); harvest untouched.")
-            return None
-        if resp.status_code != 200:
-            snippet = (resp.text or "")[:200].replace("\n", " ")
-            print(f"ERROR: {url} returned HTTP {resp.status_code}: "
-                  f"{snippet}")
-            return None
-        text = resp.text or ""
+            errors.append(f"requests failed ({e})")
 
-    if expect not in text:
-        # A bot-check / error page would otherwise be archived as the
-        # harvest and fail obscurely in the parser.
-        print(f"ERROR: response from {url} did not contain {expect!r}: "
-              f"{text[:200]}")
-        return None
-
-    return text
+    for e in errors:
+        print(f"ERROR: {e}")
+    if not errors:
+        print("ERROR: no HTTP client available "
+              "(install scrapling or requests).")
+    print(f"ERROR: all fetch layers failed for {url}; harvest untouched.")
+    return None
 
 
 def find_latest_avradio_url(listing_html: str) -> Optional[str]:
