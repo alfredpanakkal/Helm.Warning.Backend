@@ -70,5 +70,8 @@ jobs:
             navareas/navarea_8/navarea_8_warnings.txt
             navareas/navarea_8/parsed_navarea_8_warnings.json
             navareas/navarea_8/latest_warnings.pdf
+            navareas/ix/latest_raw.html
+            navareas/ix/latest_raw.txt
+            navareas/ix/parsed.json
           retention-days: 7
           if-no-files-found: ignore
