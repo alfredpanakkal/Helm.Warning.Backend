@@ -256,7 +256,8 @@ class TestGeometryClauses(unittest.TestCase):
     def test_markerless_itemless_warning_single_clause(self):
         raw = self.by_id["NAVAREA IV 53/26"]["raw_text"]
         clauses = extract_geometry_clauses(raw)
-        self.assertEqual(clauses, [{"label": None, "text": raw, "is_trackline": False}])
+        self.assertEqual(clauses, [{"label": None, "text": raw, "context": raw,
+                                    "is_trackline": False}])
 
     def test_empty_text_returns_no_clauses(self):
         self.assertEqual(extract_geometry_clauses(""), [])
