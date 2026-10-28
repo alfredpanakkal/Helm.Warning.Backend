@@ -55,6 +55,7 @@ from shared.navarea_universal_text import (
     UNIVERSAL_REGIONS, NAVAREA_NAMES, regions_in_text,
     region_header_patterns, region_cancel_patterns, normalize_year, warning_header_re,
     RE_YEAR_HINT, TITLE_TRANSLATION_REGIONS,
+    AUSCOAST_AREAS, RE_AUSCOAST_HEADER, RE_AUSCOAST_CANCEL, RE_NEVER_MATCHES,
 )
 from shared import translation
 
@@ -86,11 +87,33 @@ COMPANION_ROMANS = {"I"}
 
 
 def _region_config(region_key):
-    """Resolves region-dependent constants (regexes, source_id, numeral)."""
+    """Resolves region-dependent constants (regexes, source_id, numeral).
+
+    AUSCOAST pseudo-regions ('auscoast-a' ... 'auscoast-h') are
+    Australian national coastal warnings outside NAVAREA numbering:
+    area-scoped warning ids ('AUSCOAST B 327/26'), their own source ids
+    ('manual-auscoast-b'), and no companion region. They parse rule-only
+    by construction (the Gemini layer refuses keys outside
+    UNIVERSAL_REGIONS).
+    """
+    if region_key in AUSCOAST_AREAS:
+        area = AUSCOAST_AREAS[region_key]
+        return {
+            "key": region_key,
+            "roman": area,
+            "id_prefix": "AUSCOAST " + area,
+            "source_id": "manual-" + region_key,
+            "navarea_id": "AUSCOAST " + area,
+            "header_res": [RE_AUSCOAST_HEADER],
+            "cancel_res": [RE_AUSCOAST_CANCEL],
+            "companion_re": RE_NEVER_MATCHES,
+            "translate_titles": False,
+        }
     roman = UNIVERSAL_REGIONS[region_key]
     return {
         "key": region_key,
         "roman": roman,
+        "id_prefix": "NAVAREA " + roman,
         "source_id": "manual-navarea-" + region_key,
         "navarea_id": roman,
         "header_res": region_header_patterns(region_key, roman),
@@ -160,7 +183,8 @@ def _extract_title(body: str, cfg) -> str:
     lines = [_clean_line(l) for l in head.split("\n") if l.strip()]
     title = " ".join(lines).strip()
     title = re.sub(r"\b\d{6}Z?\s*/?\s*[A-Z]{3}\s+\d{2}\s*$", "", title).strip()
-    return title[:255] or "NAVAREA " + cfg["roman"] + " Warning"
+    return title[:255] or ((cfg.get("id_prefix") or ("NAVAREA " + cfg["roman"]))
+                              + " Warning")
 
 
 def _extract_cross_refs(raw_text: str, cfg):
@@ -272,7 +296,8 @@ def parse_warning(block, cfg):
     number = block["number"]
     year = normalize_year(block["year"]) or block.get("year_hint")
     roman = cfg["roman"]
-    warning_id = ("NAVAREA " + roman + " " + str(number)
+    id_prefix = cfg.get("id_prefix") or ("NAVAREA " + roman)
+    warning_id = (id_prefix + " " + str(number)
                  + (("/" + str(year)) if year else ""))
     canonical_id = warning_id
     raw_text = block["raw_text"]
@@ -398,9 +423,14 @@ def resolve_region(input_filename, text):
         m = RE_PATH_REGION.search(parent)
         if m:
             key = m.group(1).lower()
-            if key in UNIVERSAL_REGIONS:
+            if key in UNIVERSAL_REGIONS or key in AUSCOAST_AREAS:
                 path_key = key
 
+    if path_key in AUSCOAST_AREAS:
+        # AUSCOAST pseudo-regions: NAVAREA X cross-references inside an
+        # Australian coastal-warning paste are normal (same publisher),
+        # so the roman-numeral checks below must not apply.
+        return path_key, None
     if path_key:
         target_roman = UNIVERSAL_REGIONS[path_key]
         foreign = {r for r in romans if r != target_roman} - COMPANION_ROMANS

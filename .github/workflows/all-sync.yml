@@ -61,6 +61,8 @@ jobs:
             navareas/x/latest_raw.html
             navareas/x/latest_raw.txt
             navareas/x/parsed.json
+            navareas/auscoast-*/latest_raw.txt
+            navareas/auscoast-*/parsed.json
             navareas/navarea_xi/navarea_xi_warnings.txt
             navareas/navarea_xi/parsed_navarea_xi_warnings.json
             navareas/navarea_xii/navarea_xii_warnings.txt

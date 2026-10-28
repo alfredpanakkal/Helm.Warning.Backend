@@ -84,5 +84,7 @@ jobs:
             navareas/x/latest_raw.html
             navareas/x/latest_raw.txt
             navareas/x/parsed.json
+            navareas/auscoast-*/latest_raw.txt
+            navareas/auscoast-*/parsed.json
           retention-days: 7
           if-no-files-found: ignore

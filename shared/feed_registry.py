@@ -83,7 +83,10 @@ FEEDS = {
                 "MSI publication) as text inside a static HTML page. "
                 "Scraped by scripts/navarea_x_scraper.py, which slices "
                 "Part 2 between the page's own anchors and feeds the "
-                "universal parser. NOT url_text: the generic scraper must "
+                "universal parser. The same scraper also harvests Part 3 "
+                "(AUSCOAST coastal warnings, areas A-H) as area-scoped "
+                "pseudo-regions with their own sources (manual-auscoast-a "
+                "... -h). NOT url_text: the generic scraper must "
                 "not feed raw HTML into the text pipeline.",
     },
     # Norway — Kystverket NAVAREA XIX report page (HTML table view).
