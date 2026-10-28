@@ -608,11 +608,14 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
                 spatial = {"type": "LineString", "coordinates": points}
                 if basis is None:
                     basis = "fallback:two_point_line"
-            elif len(points) in (3, 5) and basis is None:
-                # Unlabelled scattered list with no keyword evidence: a
-                # LineString (or an auto-closed ring) would invent a
-                # shape the source never states. Discrete markers +
-                # review flag.
+            elif len(points) == 3 and basis is None:
+                # THREE unlabelled open positions can never close into
+                # a declared ring: a LineString would invent a path
+                # (A5). Discrete markers + review flag. Larger
+                # unlabelled lists fall through to the ring guard: a
+                # 5-position list is geometrically indistinguishable
+                # from a genuine 5-corner area (XII 151/26 sub-area B),
+                # so only the ring topology can decide.
                 if "AMBIGUOUS_FALLBACK" not in flags:
                     flags.append("AMBIGUOUS_FALLBACK")
                 spatial = {"type": "MultiPoint", "coordinates": points}
@@ -629,15 +632,29 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
                     spatial = {"type": "Polygon", "coordinates": [ring]}
                     if basis is None:
                         basis = "fallback:legacy_polygon"
-                else:
-                    # Bowtie/crooked order or refused positions: discrete
-                    # markers + review flag, never a fabricated shape.
+                elif count_mismatch:
+                    # Refused positions present: never close the
+                    # remainder into a ring (A1 completeness check).
                     if "AMBIGUOUS_FALLBACK" not in flags:
                         flags.append("AMBIGUOUS_FALLBACK")
                     spatial = {"type": "MultiPoint", "coordinates": points}
-                    if basis is None:
-                        basis = ("fallback:bowtie" if ring_ok and not count_mismatch
-                                 else "fallback:count_mismatch")
+                    basis = "fallback:count_mismatch"
+                elif basis is None:
+                    # Bowtie/crooked order with NO keyword evidence:
+                    # discrete markers + review flag, never a
+                    # fabricated shape or path (A5).
+                    if "AMBIGUOUS_FALLBACK" not in flags:
+                        flags.append("AMBIGUOUS_FALLBACK")
+                    spatial = {"type": "MultiPoint", "coordinates": points}
+                    basis = "fallback:bowtie"
+                else:
+                    # Keyword-declared boundary enumeration ('LINES
+                    # JOINING' / bounded-area wording) in crooked list
+                    # order: keep the legacy OPEN PATH. The memo
+                    # pipelines (IV/XII ring-to-trackline contract:
+                    # 206/26 iceberg limits, 862/24) rely on never
+                    # receiving marker clouds for declared tracks.
+                    spatial = {"type": "LineString", "coordinates": points}
 
             if basis:
                 if basis.startswith("keyword:") or basis.startswith("explicit:"):

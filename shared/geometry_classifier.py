@@ -44,9 +44,10 @@ keyword rules (typically a polygon) for human review — never silently
 forced to either shape. A single rig position is unaffected (a 1-point
 array stays a plain Point).
 
-'ALONG LINE JOINING' is an explicit linear rule checked BEFORE the Area
-rule: RE_BOUNDED's generic 'LINES? JOINING' previously shadowed it and
-turned a 4-waypoint route into a Polygon.
+'ALONG (TRACK)LINE JOINING' is an explicit linear rule checked BEFORE the
+Area rule: RE_BOUNDED's generic 'LINES? JOINING' previously shadowed it
+and turned a 4-waypoint route into a Polygon (incl. the TRACKLINE
+variant, IV 206/26 'LIMIT ALONG TRACKLINE JOINING').
 
 classify_geometry_archetype_detailed() additionally returns the basis
 ('keyword:...' / 'heuristic:...' / None) and rule flags so the CALLER can

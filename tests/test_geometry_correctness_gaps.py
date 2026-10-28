@@ -169,12 +169,20 @@ class TestAmbiguousFallbacks(unittest.TestCase):
         self.assertIn("AMBIGUOUS_FALLBACK", report["flags"])
         self.assertEqual(report["data_quality"], "AMBIGUOUS")
 
-    def test_five_scattered_points_are_multipoint(self):
+    def test_five_unlabelled_points_keep_ring_guard(self):
+        # A 5-position unlabelled list with a simple ring is
+        # geometrically indistinguishable from a genuine 5-corner area
+        # (XII 151/26 sub-area B): the ring guard keeps the legacy
+        # polygon, and the fallback basis marks the record AMBIGUOUS
+        # for review — never silently EXPLICIT. Genuinely scattered
+        # 5-point sets produce crooked rings and land in the bowtie
+        # branch (MultiPoint + AMBIGUOUS_FALLBACK).
         raw = ("OBSTRUCTION REPORTED AT 18-00N 071-00E, 19-10N 072-20E, "
                "20-40N 073-40E, 21-50N 074-50E, 22-20N 075-10E")
         _, _, _, spatial, report = parse_coordinates_detailed(raw)
-        self.assertEqual(spatial["type"], "MultiPoint")
-        self.assertIn("AMBIGUOUS_FALLBACK", report["flags"])
+        self.assertEqual(spatial["type"], "Polygon")
+        self.assertEqual(report["basis"], "fallback:legacy_polygon")
+        self.assertEqual(report["data_quality"], "AMBIGUOUS")
 
 
 class TestGeometryQualityBasis(unittest.TestCase):
