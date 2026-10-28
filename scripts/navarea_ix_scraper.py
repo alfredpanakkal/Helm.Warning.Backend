@@ -34,44 +34,65 @@ Document-link resolution (re-verified live 2026-10-27):
      Every candidate is validated against the advertised warning's
      own 'NAVAREA IX nnn/yy' header — the site's 404 page comes back
      with an HTTP-200 body, so status alone proves nothing.
-
-     Header note (live CI failure 2026-10-28): SOME 2023-era files use
-     the legacy WWNWS prosign form 'NAVAREA IX (.) nnn/yy (.)' (e.g.
-     20231009SEC 376.txt; 447/23 and 435/23 do not) — the optional
-     '(.)' separator before the number is accepted, in the scraper
-     validation AND the universal parser (see
+     Header note (live CI failure 2026-10-28): SOME 2023-era files
+     use the legacy WWNWS prosign form 'NAVAREA IX (.) nnn/yy (.)'
+     (e.g. 20231009SEC 376.txt; 447/23 and 435/23 do not) — the
+     optional '(.)' separator before the number is accepted, in the
+     scraper validation AND the universal parser (see
      shared/navarea_universal_text.py).
 
 Strategy (fail-closed, mirrors scripts/navarea_vii_scraper.py):
+  0. Skip already-stored rows FIRST (fixes the WAF 429s at the root):
+     on runs with DB access (no ALLOW_DRY_RUN, credentials present)
+     the warnings already stored for source 'manual-navarea-ix' are
+     queried and their documents NOT re-fetched — only new rows,
+     rows inside the recheck window (recent DTGs — coordinators amend
+     recent warnings in place) and rows with unparseable DTGs are
+     fetched. Unknown state (dry run / no credentials / query error)
+     fails OPEN: fetch everything. A partial harvest is NEVER treated
+     as a complete snapshot — the sync's evidence-based cancel pass
+     stays disabled (full_snapshot=False), so warnings skipped because
+     they are stored can never be auto-cancelled. IX_FULL_SNAPSHOT=1
+     forces a full fetch (backfill / lifecycle sweep).
   1. Fetch the page (Scrapling Fetcher — stealthy headers, retries;
      requests fallback); any error -> non-zero exit, harvest untouched,
      parse and sync NEVER run (never sync a partial snapshot).
-     Transient HTTP 429 / 503 answers (the site rate-limits request
-     bursts) are retried with backoff before any fail-closed refusal.
+     Transient HTTP 503 answers are retried with backoff before any
+     fail-closed refusal; the FIRST HTTP 429 stops the run cleanly
+     (see point 2).
   2. Resolve one document per table row. A row whose document
      cannot be fetched — unreachable even after transient retries; the
      site advertises links its own WAF refuses (persistent HTTP 429 on
      20250903SEC 405.txt for the CI runner, live 2026-10-28) — or whose
-     DTG-derived candidates all miss is skipped loudly (never silently);
-     three unreachable rows IN A ROW trips a circuit breaker and aborts
-     the harvest loudly (a wholesale client block otherwise grinds ~2
-     minutes of retry sleeps per remaining document and wedges CI —
-     seen live 2026-10-28). A row whose ADVERTISED document carries the
-     WRONG warning header still fails the whole harvest (systematic
-     link corruption). Zero resolved rows -> refuse (empty snapshot).
-     The verbatim page HTML is archived alongside for provenance.
+     DTG-derived candidates all miss is skipped loudly (never silently).
+     A row whose ADVERTISED document carries the WRONG warning header
+     still fails the whole harvest (systematic link corruption). Zero
+     resolved rows -> refuse (empty snapshot). The verbatim page HTML
+     is archived alongside for provenance. The run STOPS CLEANLY
+     (exit 0, stored rows kept) at MAX_REQUESTS_PER_RUN requests or
+     on the FIRST HTTP 429 — no 20/40/60s retry ladder for 429 (the
+     WAF block lasts 10-15 minutes live); a 429 before anything is
+     stored is still a loud wholesale-block refusal. An end-of-run
+     summary prints requests made, rows stored, rows remaining and
+     the 429 count.
   3. Hand the harvest to the SAME universal parser + generic sync the
      manual paste pipeline uses — one contract, scrape or paste.
+  4. Pre-2025 warnings (2023/2024) are ARCHIVED, not published:
+     stamped status 'expired' after parsing — the active-only public
+     portal never shows them.
 
 Run:
     python -m scripts.navarea_ix_scraper
     python -m scripts.run_navarea_ix
 """
 import html as _html
+import json
 import os
+import random
 import re
 import sys
 import time
+from datetime import date, datetime
 from typing import Callable, List, Optional, Tuple
 from urllib.parse import quote as _urlquote, urljoin as _urljoin
 
@@ -106,22 +127,41 @@ PARSED_PATH = os.path.join(HARVEST_DIR, "parsed.json")
 _TIMEOUT_S = 45
 _MIN_WARNINGS = 1  # a live-but-empty feed fails loudly; never sync 0.
 # Politeness pause before EVERY document fetch (resolved hits and
-# candidate misses alike). The site rate-limited a ~1.8 req/s harvest
-# burst with HTTP 429 (Cloudflare) after ~110 files in ~60s — seen
-# live 2026-10-28, when one 429 on a single advertised document
-# aborted the whole harvest.
-_DOC_PAUSE_S = 0.6
+# candidate misses alike). FIXED RANDOM 3-5 s (uniform): the site's
+# WAF (Cloudflare) rate-limited the flat 0.6 s harvest burst with
+# HTTP 429 after ~110 files in ~60s (live 2026-10-28), and persistent
+# 429s on later full harvests burned minutes of retry backoff. Bounds
+# are env-overridable (IX_DOC_PAUSE_MIN_S / IX_DOC_PAUSE_MAX_S) so a
+# backfill or a CI dry run can pace itself inside the time budget.
+_DOC_PAUSE_MIN_S = float(os.environ.get("IX_DOC_PAUSE_MIN_S", "3"))
+_DOC_PAUSE_MAX_S = float(os.environ.get("IX_DOC_PAUSE_MAX_S", "5"))
 # Transient HTTP answers retried with backoff before a fetch fails
-# closed: rate limiting (429) / temporary unavailability (503).
-_TRANSIENT_STATUSES = frozenset({429, 503})
+# closed. HTTP 429 is NOT transient anymore: the FIRST 429 stops the
+# whole run cleanly (see _HttpRateLimited) — the WAF block lasts
+# 10-15 minutes live, so a 20/40/60s retry ladder only burns the
+# time budget.
+_TRANSIENT_STATUSES = frozenset({503})
 _TRANSIENT_RETRIES = 3
 _RETRY_AFTER_DEFAULT_S = 20.0
 # Circuit breaker: N unreachable rows IN A ROW = the site is blocking
 # this client wholesale (rate limit / WAF), not one dead document —
-# abort the harvest loudly instead of grinding ~2 minutes of retry
-# sleeps per remaining document (which wedged CI for 20 minutes,
-# live 2026-10-28).
+# abort the harvest loudly instead of grinding retry sleeps per
+# remaining document (which wedged CI for 20 minutes, live
+# 2026-10-28). A clean stop (request cap / first 429) does NOT
+# count as an unreachable row.
 _MAX_CONSECUTIVE_UNREACHABLE = 3
+# Run request cap: the index request, every document fetch AND every
+# retry counts toward it. At the cap the run stops CLEANLY (exit 0,
+# stored rows kept) with a 'cap reached, N rows remaining' log —
+# stopping at the cap is not an error. Rows are fetched newest-first
+# (table order), as now. Env-overridable (IX_MAX_REQUESTS_PER_RUN)
+# for the planned raise to 80 after clean backfill runs.
+MAX_REQUESTS_PER_RUN = int(os.environ.get("IX_MAX_REQUESTS_PER_RUN", "60"))
+# Pre-2025 warnings (2023/2024 backfill) are ARCHIVED, not published
+# (Alfred's decision 2026-10-28: almost all are cancelled/expired):
+# stored with status 'expired' after parsing — the active-only public
+# portal never shows them.
+IX_ARCHIVE_MAX_YY = 24
 
 _BROWSER_HEADERS = {
     "accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
@@ -167,11 +207,34 @@ _DOC_URL_BASE = ("https://hydrography.paknavy.gov.pk/wp-content/plugins/"
                  "navarea-warnings/custom_uploaded_warnings_for_navarea/")
 _DOC_PREFIXES = ("SEC", "EC")  # both live on the site (see docstring)
 
+# --- Stored-state row skipping -------------------------------------------
+# The universal parser stamps source_id 'manual-navarea-ix' and
+# canonical_id 'NAVAREA IX nnn/yy' for every warning it ingests, so a
+# table row whose warning is already in the DB is identifiable from
+# the row alone.
+IX_SOURCE_ID = "manual-navarea-ix"
+# Rows whose DTG falls inside this window are re-fetched even when
+# already stored (catches amendments to recent warnings).
+RECHECK_WINDOW_DAYS = 14
+_STORED_KEY_RE = re.compile(r"^NAVAREA\s+IX\s+(\d{1,4})/(\d{2})$",
+                            re.IGNORECASE)
+
 # Every harvested document must open with its own 'NAVAREA IX nnn/yy'
 # header (verified in every live file sampled: 412/26, 410/26, 409/26,
 # 394/26, 378/26, 347/26, 463/25) — this is what the universal parser
 # anchors on, and what validates DTG-derived candidate URLs.
 _HEADER_FOR_RE = re.compile(r"NAV\s*AREA\s+IX\b", re.IGNORECASE)
+
+
+def _doc_pause_seconds() -> float:
+    """Randomized politeness pause for the next document fetch."""
+    lo, hi = sorted((_DOC_PAUSE_MIN_S, _DOC_PAUSE_MAX_S))
+    return random.uniform(lo, hi)
+
+
+def _pause_before_doc_fetch() -> None:
+    """Sleeps one randomized pause between document fetches."""
+    time.sleep(_doc_pause_seconds())
 
 
 def _strip_tags(fragment: str) -> str:
@@ -198,7 +261,8 @@ def _fetch_once(url: str, headers: dict
 
     Returns (body_text, status, retry_after_seconds). body_text is
     None on any failure; status is reported for HTTP-level failures so
-    the caller can retry the transient ones (429 / 503).
+    the caller can retry the transient ones (503 only — a 429 stops
+    the run, see fetch_url).
     """
     if HAS_SCRAPLING:
         try:
@@ -239,22 +303,40 @@ def _fetch_once(url: str, headers: dict
     return None, resp.status_code, None
 
 
-def fetch_url(url: str, accept: str) -> Optional[str]:
+class _HttpRateLimited(Exception):
+    """First HTTP 429: the run stops cleanly (see assemble_bulletin)."""
+
+
+def _new_run_stats() -> dict:
+    """Mutable per-run accounting for the end-of-run summary."""
+    return {"requests": 0, "rows_stored": 0, "rows_skipped": 0,
+            "rows_remaining": 0, "http_429": 0, "stop_reason": None}
+
+
+def fetch_url(url: str, accept: str,
+              stats: Optional[dict] = None) -> Optional[str]:
     """Fetches a URL as text.
 
     Scrapling's stealthy Fetcher when available, plain requests
-    otherwise. Transient answers (HTTP 429 / 503 — the site rate-limits
-    request bursts; seen live 2026-10-28) are retried with backoff,
-    honouring a numeric Retry-After header when present, before the
-    fetch fails closed. Returns the body text, or None (printed).
+    otherwise. Every attempt counts toward the run request cap
+    (stats['requests'] — the index request and every retry included).
+    Transient answers (HTTP 503) are retried with backoff, honouring a
+    numeric Retry-After header when present. The FIRST HTTP 429 raises
+    _HttpRateLimited (no retry ladder — the WAF block lasts 10-15
+    minutes live); the caller decides how to stop. Returns the body
+    text, or None (printed).
     """
     _headers = dict(_BROWSER_HEADERS)
     _headers["accept"] = accept
 
     for attempt in range(_TRANSIENT_RETRIES + 1):
+        if stats is not None:
+            stats["requests"] += 1
         body_text, status, retry_after = _fetch_once(url, _headers)
         if body_text is not None:
             return body_text
+        if status == 429:
+            raise _HttpRateLimited(f"HTTP 429 from {url}")
         if status not in _TRANSIENT_STATUSES:
             return None
         if attempt < _TRANSIENT_RETRIES:
@@ -331,6 +413,103 @@ def _candidate_doc_urls(number: str, dtg_text: str) -> List[str]:
             for prefix in _DOC_PREFIXES]
 
 
+def _dtg_is_recent(dtg_text: str, today: Optional[date] = None) -> bool:
+    """True when the row DTG falls inside the recheck window.
+
+    Unparseable DTGs are ALWAYS 'recent' (fail-safe: such a row is
+    re-fetched rather than silently skipped on a parsing hiccup).
+    """
+    datestamp = _dtg_datestamp(dtg_text)
+    if not datestamp:
+        return True
+    if today is None:
+        today = datetime.utcnow().date()
+    try:
+        row_date = datetime.strptime(datestamp, "%Y%m%d").date()
+    except ValueError:
+        return True
+    return (today - row_date).days <= RECHECK_WINDOW_DAYS
+
+
+def _supabase_client_or_none():
+    """Supabase client for the stored-state lookup, or None (fail-open).
+
+    None on ALLOW_DRY_RUN (CI PR runs: the pipeline must not touch the
+    DB — the sync layer returns no client in dry-run mode either), on
+    missing credentials (local runs; the sync layer fails loudly later
+    if they are genuinely required) and on any construction error.
+    None => the caller fetches EVERY row.
+    """
+    if os.environ.get("ALLOW_DRY_RUN", "").lower() in ("1", "true", "yes"):
+        print("NOTE: ALLOW_DRY_RUN active - no stored-state lookup; "
+              "fetching every row.")
+        return None
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+    if not url or not key:
+        print("NOTE: SUPABASE_URL/SUPABASE_KEY not set - no stored-state "
+              "lookup; fetching every row.")
+        return None
+    try:
+        from supabase import create_client
+        return create_client(url, key)
+    except Exception as e:
+        print(f"WARNING: Supabase client unavailable ({e}) - no "
+              f"stored-state lookup; fetching every row.")
+        return None
+
+
+def _stored_ix_keys(client) -> Optional[set]:
+    """(number, yy) pairs already stored for source 'manual-navarea-ix'.
+
+    None = stored state unknown (no client / query error) => the
+    caller fetches everything (fail-open). Rows whose warning number
+    is not in this set are new or previously-unstored (e.g. rows whose
+    document was unreachable in an earlier run) and are fetched.
+    """
+    if client is None:
+        return None
+    try:
+        res = (client.table("nav_warnings")
+               .select("canonical_id")
+               .eq("source_id", IX_SOURCE_ID)
+               .execute())
+    except Exception as e:
+        print(f"WARNING: stored-state query failed ({e}); fetching "
+              f"every row.")
+        return None
+    keys = set()
+    for row in (getattr(res, "data", None) or []):
+        m = _STORED_KEY_RE.match(
+            str((row or {}).get("canonical_id") or "").strip())
+        if m:
+            keys.add((int(m.group(1)), m.group(2)))
+    return keys
+
+
+def _filter_stored_rows(rows: List[Tuple[str, str, Optional[str], str]],
+                        stored_keys: Optional[set],
+                        today: Optional[date] = None
+                        ) -> Tuple[List[Tuple[str, str, Optional[str], str]], int]:
+    """Splits rows into (rows_to_fetch, already_stored_count).
+
+    A row is fetched when its warning is NOT stored, when its DTG is
+    recent (recheck window), or when its DTG is unparseable
+    (fail-safe). stored_keys None (unknown state) => fetch everything.
+    """
+    if stored_keys is None:
+        return rows, 0
+    to_fetch = []
+    stored = 0
+    for number, year, href, dtg in rows:
+        if ((int(number), year[-2:]) in stored_keys
+                and not _dtg_is_recent(dtg, today)):
+            stored += 1
+            continue
+        to_fetch.append((number, year, href, dtg))
+    return to_fetch, stored
+
+
 def extract_rows(page_html: str) -> List[Tuple[str, str, Optional[str], str]]:
     """Extracts (number, year, href-or-None, dtg) per in-force warning row.
 
@@ -369,7 +548,8 @@ def _expected_header_re(number: str, year: str) -> "re.Pattern":
 
 
 def assemble_bulletin(rows: List[Tuple[str, str, Optional[str], str]],
-                      fetch_doc: Callable[[str], Optional[str]]) -> Optional[str]:
+                      fetch_doc: Callable[[str], Optional[str]],
+                      stats: Optional[dict] = None) -> Optional[str]:
     """Resolves every row's document and concatenates the blocks.
 
     Fail-closed where it matters:
@@ -380,16 +560,27 @@ def assemble_bulletin(rows: List[Tuple[str, str, Optional[str], str]],
         the whole ~100-warning sync;
       * circuit breaker: three unreachable rows IN A ROW is a
         wholesale client block (rate limit / WAF), not one dead
-        document — the harvest aborts loudly instead of grinding ~2
-        minutes of retry sleeps per remaining document (that grind
-        wedged CI for 20 minutes, live 2026-10-28);
+        document — the harvest aborts loudly instead of grinding retry
+        sleeps per remaining document (that grind wedged CI for 20
+        minutes, live 2026-10-28);
       * a row whose ADVERTISED document carries the WRONG warning
         header still fails the whole harvest (systemic corruption);
       * zero resolved documents overall -> None (empty snapshot).
+
+    Clean stops (NOT errors — the stored rows are kept and the run
+    ends with exit 0; neither counts toward the circuit breaker):
+      * request cap: MAX_REQUESTS_PER_RUN requests reached -> stop
+        with a 'cap reached, N rows remaining' log; the remaining
+        rows are left for the next run;
+      * first HTTP 429 (fetch_doc raising _HttpRateLimited) -> stop,
+        stored rows kept. A 429 before ANY row is stored is still a
+        loud wholesale-block refusal (None).
     """
+    if stats is None:
+        stats = {}
     blocks: List[str] = []
     consecutive_unreachable = 0
-    for number, year, href, dtg in rows:
+    for row_index, (number, year, href, dtg) in enumerate(rows):
         expected = _expected_header_re(number, year)
         if href:
             candidates: List[Tuple[str, bool]] = [(href, False)]
@@ -399,7 +590,39 @@ def assemble_bulletin(rows: List[Tuple[str, str, Optional[str], str]],
         block: Optional[str] = None
         attempted_unreachable = False
         for url, skippable in candidates:
-            doc = fetch_doc(url)
+            if stats.get("requests", 0) >= MAX_REQUESTS_PER_RUN:
+                stats["rows_stored"] = len(blocks)
+                stats["rows_remaining"] = len(rows) - row_index
+                stats["stop_reason"] = "request_cap"
+                if not blocks:
+                    print(f"ERROR: request cap reached "
+                          f"({MAX_REQUESTS_PER_RUN} requests) with no "
+                          f"warning document resolved; refusing to sync "
+                          f"an empty snapshot.")
+                    return None
+                print(f"NOTE: cap reached ({MAX_REQUESTS_PER_RUN} "
+                      f"requests) - stopping cleanly, "
+                      f"{stats['rows_remaining']} row(s) remaining for "
+                      f"the next run.")
+                return "\n\n".join(blocks) + "\n"
+            try:
+                doc = fetch_doc(url)
+            except _HttpRateLimited as rate_err:
+                stats["http_429"] = stats.get("http_429", 0) + 1
+                stats["rows_stored"] = len(blocks)
+                stats["rows_remaining"] = len(rows) - row_index
+                stats["stop_reason"] = "http_429"
+                if not blocks:
+                    print(f"ERROR: HTTP 429 on the first document "
+                          f"request(s) - the site appears to be blocking "
+                          f"this client (rate limit / WAF); nothing "
+                          f"harvested ({rate_err}).")
+                    return None
+                print(f"NOTE: HTTP 429 received - stopping cleanly with "
+                      f"{len(blocks)} stored row(s) kept; "
+                      f"{stats['rows_remaining']} row(s) remaining "
+                      f"({rate_err}).")
+                return "\n\n".join(blocks) + "\n"
             if doc is None or not doc.strip():
                 attempted_unreachable = True
                 # Unreachable after transient retries (persistent 429/
@@ -426,8 +649,10 @@ def assemble_bulletin(rows: List[Tuple[str, str, Optional[str], str]],
 
         if block is not None:
             consecutive_unreachable = 0
+            stats["rows_stored"] = stats.get("rows_stored", 0) + 1
             blocks.append(block)
             continue
+        stats["rows_skipped"] = stats.get("rows_skipped", 0) + 1
         print(f"WARNING: no document found for warning {number}/{year} "
               f"(no usable link{'' if href else ' and no DTG-derived candidate hit'}) "
               f"— skipping row loudly (page layout change?)")
@@ -435,9 +660,8 @@ def assemble_bulletin(rows: List[Tuple[str, str, Optional[str], str]],
             # A real fetch failure (connection / HTTP), not a mere
             # candidate miss: several in a row means the site is
             # blocking this client wholesale — fail closed instead of
-            # grinding ~2 minutes of retry sleeps per remaining
-            # document (that grind wedged CI for 20 minutes, live
-            # 2026-10-28).
+            # grinding retry sleeps per remaining document (that grind
+            # wedged CI for 20 minutes, live 2026-10-28).
             consecutive_unreachable += 1
             if consecutive_unreachable >= _MAX_CONSECUTIVE_UNREACHABLE:
                 print(f"ERROR: {consecutive_unreachable} consecutive warning "
@@ -450,7 +674,45 @@ def assemble_bulletin(rows: List[Tuple[str, str, Optional[str], str]],
         print("ERROR: no warning document resolved; refusing to sync an "
               "empty snapshot (page layout change?)")
         return None
+    stats["rows_stored"] = len(blocks)
+    stats["rows_remaining"] = 0
+    if stats.get("stop_reason") is None:
+        stats["stop_reason"] = "completed"
     return "\n\n".join(blocks) + "\n"
+
+
+def _archive_old_warnings(parsed_path: str) -> int:
+    """Stamps pre-2025 warning records status 'expired' (archive-only).
+
+    The 2023/2024 backfill rows are stored for the record but never
+    published: the public portal reads active-only, and almost all of
+    them are cancelled or expired anyway. Archive status never feeds
+    the sync's cancel guard (it only counts actives).
+    """
+    with open(parsed_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    archived = 0
+    for rec in data.get("nav_warnings", []):
+        m = _STORED_KEY_RE.match(
+            str((rec or {}).get("warning_id") or "").strip())
+        if m and int(m.group(2)) <= IX_ARCHIVE_MAX_YY:
+            rec["status"] = "expired"
+            archived += 1
+    with open(parsed_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    return archived
+
+
+def _print_run_summary(stats: dict) -> None:
+    """End-of-run summary: every run shows where the real limit is."""
+    print("-" * 60)
+    print(f"IX run summary: requests={stats.get('requests', 0)}, "
+          f"rows stored={stats.get('rows_stored', 0)}, "
+          f"rows skipped (unreachable)={stats.get('rows_skipped', 0)}, "
+          f"rows remaining (next run)={stats.get('rows_remaining', 0)}, "
+          f"429s={stats.get('http_429', 0)}, "
+          f"stop reason={stats.get('stop_reason') or 'completed'}")
+    print("-" * 60)
 
 
 def main() -> bool:
@@ -460,7 +722,16 @@ def main() -> bool:
     print(f"HTTP Fetcher: {'Scrapling' if HAS_SCRAPLING else 'requests' if HAS_REQUESTS else 'none'}")
     print("=" * 60)
 
-    page_html = fetch_url(NAVAREA_IX_URL, "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
+    run_stats = _new_run_stats()
+    try:
+        page_html = fetch_url(
+            NAVAREA_IX_URL,
+            "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8", run_stats)
+    except _HttpRateLimited as e:
+        print(f"ERROR: HTTP 429 on the index request - the site appears "
+              f"to be blocking this client (rate limit / WAF); harvest "
+              f"untouched ({e}).")
+        return False
     if page_html is None or not page_html.strip():
         return False
     if "View Document" not in page_html:
@@ -475,23 +746,63 @@ def main() -> bool:
               f"sync an empty snapshot (page layout change?)")
         return False
 
+    # Skip already-stored rows FIRST (see strategy point 0): the
+    # steady-state harvest fetches only new / recent / unparseable-DTG
+    # rows, which keeps the run inside the WAF's patience.
+    full_snapshot = True
+    if os.environ.get("IX_FULL_SNAPSHOT", "").lower() in ("1", "true", "yes"):
+        print("NOTE: IX_FULL_SNAPSHOT=1 - fetching every row (backfill).")
+        stored_keys = None
+    else:
+        stored_keys = _stored_ix_keys(_supabase_client_or_none())
+    rows_to_fetch, stored_skipped = _filter_stored_rows(rows, stored_keys)
+    if stored_skipped:
+        full_snapshot = False
+        print(f"NOTE: {stored_skipped} of {len(rows)} row(s) already stored "
+              f"and outside the {RECHECK_WINDOW_DAYS}-day recheck window - "
+              f"not fetching their documents (partial snapshot; the sync's "
+              f"cancel pass stays disabled).")
+
+    if not rows_to_fetch:
+        # Steady-state no-op: every row on the page is already stored
+        # and not recent. Record an empty harvest (the workflow verifies
+        # both output files exist); the sync layer treats an empty feed
+        # as 'existing records left untouched' and the cancel pass
+        # never runs on an empty feed.
+        print("NOTE: nothing to fetch - every row is already stored and "
+              "not recent; existing records left untouched.")
+        os.makedirs(HARVEST_DIR, exist_ok=True)
+        with open(RAW_HTML_PATH, "w", encoding="utf-8") as f:
+            f.write(page_html)
+        with open(RAW_TXT_PATH, "w", encoding="utf-8") as f:
+            f.write("")
+        with open(PARSED_PATH, "w", encoding="utf-8") as f:
+            json.dump({"raw_messages": [], "nav_warnings": [],
+                       "spatial_features": [],
+                       "memo": {"region": REGION_KEY, "navarea": "IX",
+                                "source_id": IX_SOURCE_ID,
+                                "in_force_as_on": None}}, f, indent=2)
+        print(f"Empty harvest recorded -> {RAW_TXT_PATH} / {PARSED_PATH}")
+        from scripts.navarea_generic_sync import sync_to_supabase
+        return sync_to_supabase(PARSED_PATH, full_snapshot=full_snapshot)
+
     def _fetch_doc(url: str) -> Optional[str]:
         # Politeness pause before EVERY document fetch — resolved hits
-        # and candidate misses alike (see _DOC_PAUSE_S: the site rate-
-        # limits request bursts).
-        if _DOC_PAUSE_S:
-            time.sleep(_DOC_PAUSE_S)
+        # and candidate misses alike (see _doc_pause_seconds: the
+        # site's WAF rate-limits request bursts).
+        _pause_before_doc_fetch()
         return fetch_url(url, "text/plain;q=0.9,*/*;q=0.8")
 
-    bulletin = assemble_bulletin(rows, _fetch_doc)
+    bulletin = assemble_bulletin(rows_to_fetch, _fetch_doc, run_stats)
     if bulletin is None:
         return False
+    _print_run_summary(run_stats)
 
     n_blocks = len(_HEADER_FOR_RE.findall(bulletin))
-    skipped = len(rows) - n_blocks
+    skipped = len(rows_to_fetch) - n_blocks
     if skipped:
-        print(f"NOTE: resolved {n_blocks} of {len(rows)} warning row(s); "
-              f"{skipped} skipped loudly (see warnings above).")
+        print(f"NOTE: resolved {n_blocks} of {len(rows_to_fetch)} fetched "
+              f"row(s); {skipped} skipped loudly (see warnings above).")
 
     os.makedirs(HARVEST_DIR, exist_ok=True)
     with open(RAW_HTML_PATH, "w", encoding="utf-8") as f:
@@ -505,8 +816,13 @@ def main() -> bool:
     if not parse_main(RAW_TXT_PATH, PARSED_PATH):
         return False
 
+    archived = _archive_old_warnings(PARSED_PATH)
+    if archived:
+        print(f"NOTE: archived {archived} pre-2025 warning(s) - stored "
+              f"with status 'expired', NOT published on the portal.")
+
     from scripts.navarea_generic_sync import sync_to_supabase
-    return sync_to_supabase(PARSED_PATH)
+    return sync_to_supabase(PARSED_PATH, full_snapshot=full_snapshot)
 
 
 if __name__ == "__main__":
