@@ -45,11 +45,14 @@ Strategy (fail-closed, mirrors scripts/navarea_vii_scraper.py):
      cannot be fetched — unreachable even after transient retries; the
      site advertises links its own WAF refuses (persistent HTTP 429 on
      20250903SEC 405.txt for the CI runner, live 2026-10-28) — or whose
-     DTG-derived candidates all miss is skipped loudly (never silently).
-     A row whose ADVERTISED document carries the WRONG warning header
-     still fails the whole harvest (systematic link corruption). Zero
-     resolved rows -> refuse (empty snapshot). The verbatim page HTML
-     is archived alongside for provenance.
+     DTG-derived candidates all miss is skipped loudly (never silently);
+     three unreachable rows IN A ROW trips a circuit breaker and aborts
+     the harvest loudly (a wholesale client block otherwise grinds ~2
+     minutes of retry sleeps per remaining document and wedges CI —
+     seen live 2026-10-28). A row whose ADVERTISED document carries the
+     WRONG warning header still fails the whole harvest (systematic
+     link corruption). Zero resolved rows -> refuse (empty snapshot).
+     The verbatim page HTML is archived alongside for provenance.
   3. Hand the harvest to the SAME universal parser + generic sync the
      manual paste pipeline uses — one contract, scrape or paste.
 
@@ -106,6 +109,12 @@ _DOC_PAUSE_S = 0.6
 _TRANSIENT_STATUSES = frozenset({429, 503})
 _TRANSIENT_RETRIES = 3
 _RETRY_AFTER_DEFAULT_S = 20.0
+# Circuit breaker: N unreachable rows IN A ROW = the site is blocking
+# this client wholesale (rate limit / WAF), not one dead document —
+# abort the harvest loudly instead of grinding ~2 minutes of retry
+# sleeps per remaining document (which wedged CI for 20 minutes,
+# live 2026-10-28).
+_MAX_CONSECUTIVE_UNREACHABLE = 3
 
 _BROWSER_HEADERS = {
     "accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
@@ -359,11 +368,17 @@ def assemble_bulletin(rows: List[Tuple[str, str, Optional[str], str]],
         refuses for some clients; seen live 2026-10-28) — is skipped
         loudly like a candidate miss: one dead document must not abort
         the whole ~100-warning sync;
+      * circuit breaker: three unreachable rows IN A ROW is a
+        wholesale client block (rate limit / WAF), not one dead
+        document — the harvest aborts loudly instead of grinding ~2
+        minutes of retry sleeps per remaining document (that grind
+        wedged CI for 20 minutes, live 2026-10-28);
       * a row whose ADVERTISED document carries the WRONG warning
         header still fails the whole harvest (systemic corruption);
       * zero resolved documents overall -> None (empty snapshot).
     """
     blocks: List[str] = []
+    consecutive_unreachable = 0
     for number, year, href, dtg in rows:
         expected = _expected_header_re(number, year)
         if href:
@@ -372,9 +387,11 @@ def assemble_bulletin(rows: List[Tuple[str, str, Optional[str], str]],
             candidates = [(u, True) for u in _candidate_doc_urls(number, dtg)]
 
         block: Optional[str] = None
+        attempted_unreachable = False
         for url, skippable in candidates:
             doc = fetch_doc(url)
             if doc is None or not doc.strip():
+                attempted_unreachable = True
                 # Unreachable after transient retries (persistent 429/
                 # 404 — the site advertises links its own WAF refuses
                 # for some clients; seen live 2026-10-28). Skip loudly
@@ -397,12 +414,27 @@ def assemble_bulletin(rows: List[Tuple[str, str, Optional[str], str]],
                 continue
             break
 
-        if block is None:
-            print(f"WARNING: no document found for warning {number}/{year} "
-                  f"(no usable link{'' if href else ' and no DTG-derived candidate hit'}) "
-                  f"— skipping row loudly (page layout change?)")
+        if block is not None:
+            consecutive_unreachable = 0
+            blocks.append(block)
             continue
-        blocks.append(block)
+        print(f"WARNING: no document found for warning {number}/{year} "
+              f"(no usable link{'' if href else ' and no DTG-derived candidate hit'}) "
+              f"— skipping row loudly (page layout change?)")
+        if attempted_unreachable:
+            # A real fetch failure (connection / HTTP), not a mere
+            # candidate miss: several in a row means the site is
+            # blocking this client wholesale — fail closed instead of
+            # grinding ~2 minutes of retry sleeps per remaining
+            # document (that grind wedged CI for 20 minutes, live
+            # 2026-10-28).
+            consecutive_unreachable += 1
+            if consecutive_unreachable >= _MAX_CONSECUTIVE_UNREACHABLE:
+                print(f"ERROR: {consecutive_unreachable} consecutive warning "
+                      f"row(s) unreachable — the site appears to be blocking "
+                      f"this client (rate limit / WAF); aborting the harvest "
+                      f"loudly rather than syncing a badly partial snapshot.")
+                return None
 
     if not blocks:
         print("ERROR: no warning document resolved; refusing to sync an "
