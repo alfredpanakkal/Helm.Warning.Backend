@@ -35,6 +35,16 @@ on:
         type: boolean
         default: false
 
+  # Phase 5 WP2: weekly scheduled audit_only run. Wednesday 10:30 UTC sits
+  # inside the verified quiet window (~09:00-11:30 UTC weekdays, after the
+  # IX/III/VII scrapers, clear of the every-6h all-sync). Scheduled runs
+  # carry no workflow_dispatch inputs, so INPUT_MODE below defaults to
+  # 'audit_only' — a schedule can never trigger propose_corrections (AI
+  # spend) or apply_approved (DB writes). The concurrency group stays, so
+  # a scheduled run cannot overlap a manual one.
+  schedule:
+    - cron: '30 10 * * 3'
+
 permissions:
   contents: read
 
@@ -69,7 +79,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL_NAME: ${{ inputs.model || vars.GEMINI_MODEL_NAME || 'gemini-3.8-flash' }}
           PYTHONPATH: ${{ github.workspace }}
-          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_MODE: ${{ inputs.mode || 'audit_only' }}
           INPUT_NAVAREA: ${{ inputs.navarea }}
         run: |
           ARGS=(--mode "$INPUT_MODE" --report-dir audit-report --model-name "$GEMINI_MODEL_NAME")
@@ -82,10 +92,13 @@ jobs:
       # exit AND this step). Belt-and-braces against future drift where
       # the script might exit 0 on an incomplete scan. The upload step is
       # `if: always()`, so the artifact is still uploaded for analysis.
+      # Runs for every event, including the WP2 weekly schedule: an
+      # incomplete scheduled scan fails the workflow, which sends the
+      # GitHub failure email (chosen alert channel).
       - name: Fail on incomplete scan
         run: |
           python - <<'PY'
-          import json, sys
+          import json, os, sys
           try:
               with open("audit-report/summary.json", encoding="utf-8") as fh:
                   summary = json.load(fh)
@@ -104,6 +117,14 @@ jobs:
               )
               sys.exit(1)
           print("Scan-complete gate passed (report_version=%s)." % summary.get("report_version"))
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as fh:
+                  fh.write("## Parsing audit\n")
+                  fh.write("- status: %s\n" % summary.get("status"))
+                  fh.write("- examined: %s\n" % summary.get("examined_count"))
+                  fh.write("- issues: %s\n" % summary.get("issue_count"))
+                  fh.write("- scan complete: %s\n" % summary.get("scan_complete"))
           PY
 
       - name: Upload audit report
@@ -113,7 +134,7 @@ jobs:
           name: supabase-parsing-audit-${{ github.run_id }}
           path: audit-report/
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: 90
 
   apply-approved:
     if: inputs.mode == 'apply_approved'
