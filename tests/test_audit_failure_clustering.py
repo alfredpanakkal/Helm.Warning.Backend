@@ -63,8 +63,7 @@ class TestTextSignature(unittest.TestCase):
 
     # 3. Whitespace collapsed, case normalized
     def test_whitespace_and_case_normalized(self):
-        a = text_signature("bounded   by
-radius")
+        a = text_signature("bounded   by\nradius")
         b = text_signature("BOUNDED BY  RADIUS")
         self.assertEqual(a, b)
 
