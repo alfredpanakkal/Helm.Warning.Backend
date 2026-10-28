@@ -25,9 +25,14 @@ if hasattr(sys.stdout, "reconfigure"):
 from shared.sync_engine import run_differential_sync
 
 
-def sync_to_supabase(json_file="navareas/manual/navarea_ii/parsed.json") -> bool:
+def sync_to_supabase(json_file="navareas/manual/navarea_ii/parsed.json",
+                     full_snapshot: bool = True) -> bool:
     """Sync parsed universal-region warnings to Supabase, or no-op dry run
-    when credentials are missing."""
+    when credentials are missing.
+
+    full_snapshot=False (a harvest that skipped already-stored rows)
+    disables the evidence-based cancel pass in the sync engine: the
+    feed is partial BY DESIGN, so absence is not withdrawal evidence."""
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")
 
@@ -67,6 +72,7 @@ def sync_to_supabase(json_file="navareas/manual/navarea_ii/parsed.json") -> bool
         navarea_name="NAVAREA " + navarea,
         scraped_warnings=scraped_warnings,
         scraped_messages=scraped_messages,
+        full_snapshot=full_snapshot,
     )
 
 

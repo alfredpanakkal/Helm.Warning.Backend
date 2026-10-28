@@ -194,9 +194,15 @@ def run_differential_sync(
     scraped_warnings: List[Dict[str, Any]],
     scraped_messages: List[Dict[str, Any]],
     supabase_client: Optional[Any] = None,
+    full_snapshot: bool = True,
 ) -> bool:
     """Executes full differential synchronization against Supabase using canonical_id and atomic RPC.
     Returns True if completely successful, False if any error occurred.
+
+    full_snapshot=False marks the feed as partial BY DESIGN (a harvest
+    that skipped already-stored rows): the evidence-based cancel pass is
+    disabled and scrape-absent warnings stay 'unobserved' (retained
+    active) — absence is a skipping decision, not withdrawal evidence.
     """
     started_at = datetime.now(timezone.utc).isoformat()
     print("=" * 65)
@@ -428,10 +434,15 @@ def run_differential_sync(
     feed_size = len(scraped_for_diff)
     total_actives = feed_size + len(missing)
     feed_credible = (
-        feed_size >= CANCEL_MIN_FEED_COUNT
+        full_snapshot
+        and feed_size >= CANCEL_MIN_FEED_COUNT
         and total_actives > 0
         and feed_size >= CANCEL_MIN_FEED_FRACTION * total_actives
     )
+    if not full_snapshot:
+        print("  ⏸ Partial harvest (skip-stored-rows): snapshot not "
+              "credible as complete — cancel pass disabled; scrape-absent "
+              "warnings stay 'unobserved' and active.")
     cancelled_ids: List[str] = []
     if feed_credible:
         cancelled_ids = unobserved_ids
@@ -485,6 +496,7 @@ def run_differential_sync(
             "min_feed_count": CANCEL_MIN_FEED_COUNT,
             "min_feed_fraction": CANCEL_MIN_FEED_FRACTION,
             "feed_credible": feed_credible,
+            "full_snapshot": full_snapshot,
         },
     }
     _record_generation(
