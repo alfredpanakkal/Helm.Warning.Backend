@@ -50,8 +50,9 @@ from scripts.audit_supabase_parsing import (
 
 
 class MockResult:
-    def __init__(self, data):
+    def __init__(self, data, count=None):
         self.data = data
+        self.count = count
 
 
 class MockTableQueryBuilder:
@@ -68,10 +69,12 @@ class MockTableQueryBuilder:
         self._in_filters = {}
         self._update_patch = None
         self._insert_payload = None
+        self._count = None
 
-    def select(self, cols="*"):
+    def select(self, cols="*", count=None):
         self._action = "select"
         self._select_cols = cols
+        self._count = count
         return self
 
     def order(self, col):
@@ -150,6 +153,20 @@ class MockTableQueryBuilder:
                     filtered.append(r)
 
             sliced = filtered[:self._limit]
+
+            # WP2: emulate PostgREST count="exact". count_overrides[table] is
+            # either a list (consumed in order, simulating counts that differ
+            # from the actual rows) or an int; default is the true row count.
+            if self._count is not None:
+                if self.client.fail_on_count:
+                    raise RuntimeError("Simulated count query failure")
+                override = self.client.count_overrides.get(self.table_name)
+                if isinstance(override, list):
+                    value = override.pop(0) if override else len(sliced)
+                else:
+                    value = override if override is not None else len(sliced)
+                return MockResult(sliced, count=int(value))
+
             return MockResult(sliced)
 
         elif self._action == "insert":
@@ -206,6 +223,8 @@ class MockSupabaseClient:
         self.query_history = []
         self.fail_on_insert = False
         self.fail_on_update = False
+        self.count_overrides = {}
+        self.fail_on_count = False
 
     def table(self, table_name):
         return MockTableQueryBuilder(table_name, self)
@@ -858,7 +877,8 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertEqual(res["report_version"], 2)
         # New sections exist and are empty at first (populated by WP2-WP4)
         self.assertIn("coverage", res)
-        self.assertEqual(res["coverage"], {})
+        # WP2 populates coverage; failures/issue_summary stay empty until WP3/WP4.
+        self.assertEqual(res["coverage"]["scan_status"], "complete")
         self.assertIn("failures", res)
         self.assertEqual(res["failures"], {})
         self.assertIn("issue_summary", res)
@@ -866,6 +886,68 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertIn("limitations", res)
         self.assertEqual(res["limitations"], [])
 
+    # 24. WP2: exactly batch_size rows is the pagination boundary — still complete
+    def test_coverage_boundary_exact_batch_size(self):
+        rows = []
+        for i in range(5):
+            row = dict(self.sample_active_warning)
+            row["id"] = f"00000000-0000-0000-0000-{i:012d}"
+            row["canonical_id"] = f"NAVAREA I {i + 1}/26"
+            row["status"] = "active"
+            rows.append(row)
+        client = MockSupabaseClient({"nav_warnings": rows})
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            res = run_audit(mode="audit_only", client=client, report_dir=tmp_dir, batch_size=5)
+        self.assertTrue(res["scan_complete"])
+        self.assertEqual(res["status"], "succeeded")
+        self.assertEqual(res["coverage"]["scan_status"], "complete")
+        self.assertIsNone(res["coverage"]["incomplete_reason"])
+        self.assertEqual(res["coverage"]["expected_before"], 5)
+        self.assertEqual(res["coverage"]["expected_after"], 5)
+        self.assertEqual(res["coverage"]["examined_count"], 5)
+        self.assertEqual(res["coverage"]["per_status"], {"active": 5})
+
+    # 25. WP2: examined fewer rows than the count says — incomplete, never silent complete
+    def test_coverage_mismatch_marks_incomplete(self):
+        rows = []
+        for i in range(5):
+            row = dict(self.sample_active_warning)
+            row["id"] = f"00000000-0000-0000-0000-{i:012d}"
+            rows.append(row)
+        client = MockSupabaseClient({"nav_warnings": rows})
+        client.count_overrides["nav_warnings"] = [10, 10]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            res = run_audit(mode="audit_only", client=client, report_dir=tmp_dir)
+        self.assertFalse(res["scan_complete"])
+        self.assertEqual(res["status"], "partial")
+        self.assertEqual(res["coverage"]["scan_status"], "incomplete")
+        self.assertIn("coverage_mismatch", str(res["coverage"]["incomplete_reason"]))
+
+    # 26. WP2: count query failure — incomplete with a named reason
+    def test_count_query_failure_marks_incomplete(self):
+        client = MockSupabaseClient({"nav_warnings": [dict(self.sample_active_warning)]})
+        client.fail_on_count = True
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            res = run_audit(mode="audit_only", client=client, report_dir=tmp_dir)
+        self.assertFalse(res["scan_complete"])
+        self.assertEqual(res["status"], "partial")
+        self.assertEqual(res["coverage"]["scan_status"], "incomplete")
+        self.assertEqual(res["coverage"]["incomplete_reason"], "expected_count_unavailable")
+
+    # 27. WP2: deletion mid-scan (expected_before > examined) — incomplete
+    def test_deletion_mid_scan_marks_incomplete(self):
+        rows = []
+        for i in range(4):
+            row = dict(self.sample_active_warning)
+            row["id"] = f"00000000-0000-0000-0000-{i:012d}"
+            rows.append(row)
+        client = MockSupabaseClient({"nav_warnings": rows})
+        client.count_overrides["nav_warnings"] = [5, 4]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            res = run_audit(mode="audit_only", client=client, report_dir=tmp_dir)
+        self.assertFalse(res["scan_complete"])
+        self.assertEqual(res["coverage"]["scan_status"], "incomplete")
+        self.assertIn("coverage_mismatch", str(res["coverage"]["incomplete_reason"]))
 
 if __name__ == "__main__":
     unittest.main()
