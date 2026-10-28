@@ -72,6 +72,7 @@ Run:
 import html as _html
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -110,11 +111,14 @@ PARSED_PATH = os.path.join(HARVEST_DIR, "parsed.json")
 _TIMEOUT_S = 45
 _MIN_WARNINGS = 1  # a live-but-empty feed fails loudly; never sync 0.
 # Politeness pause before EVERY document fetch (resolved hits and
-# candidate misses alike). The site rate-limited a ~1.8 req/s harvest
-# burst with HTTP 429 (Cloudflare) after ~110 files in ~60s — seen
-# live 2026-10-28, when one 429 on a single advertised document
-# aborted the whole harvest.
-_DOC_PAUSE_S = 0.6
+# candidate misses alike). FIXED RANDOM 3-5 s (uniform): the site's
+# WAF (Cloudflare) rate-limited the flat 0.6 s harvest burst with
+# HTTP 429 after ~110 files in ~60s (live 2026-10-28), and persistent
+# 429s on later full harvests burned minutes of retry backoff. Bounds
+# are env-overridable (IX_DOC_PAUSE_MIN_S / IX_DOC_PAUSE_MAX_S) so a
+# backfill or a CI dry run can pace itself inside the time budget.
+_DOC_PAUSE_MIN_S = float(os.environ.get("IX_DOC_PAUSE_MIN_S", "3"))
+_DOC_PAUSE_MAX_S = float(os.environ.get("IX_DOC_PAUSE_MAX_S", "5"))
 # Transient HTTP answers retried with backoff before a fetch fails
 # closed: rate limiting (429) / temporary unavailability (503).
 _TRANSIENT_STATUSES = frozenset({429, 503})
@@ -182,6 +186,17 @@ _STORED_KEY_RE = re.compile(r"^NAVAREA\s+IX\s+(\d{1,4})/(\d{2})$",
 # 394/26, 378/26, 347/26, 463/25) — this is what the universal parser
 # anchors on, and what validates DTG-derived candidate URLs.
 _HEADER_FOR_RE = re.compile(r"NAV\s*AREA\s+IX\b", re.IGNORECASE)
+
+
+def _doc_pause_seconds() -> float:
+    """Randomized politeness pause for the next document fetch."""
+    lo, hi = sorted((_DOC_PAUSE_MIN_S, _DOC_PAUSE_MAX_S))
+    return random.uniform(lo, hi)
+
+
+def _pause_before_doc_fetch() -> None:
+    """Sleeps one randomized pause between document fetches."""
+    time.sleep(_doc_pause_seconds())
 
 
 def _strip_tags(fragment: str) -> str:
@@ -598,10 +613,9 @@ def main() -> bool:
 
     def _fetch_doc(url: str) -> Optional[str]:
         # Politeness pause before EVERY document fetch — resolved hits
-        # and candidate misses alike (see _DOC_PAUSE_S: the site rate-
-        # limits request bursts).
-        if _DOC_PAUSE_S:
-            time.sleep(_DOC_PAUSE_S)
+        # and candidate misses alike (see _doc_pause_seconds: the
+        # site's WAF rate-limits request bursts).
+        _pause_before_doc_fetch()
         return fetch_url(url, "text/plain;q=0.9,*/*;q=0.8")
 
     bulletin = assemble_bulletin(rows_to_fetch, _fetch_doc)

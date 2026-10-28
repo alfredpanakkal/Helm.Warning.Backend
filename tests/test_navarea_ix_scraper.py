@@ -397,5 +397,32 @@ class TestSkipStoredRows(unittest.TestCase):
         self.assertEqual(skipped, 0)
 
 
+class TestDocPause(unittest.TestCase):
+    """Fixed random 3-5 s politeness pause between document fetches
+    (one constant pair, env-overridable; the flat 0.6 s burst was
+    rate-limited by the site's WAF — live 2026-10-28)."""
+
+    def test_pause_is_uniform_three_to_five_seconds(self):
+        for _ in range(10):
+            pause = navarea_ix_scraper._doc_pause_seconds()
+            self.assertGreaterEqual(pause, 3.0)
+            self.assertLessEqual(pause, 5.0)
+
+    def test_pause_bounds_are_order_safe(self):
+        with mock.patch.object(navarea_ix_scraper, "_DOC_PAUSE_MIN_S", 5.0), \
+             mock.patch.object(navarea_ix_scraper, "_DOC_PAUSE_MAX_S", 3.0), \
+             mock.patch("scripts.navarea_ix_scraper.random.uniform") as uniform_mock:
+            navarea_ix_scraper._doc_pause_seconds()
+        uniform_mock.assert_called_with(3.0, 5.0)
+
+    def test_pause_sleeps_between_fetches(self):
+        with mock.patch("scripts.navarea_ix_scraper.random.uniform",
+                        return_value=4.25) as uniform_mock, \
+             mock.patch("scripts.navarea_ix_scraper.time.sleep") as sleep_mock:
+            navarea_ix_scraper._pause_before_doc_fetch()
+        uniform_mock.assert_called_with(3.0, 5.0)
+        sleep_mock.assert_called_once_with(4.25)
+
+
 if __name__ == "__main__":
     unittest.main()
