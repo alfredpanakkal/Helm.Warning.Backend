@@ -840,6 +840,32 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertTrue(any(iss["code"] == "COORDINATE_OUT_OF_BOUNDS" for iss in issues))
 
 
+    # 23. WP1 (report schema v2): every v1 key still present, new sections exist
+    def test_report_v2_backward_compatible(self):
+        client = MockSupabaseClient({
+            "nav_warnings": [dict(self.sample_active_warning)],
+            "nav_warning_geometries": [dict(self.sample_geometry)],
+        })
+        res = run_audit(mode="audit_only", client=client, report_dir=tempfile.mkdtemp())
+        v1_keys = [
+            "audit_run_id", "mode", "navarea_filter", "model_name", "started_at",
+            "scan_complete", "examined_count", "issue_count", "proposal_count",
+            "applied_count", "failed_count", "issues", "proposals", "apply_summary",
+            "completed_at", "status",
+        ]
+        for key in v1_keys:
+            self.assertIn(key, res, f"v1 key {key!r} missing from v2 report")
+        self.assertEqual(res["report_version"], 2)
+        # New sections exist and are empty at first (populated by WP2-WP4)
+        self.assertIn("coverage", res)
+        self.assertEqual(res["coverage"], {})
+        self.assertIn("failures", res)
+        self.assertEqual(res["failures"], {})
+        self.assertIn("issue_summary", res)
+        self.assertEqual(res["issue_summary"], {})
+        self.assertIn("limitations", res)
+        self.assertEqual(res["limitations"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
