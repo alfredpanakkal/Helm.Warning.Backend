@@ -6,7 +6,8 @@ Covers the tangled-polygon bug (NAVAREA VIII 961/26, 1096/26): scattered
 'vicinity' lists and survey tracks must not be rendered as auto-closed
 polygons. Exercises the REAL shared parser (no second parser), the
 MultiPoint -> per-point POINT geometry-row explosion in shared/models,
-and the ring topology guard (bowtie/self-intersection -> open LineString).
+and the ring topology guard (bowtie/self-intersection -> discrete
+MultiPoint + AMBIGUOUS_FALLBACK review flag, never a fabricated shape).
 """
 
 import sys
@@ -15,7 +16,7 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from shared.utils import parse_coordinates
+from shared.utils import parse_coordinates, parse_coordinates_detailed
 from shared.models import build_geometry_payloads
 from shared.geometry_classifier import classify_geometry_archetype, _is_sequential, ring_is_simple
 
@@ -99,13 +100,17 @@ class TestArchetypeClassification(unittest.TestCase):
 class TestRingTopologyGuard(unittest.TestCase):
     """Bowties / self-intersecting coordinate orders must not become filled polygons."""
 
-    def test_bowtie_order_falls_back_to_linestring(self):
-        # BL, TR, TL, BR — classic bowtie ordering, no keywords
+    def test_bowtie_order_falls_back_to_multipoint(self):
+        # BL, TR, TL, BR — classic bowtie ordering, no keywords: an
+        # auto-closed ring (or a LineString 'path') would invent a shape
+        # the source never states. Discrete markers + AMBIGUOUS_FALLBACK
+        # so the record lands in the review queue, not the map.
         raw = ("OBSTRUCTION REPORTED AT 18-00N 071-00E, 18-30N 071-30E, "
                "18-30N 071-00E, 18-00N 071-30E")
-        spatial = _spatial(raw)
-        self.assertEqual(spatial["type"], "LineString")
-        self.assertNotEqual(spatial["coordinates"][0], spatial["coordinates"][-1])
+        _, _, _, spatial, report = parse_coordinates_detailed(raw)
+        self.assertEqual(spatial["type"], "MultiPoint")
+        self.assertIn("AMBIGUOUS_FALLBACK", report["flags"])
+        self.assertEqual(report["data_quality"], "AMBIGUOUS")
 
     def test_valid_rectangle_keeps_polygon(self):
         raw = ("OBSTRUCTION REPORTED AT 18-00N 071-00E, 18-00N 071-30E, "
@@ -208,17 +213,32 @@ class TestKeywordTaxonomy(unittest.TestCase):
 
 
 class TestRigListAlwaysPoints(unittest.TestCase):
-    """Standing rule (2026-10-28): rig-class keywords (RIG / JACK-UP /
-    DRILLSHIP / MODU) outrank every area/line keyword — a rig list is
-    always plotted as points, so 'RIGS STATIONED IN AREA BOUNDED BY ...'
-    can never fabricate a filled hazard zone."""
+    """Standing rule (2026-10-28, AMENDED same day by owner decision):
+    rig-class keywords (RIG / JACK-UP / DRILLSHIP / MODU) plot as points
+    when NO boundary phrase is present, or when the list is long
+    (> 6 positions — a genuine rig list). A rig keyword + boundary phrase
+    + short list is AMBIGUOUS: flagged RIG_AREA_CONFLICT and classified by
+    the normal keyword rules for human review — never silently forced."""
 
-    def test_rig_list_in_bounded_area_is_multipoint(self):
+    def test_rig_short_list_in_bounded_area_is_flagged_conflict(self):
+        # Rig + 'AREA BOUNDED BY' + only 4 positions: ambiguous — flag it,
+        # then the normal bounded-area rule keeps the polygon for review.
         raw = ("FOLLOWING RIGS STATIONED IN AREA BOUNDED BY 18-00N 071-00E, "
                "18-00N 072-00E, 19-00N 072-00E, 19-00N 071-00E")
-        spatial = _spatial(raw)
+        _, _, _, spatial, report = parse_coordinates_detailed(raw)
+        self.assertEqual(spatial["type"], "Polygon")
+        self.assertIn("RIG_AREA_CONFLICT", report["flags"])
+
+    def test_rig_long_list_in_bounded_area_is_multipoint(self):
+        # > 6 positions wrapped in area wording is a genuine rig list:
+        # discrete points, no conflict flag.
+        coords = ", ".join(f"1{8 + i}-00N 07{1 + i}-00E" for i in range(8))
+        raw = "FOLLOWING RIGS STATIONED IN AREA BOUNDED BY " + coords
+        _, _, _, spatial, report = parse_coordinates_detailed(raw)
         self.assertEqual(spatial["type"], "MultiPoint")
-        self.assertEqual(len(spatial["coordinates"]), 4)
+        self.assertEqual(len(spatial["coordinates"]), 8)
+        self.assertNotIn("RIG_AREA_CONFLICT", report["flags"])
+        self.assertEqual(report["basis"], "keyword:rig")
 
     def test_rig_under_tow_along_trackline_is_multipoint(self):
         raw = ("RIG UNDER TOW ALONG TRACKLINE JOINING 18-30N 071-00E, "
