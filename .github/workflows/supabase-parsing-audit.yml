@@ -35,6 +35,16 @@ on:
         type: boolean
         default: false
 
+  # Phase 5 WP2: weekly scheduled audit_only run, Gemini off, read-only.
+  # Wednesday 10:30 UTC sits inside the verified quiet window (~09:00-11:30 UTC
+  # weekdays, after IX 04:30 / III 06:30 / VII 08:30 and clear of the every-6h
+  # all-sync runs). Scheduled runs carry no workflow_dispatch inputs, so the
+  # audit job defaults INPUT_MODE to 'audit_only' below — a schedule can never
+  # trigger propose_corrections or apply_approved. The concurrency group stays,
+  # so a scheduled run cannot overlap a manual one.
+  schedule:
+    - cron: '30 10 * * 3'
+
 permissions:
   contents: read
 
@@ -69,7 +79,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL_NAME: ${{ inputs.model || vars.GEMINI_MODEL_NAME || 'gemini-3.8-flash' }}
           PYTHONPATH: ${{ github.workspace }}
-          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_MODE: ${{ inputs.mode || 'audit_only' }}
           INPUT_NAVAREA: ${{ inputs.navarea }}
         run: |
           ARGS=(--mode "$INPUT_MODE" --report-dir audit-report --model-name "$GEMINI_MODEL_NAME")
@@ -78,6 +88,39 @@ jobs:
           fi
           python -m scripts.audit_supabase_parsing "${ARGS[@]}"
 
+      # Phase 5 WP3-lite: alert on incomplete scheduled scans. The audit script
+      # exits 0 even on a partial scan (status='partial'), so green != complete.
+      # This step makes scheduled runs fail loudly instead, which sends the
+      # GitHub workflow-failure email (chosen alert channel). Manual runs keep
+      # the existing behaviour. always() so the alert fires even if the audit
+      # step itself failed. Alert is on scan completeness only for now; the
+      # baseline_v2.json regression comparison (WP3 full) lands with WP1 after
+      # the Phase 4 after-report exists.
+      - name: Alert on incomplete scheduled scan
+        if: github.event_name == 'schedule' && always()
+        run: |
+          SUMMARY_FILE="audit-report/summary.json"
+          if [[ ! -f "$SUMMARY_FILE" ]]; then
+            echo "::error::Scheduled audit produced no summary.json — the run did not complete."
+            exit 1
+          fi
+          STATUS=$(python3 -c "import json; print(json.load(open('$SUMMARY_FILE')).get('status'))")
+          SCAN_COMPLETE=$(python3 -c "import json; print(json.load(open('$SUMMARY_FILE')).get('scan_complete'))")
+          EXAMINED=$(python3 -c "import json; print(json.load(open('$SUMMARY_FILE')).get('examined_count'))")
+          ISSUES=$(python3 -c "import json; print(json.load(open('$SUMMARY_FILE')).get('issue_count'))")
+          {
+            echo "## Scheduled parsing audit"
+            echo "- status: ${STATUS}"
+            echo "- examined: ${EXAMINED}"
+            echo "- issues: ${ISSUES}"
+            echo "- scan complete: ${SCAN_COMPLETE}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$SCAN_COMPLETE" != "True" || "$STATUS" != "succeeded" ]]; then
+            echo "::error::Scheduled audit scan incomplete (status=${STATUS}, scan_complete=${SCAN_COMPLETE}, examined=${EXAMINED}, issues=${ISSUES}). Failing the workflow to trigger the failure email."
+            exit 1
+          fi
+          echo "[audit] Scheduled audit OK: examined=${EXAMINED}, issues=${ISSUES}."
+
       - name: Upload audit report
         if: always()
         uses: actions/upload-artifact@v4
@@ -85,7 +128,7 @@ jobs:
           name: supabase-parsing-audit-${{ github.run_id }}
           path: audit-report/
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: 90
 
   apply-approved:
     if: inputs.mode == 'apply_approved'
