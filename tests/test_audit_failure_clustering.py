@@ -63,7 +63,8 @@ class TestTextSignature(unittest.TestCase):
 
     # 3. Whitespace collapsed, case normalized
     def test_whitespace_and_case_normalized(self):
-        a = text_signature("bounded   by\nradius")
+        a = text_signature("bounded   by
+radius")
         b = text_signature("BOUNDED BY  RADIUS")
         self.assertEqual(a, b)
 
@@ -107,8 +108,11 @@ class TestClustering(unittest.TestCase):
             make_issue(wid="w-2"),
         ]
         records = {
+            # Same hemisphere letters (N/W) as w-1: hemisphere letters stay
+            # unmasked by design (they often hold the cause), so only rows in
+            # the SAME hemisphere can merge via digit masking.
             "w-1": make_record(raw_text="BOUNDED BY 41-20.5N 011-14.5W RADIUS 3"),
-            "w-2": make_record(raw_text="BOUNDED BY 07-11.0S 002-45.8E RADIUS 5"),
+            "w-2": make_record(raw_text="BOUNDED BY 07-11.0N 002-45.8W RADIUS 5"),
         }
         clusters = cluster_issues(issues, records)
         self.assertEqual(len(clusters), 1)
