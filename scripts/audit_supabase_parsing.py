@@ -43,6 +43,29 @@ from shared.validation import validate_lat_lon, validate_warning_id
 from shared.utils import parse_coordinates, repair_coordinate_token
 
 DEFAULT_MODEL = "gemini-3.8-flash"
+
+# Columns fetched from nav_warning_geometries. The live table stores geometry as
+# the PostGIS `geometry` column `geom_postgis` (verified 2026-10-28 via
+# information_schema: there is NO `geojson` or `geom_geojson` column), so the
+# GeoJSON payload is requested as a PostgREST computed column:
+#   st_asgeojson(geom_postgis)  ->  returned under the key "st_asgeojson".
+GEOMETRY_SELECT_COLS = (
+    "warning_id, zone_label, feature_type, buffer_nm, corridor_half_width_nm, "
+    "st_asgeojson(geom_postgis)"
+)
+
+# Keys under which a GeoJSON payload may appear in a fetched geometry row.
+GEOJSON_KEYS = ("st_asgeojson", "geojson", "geom_geojson")
+
+
+class GeometrySchemaError(RuntimeError):
+    """Raised when fetched geometry rows carry no GeoJSON payload key.
+
+    Fail-loudly guard: without it, the geometry validation silently no-ops for
+    the entire run (a fetch via `select *` succeeds, every lookup returns
+    None, and the report comes back green but geometry-blind). The run must
+    abort instead.
+    """
 API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
 
 EXIT_MODEL_UNAVAILABLE = 3  # fail-closed: the Gemini model could not be verified
@@ -145,20 +168,36 @@ def fetch_geometries_for_warnings(
         return {}
 
     geoms_by_wid: Dict[str, List[Dict[str, Any]]] = {wid: [] for wid in warning_ids}
+    geojson_key_checked = False
 
     for i in range(0, len(warning_ids), batch_size):
         chunk = warning_ids[i:i + batch_size]
         try:
             res = (
                 client.table("nav_warning_geometries")
-                .select("*")
+                .select(GEOMETRY_SELECT_COLS)
                 .in_("warning_id", chunk)
                 .execute()
             )
-            for g in (res.data or []):
+            rows = res.data or []
+            # Fail-loudly schema check (first fetched row only): every row must
+            # carry a GeoJSON payload key, otherwise all geometry checks would
+            # silently no-op for the rest of the run.
+            if rows and not geojson_key_checked:
+                geojson_key_checked = True
+                if not any(k in rows[0] for k in GEOJSON_KEYS):
+                    raise GeometrySchemaError(
+                        "Fetched nav_warning_geometries rows carry none of the GeoJSON keys "
+                        + str(GEOJSON_KEYS)
+                        + ". Geometry validation would silently no-op; aborting the run "
+                        "instead of producing a geometry-blind report."
+                    )
+            for g in rows:
                 wid = g.get("warning_id")
                 if wid in geoms_by_wid:
                     geoms_by_wid[wid].append(g)
+        except GeometrySchemaError:
+            raise
         except Exception as exc:
             print(f"[warning] Failed to fetch geometries for batch {i}: {exc}", file=sys.stderr)
 
@@ -370,7 +409,11 @@ def validate_warning_geometry(
             })
 
         # Inspect geojson payload if available in raw representation or json
-        geojson_blob = geom.get("geojson") or geom.get("geom_geojson")
+        geojson_blob = None
+        for _geojson_key in GEOJSON_KEYS:
+            geojson_blob = geom.get(_geojson_key)
+            if geojson_blob:
+                break
         if isinstance(geojson_blob, str):
             try:
                 geojson_blob = json.loads(geojson_blob)
