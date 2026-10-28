@@ -70,6 +70,12 @@ API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
 
 EXIT_MODEL_UNAVAILABLE = 3  # fail-closed: the Gemini model could not be verified
 
+# Report schema version. v2 adds the coverage / failures / issue_summary /
+# limitations sections (Phase 2 work packages 2-4 fill them in); every v1 key
+# keeps its name and shape, and v1 consumers must keep reading v2 reports --
+# backward compatibility is enforced by test_report_v2_backward_compatible.
+REPORT_VERSION = 2
+
 # Allowlisted fields that can be corrected on nav_warnings via approved proposals.
 # This must remain a subset of the columns accepted by admin_save_nav_warning(p_update).
 # title / area_text / valid_from / valid_to are deliberately EXCLUDED: they are
@@ -1064,6 +1070,7 @@ def run_audit(
 
     report: Dict[str, Any] = {
         "audit_run_id": run_id,
+        "report_version": REPORT_VERSION,
         "mode": mode,
         "navarea_filter": navarea,
         "model_name": selected_model if mode == "propose_corrections" else None,
@@ -1077,6 +1084,13 @@ def run_audit(
         "issues": [],
         "proposals": [],
         "apply_summary": {},
+        # --- v2 sections (Phase 2 WP2 coverage / WP3 failures /
+        # WP4 issue_summary + limitations). Empty in WP1; later work
+        # packages populate them. Additive only: v1 keys are frozen.
+        "coverage": {},
+        "failures": {},
+        "issue_summary": {},
+        "limitations": [],
     }
 
     try:
