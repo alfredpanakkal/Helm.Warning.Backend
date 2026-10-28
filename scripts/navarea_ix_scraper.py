@@ -35,6 +35,13 @@ Document-link resolution (re-verified live 2026-10-27):
      own 'NAVAREA IX nnn/yy' header — the site's 404 page comes back
      with an HTTP-200 body, so status alone proves nothing.
 
+     Header note (live CI failure 2026-10-28): SOME 2023-era files use
+     the legacy WWNWS prosign form 'NAVAREA IX (.) nnn/yy (.)' (e.g.
+     20231009SEC 376.txt; 447/23 and 435/23 do not) — the optional
+     '(.)' separator before the number is accepted, in the scraper
+     validation AND the universal parser (see
+     shared/navarea_universal_text.py).
+
 Strategy (fail-closed, mirrors scripts/navarea_vii_scraper.py):
   1. Fetch the page (Scrapling Fetcher — stealthy headers, retries;
      requests fallback); any error -> non-zero exit, harvest untouched,
@@ -353,8 +360,11 @@ def extract_rows(page_html: str) -> List[Tuple[str, str, Optional[str], str]]:
 
 def _expected_header_re(number: str, year: str) -> "re.Pattern":
     yy = year[-2:]
+    # 2023-era files open with the legacy WWNWS prosign header
+    # 'NAVAREA IX (.) nnn/yy (.)' (live: 20231009SEC 376.txt) — the
+    # optional '(.)' separator before the number is accepted.
     return re.compile(
-        r"NAV\s*AREA\s+IX\s+" + re.escape(number) +
+        r"NAV\s*AREA\s+IX\b\s*(?:\(\.\)\s*)?\s*" + re.escape(number) +
         r"\s*/\s*" + re.escape(yy) + r"(?!\d)", re.IGNORECASE)
 
 

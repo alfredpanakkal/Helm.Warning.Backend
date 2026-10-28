@@ -6,6 +6,12 @@ prose, the 6-column metadata table) and verifies the extract -> fetch ->
 concatenate -> universal-parser chain end to end, offline, with an
 injected document fetcher.
 
+Also covers the legacy WWNWS prosign header
+'NAVAREA IX (.) nnn/yy (.)' of the site's 2023-era files (live CI
+failure 2026-10-28: the correct 376/23 document was refused as a
+wrong link because of the '(.)' separator) — it must validate AND
+parse like any other warning, while wrong numbers/years stay refused.
+
 The fixture mirrors the raw server HTML as re-verified live
 2026-10-27: some ATTACHMENT cells carry a real href (412/26), some carry
 only a link-less 'View Document' placeholder while the row DTG allows
@@ -312,6 +318,52 @@ class TestUniversalParserIngestion(unittest.TestCase):
     def test_towing_operation_yields_geometry(self):
         with_geom = [w for w in self.parsed["nav_warnings"] if w.get("spatial")]
         self.assertTrue(with_geom, "expected at least one warning with geometry")
+
+
+class TestLegacyProsignHeader(unittest.TestCase):
+    """Live CI failure 2026-10-28: the 2023-era paknavy files open with
+    the legacy WWNWS prosign header 'NAVAREA IX (.) 376/23 (.)' — the
+    '(.)' separator once failed the scraper's header validation and
+    aborted the whole harvest. The form must validate AND parse like
+    any other warning; wrong numbers/years stay refused."""
+
+    # Verbatim shape of the live file 20231009SEC 376.txt.
+    _DOC_376 = (
+        "091500 UTC OCT 2023\r\n"
+        "NAVAREA IX (.) 376/23 (.) IRAN (.) TANGEH-YE HORMOZ (.)\r\n"
+        "CHARTS BA 2888, 2851 AND 3173\r\n"
+        "\r\n"
+        "2. FOLLOWING CHANGES IN AIDS TO NAVIGATION OF HORMOZGAN\r\n"
+        "COASTAL WATERS\r\n"
+        "\r\n"
+        "A. STARBOARD HAND BEACON TOWER FL 5 SEC 5 M 5 METERS\r\n"
+        "ESTABLISHED IN POSITION 25-40.99N 057-51.93E\r\n"
+    )
+
+    def _rows(self, number, year):
+        return [(number, year, _BASE + "20231009SEC%20376.txt",
+                 "091500 UTC OCT 2023")]
+
+    def test_prosign_form_is_accepted(self):
+        bulletin = assemble_bulletin(self._rows("376", "23"),
+                                     lambda href: self._DOC_376)
+        self.assertIsNotNone(bulletin)
+        self.assertIn("NAVAREA IX (.) 376/23", bulletin)
+
+    def test_prosign_header_with_wrong_number_is_refused(self):
+        self.assertIsNone(assemble_bulletin(self._rows("377", "23"),
+                                             lambda href: self._DOC_376))
+
+    def test_prosign_header_with_wrong_year_is_refused(self):
+        self.assertIsNone(assemble_bulletin(self._rows("376", "26"),
+                                             lambda href: self._DOC_376))
+
+    def test_prosign_block_parses_via_universal_parser(self):
+        bulletin = assemble_bulletin(self._rows("376", "23"),
+                                     lambda href: self._DOC_376)
+        parsed = parse_bulletin_text(bulletin, "ix")
+        ids = [w["warning_id"] for w in parsed["nav_warnings"]]
+        self.assertEqual(ids, ["NAVAREA IX 376/23"])
 
 
 if __name__ == "__main__":

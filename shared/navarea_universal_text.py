@@ -9,7 +9,10 @@ standard, but the live coordinator bulletins (corpus uploaded Oct 2026)
 deviate per region, so this module now carries:
 
   * a tolerant default header regex (optional 'WARNING'/'MSG' word,
-    2- OR 4-digit years as used by II / XVII / XVIII),
+    2- OR 4-digit years as used by II / XVII / XVIII, and the optional
+    '(.)' WWNWS prosign separator — the legacy form
+    'NAVAREA IX (.) 376/23 (.)' lives in the paknavy 2023-era files,
+    verified live 2026-10-28),
   * per-region extra header patterns for the known quirks:
       V    Brazil publishes bare '0648/26' lines (no NAVAREA numeral)
       VI   Argentina: 'NAVAREA - 0355-2026' (numeral omitted)
@@ -85,7 +88,7 @@ _ALL_NUMERALS = ("XXI|XX|XIX|XVIII|XVII|XVI|XV|XIV|XIII"
 # tolerant of 'NAV AREA' spacing and 2/4-digit years.
 RE_ANY_REGION_HEADER = re.compile(
     r"NAV\s*AREA\s+(" + _ALL_NUMERALS + r")\b\s*[-\u2013]?\s*"
-    r"(?:WARNING\s+|MSG\s+)?(\d{1,4})\s*(?:/\s*|OF\s+)(\d{4}|\d{2})(?!\d)",
+    r"(?:WARNING\s+|MSG\s+)?(?:\(\.\)\s*)?(\d{1,4})\s*(?:/\s*|OF\s+)(\d{4}|\d{2})(?!\d)",
     re.IGNORECASE,
 )
 
@@ -116,7 +119,7 @@ def warning_header_re(roman: str):
     """
     return re.compile(
         r"NAV\s*AREA\s+" + roman + r"\b\s*[-\u2013]?\s*(?:WARNING\s+|MSG\s+)?"
-        r"(\d{1,4})\s*/\s*(\d{4}|\d{2})(?!\d)",
+        r"(?:\(\.\)\s*)?(\d{1,4})\s*/\s*(\d{4}|\d{2})(?!\d)",
         re.IGNORECASE,
     )
 
@@ -125,7 +128,7 @@ def cancel_ref_re(roman: str):
     """'CANCEL NAVAREA <roman> [MSG|WARNING] [-]n/yy' cross-ref regex."""
     return re.compile(
         r"CANCEL\s+NAV\s*AREA\s+" + roman
-        + r"\b\s*(?:WARNING\s+|MSG\s*)?[-\u2013]?\s*(\d{1,4})\s*/\s*(\d{4}|\d{2})(?!\d)",
+        + r"\b\s*(?:WARNING\s+|MSG\s*)?[-\u2013]?\s*(?:\(\.\)\s*)?(\d{1,4})\s*/\s*(\d{4}|\d{2})(?!\d)",
         re.IGNORECASE,
     )
 
