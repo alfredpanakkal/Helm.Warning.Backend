@@ -25,7 +25,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: navarea-ix-sync-engine
+  # '-bounded' suffix (NAVAREA V lesson, 2026-10-28): a run wedged in
+  # this group (site hang / WAF stall — no cancel tool available)
+  # otherwise queues every later run behind it for GitHub's 6-hour
+  # default job timeout. Renaming the group lets the queue move on;
+  # timeout-minutes below caps any single hang at 20 minutes.
+  group: navarea-ix-sync-engine-bounded
   cancel-in-progress: false
 
 permissions:
@@ -35,6 +40,7 @@ permissions:
 jobs:
   ingest-navarea-ix-warnings:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
