@@ -51,9 +51,9 @@ RE_RULE_93 = re.compile(r"^(\d{1,3})-(\d{2}),(\d+)([NSEW])$")
 
 _REJOIN_TOKEN = re.compile(r"^(\d{1,3})-(\d{1,2}(?:\.\d{1,4})?)([NSEW])$")
 
-// Line wrap INSIDE a coordinate token: optional CR then LF. Kept as a
-// named constant so every raw-string pattern below stays a single
-// physical line (a raw string can never span a real newline).
+# Line wrap INSIDE a coordinate token: optional CR then LF. Kept as a
+# named constant so every raw-string pattern below stays a single
+# physical line (a raw string can never span a real newline).
 _WRAP = r"\r?\n"
 
 # Each spec is (compiled_pattern, merge_fn) — a merge only applies when
