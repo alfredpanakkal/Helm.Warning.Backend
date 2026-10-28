@@ -12,6 +12,16 @@ canonical 'NAVAREA IX nnn/yy') are not re-fetched; new, recent
 (recheck window) and unparseable-DTG rows are. Unknown stored state
 (dry run / no credentials / query error) fails open to a full fetch.
 
+Also covers the legacy WWNWS prosign header 'NAVAREA IX (.) nnn/yy (.)'
+of the site's 2023-era files (live CI failure 2026-10-28: the correct
+376/23 document was refused as a wrong link because of the '(.)'
+separator) — it must validate AND parse like any other warning, while
+wrong numbers/years stay refused — and the run-level flow control of
+Alfred's revised IX strategy (2026-10-28): a run stops CLEANLY at
+MAX_REQUESTS_PER_RUN requests or on the FIRST HTTP 429 (stored rows
+kept, exit 0; no 20/40/60s retry ladder), and pre-2025 warnings are
+archived (status 'expired', never published).
+
 The fixture mirrors the raw server HTML as re-verified live
 2026-10-27: some ATTACHMENT cells carry a real href (412/26), some carry
 only a link-less 'View Document' placeholder while the row DTG allows
@@ -22,8 +32,10 @@ skipped loudly. The linked files mirror the live plain-text documents:
 DTG line, 'NAVAREA IX nnn/yy' header, region / area / charts lines,
 numbered paragraphs.
 """
+import json
 import os
 import sys
+import tempfile
 import types
 import unittest
 from datetime import date
@@ -191,9 +203,34 @@ class TestAssembleBulletin(unittest.TestCase):
         self.assertNotIn("\r", bulletin)
 
     def test_zero_resolved_documents_refuses_snapshot(self):
-        # Every document unreachable -> zero resolved -> refuse loudly.
+        # Every document unreachable: the 3rd consecutive unreachable
+        # row trips the circuit breaker (identical fail-closed refusal
+        # as the zero-resolved check would give).
         rows = extract_rows(_MINI_HTML)
         self.assertIsNone(assemble_bulletin(rows, lambda href: None))
+
+    def test_systemic_block_trips_the_circuit_breaker(self):
+        # Three unreachable rows IN A ROW = wholesale client block
+        # (rate limit / WAF) — abort loudly instead of grinding retry
+        # sleeps per remaining document (that grind wedged CI for 20
+        # minutes, live 2026-10-28).
+        rows = extract_rows(_MINI_HTML)
+        self.assertIsNone(assemble_bulletin(rows, lambda href: None))
+
+    def test_intermittent_unreachable_does_not_trip_the_breaker(self):
+        # fail -> success -> fail: the counter resets on every success;
+        # isolated dead documents still skip loudly and the harvest
+        # survives.
+        def _flaky(href):
+            if href.endswith("412.txt") or href.endswith("394.txt"):
+                return None
+            return _fake_fetch(href)
+        rows = extract_rows(_MINI_HTML)
+        bulletin = assemble_bulletin(rows, _flaky)
+        self.assertIsNotNone(bulletin)
+        self.assertNotIn("NAVAREA IX 412/26", bulletin)
+        self.assertIn("NAVAREA IX 410/26", bulletin)
+        self.assertNotIn("NAVAREA IX 394/26", bulletin)
 
     def test_unreachable_advertised_doc_is_skipped_loudly(self):
         # The site advertises links its own WAF can refuse (persistent
@@ -227,10 +264,9 @@ class _FakeResponse:
 
 
 class TestFetchUrlTransientRetry(unittest.TestCase):
-    """Transient HTTP 429/503 answers must be retried with backoff, not
-    failed closed at once. Live failure 2026-10-28: the site rate-limited
-    the harvest mid-run and a single 429 on one advertised document
-    aborted the whole sync (the runner had fetched ~110 docs cleanly)."""
+    """Transient HTTP 503 answers are retried with backoff. HTTP 429 is
+    NOT retried anymore (Alfred, 2026-10-28): the FIRST 429 raises
+    _HttpRateLimited and stops the run cleanly — no retry ladder."""
 
     _URL = "https://example.invalid/doc.txt"
 
@@ -255,23 +291,42 @@ class TestFetchUrlTransientRetry(unittest.TestCase):
             body = fetch_url(self._URL, "text/plain")
         return body, get_mock, sleep_mock
 
-    def test_transient_429_is_retried_until_success(self):
+    def test_transient_503_is_retried_until_success(self):
         body, get_mock, sleep_mock = self._fetch([
-            _FakeResponse(429, "slow down", {"Retry-After": "7"}),
+            _FakeResponse(503, "unavailable", {"Retry-After": "7"}),
             _FakeResponse(200, "NAVAREA IX 412/26", {}),
         ])
         self.assertEqual(body, "NAVAREA IX 412/26")
         self.assertEqual(get_mock.call_count, 2)
         sleep_mock.assert_called_once_with(7.0)
 
-    def test_persistent_429_fails_closed_after_retries(self):
+    def test_persistent_503_fails_closed_after_retries(self):
         body, get_mock, sleep_mock = self._fetch(
-            [_FakeResponse(429, "slow down", {})] * 10)
+            [_FakeResponse(503, "unavailable", {})] * 10)
         self.assertIsNone(body)
         self.assertEqual(get_mock.call_count,
                          navarea_ix_scraper._TRANSIENT_RETRIES + 1)
         self.assertEqual(sleep_mock.call_count,
                          navarea_ix_scraper._TRANSIENT_RETRIES)
+
+    def test_first_429_raises_without_retry_ladder(self):
+        requests_mod = (navarea_ix_scraper.requests
+                         if getattr(navarea_ix_scraper, "requests", None)
+                         is not None
+                         else types.ModuleType("requests"))
+        with (mock.patch.object(navarea_ix_scraper, "HAS_SCRAPLING", False),
+              mock.patch.object(navarea_ix_scraper, "HAS_REQUESTS", True),
+              mock.patch.object(navarea_ix_scraper, "requests", requests_mod,
+                                create=True),
+              mock.patch.object(requests_mod, "get", side_effect=[
+                  _FakeResponse(429, "slow down", {}),
+                  _FakeResponse(200, "never reached", {}),
+              ], create=True) as get_mock,
+              mock.patch("scripts.navarea_ix_scraper.time.sleep") as sleep_mock):
+            with self.assertRaises(navarea_ix_scraper._HttpRateLimited):
+                fetch_url(self._URL, "text/plain", {})
+        self.assertEqual(get_mock.call_count, 1)
+        sleep_mock.assert_not_called()
 
     def test_non_transient_status_is_not_retried(self):
         body, get_mock, sleep_mock = self._fetch(
@@ -422,6 +477,174 @@ class TestDocPause(unittest.TestCase):
             navarea_ix_scraper._pause_before_doc_fetch()
         uniform_mock.assert_called_with(3.0, 5.0)
         sleep_mock.assert_called_once_with(4.25)
+
+
+class TestLegacyProsignHeader(unittest.TestCase):
+    """Live CI failure 2026-10-28: the 2023-era paknavy files open with
+    the legacy WWNWS prosign header 'NAVAREA IX (.) 376/23 (.)' — the
+    '(.)' separator once failed the scraper's header validation and
+    aborted the whole harvest. The form must validate AND parse like
+    any other warning; wrong numbers/years stay refused."""
+
+    # Verbatim shape of the live file 20231009SEC 376.txt.
+    _DOC_376 = (
+        "091500 UTC OCT 2023\r\n"
+        "NAVAREA IX (.) 376/23 (.) IRAN (.) TANGEH-YE HORMOZ (.)\r\n"
+        "CHARTS BA 2888, 2851 AND 3173\r\n"
+        "\r\n"
+        "2. FOLLOWING CHANGES IN AIDS TO NAVIGATION OF HORMOZGAN\r\n"
+        "COASTAL WATERS\r\n"
+        "\r\n"
+        "A. STARBOARD HAND BEACON TOWER FL 5 SEC 5 M 5 METERS\r\n"
+        "ESTABLISHED IN POSITION 25-40.99N 057-51.93E\r\n"
+    )
+
+    def _rows(self, number, year):
+        return [(number, year, _BASE + "20231009SEC%20376.txt",
+                 "091500 UTC OCT 2023")]
+
+    def test_prosign_form_is_accepted(self):
+        bulletin = assemble_bulletin(self._rows("376", "23"),
+                                     lambda href: self._DOC_376)
+        self.assertIsNotNone(bulletin)
+        self.assertIn("NAVAREA IX (.) 376/23", bulletin)
+
+    def test_prosign_header_with_wrong_number_is_refused(self):
+        self.assertIsNone(assemble_bulletin(self._rows("377", "23"),
+                                             lambda href: self._DOC_376))
+
+    def test_prosign_header_with_wrong_year_is_refused(self):
+        self.assertIsNone(assemble_bulletin(self._rows("376", "26"),
+                                             lambda href: self._DOC_376))
+
+    def test_prosign_block_parses_via_universal_parser(self):
+        bulletin = assemble_bulletin(self._rows("376", "23"),
+                                     lambda href: self._DOC_376)
+        parsed = parse_bulletin_text(bulletin, "ix")
+        ids = [w["warning_id"] for w in parsed["nav_warnings"]]
+        self.assertEqual(ids, ["NAVAREA IX 376/23"])
+
+
+class TestRequestCapAndRateLimitStop(unittest.TestCase):
+    """Alfred's revised IX strategy (2026-10-28): a run stops CLEANLY
+    (not an error, exit 0, stored rows kept) at MAX_REQUESTS_PER_RUN
+    requests or on the FIRST HTTP 429 — no 20/40/60s retry ladder. A
+    deliberate stop is never reported as 'the site is blocking us',
+    but a 429 before anything is stored stays a loud refusal."""
+
+    @staticmethod
+    def _stats(requests=0):
+        return {"requests": requests, "rows_stored": 0,
+                "rows_skipped": 0, "rows_remaining": 0,
+                "http_429": 0, "stop_reason": None}
+
+    def test_run_stops_cleanly_at_the_cap(self):
+        rows = extract_rows(_MINI_HTML)
+        cap = navarea_ix_scraper.MAX_REQUESTS_PER_RUN
+        stats = self._stats(cap - 1)
+        def _fetch(href):
+            stats["requests"] += 1
+            return _FAKE_DOCS.get(href)
+        bulletin = assemble_bulletin(rows, _fetch, stats)
+        # 412/26 fetched (the 60th request), then the cap stops the run
+        # before 410/26: stored rows kept, clean stop, not an error.
+        self.assertIsNotNone(bulletin)
+        self.assertIn("NAVAREA IX 412/26", bulletin)
+        self.assertNotIn("NAVAREA IX 410/26", bulletin)
+        self.assertEqual(stats["stop_reason"], "request_cap")
+        self.assertEqual(stats["rows_stored"], 1)
+        self.assertEqual(stats["rows_remaining"], 3)
+
+    def test_retries_count_toward_the_cap(self):
+        # Every retry counts toward the cap: two 503s then a 200 = 3.
+        stats = {}
+        requests_mod = (navarea_ix_scraper.requests
+                        if getattr(navarea_ix_scraper, "requests", None)
+                        is not None else types.ModuleType("requests"))
+        with (mock.patch.object(navarea_ix_scraper, "HAS_SCRAPLING", False),
+              mock.patch.object(navarea_ix_scraper, "HAS_REQUESTS", True),
+              mock.patch.object(navarea_ix_scraper, "requests", requests_mod,
+                                create=True),
+              mock.patch.object(requests_mod, "get", side_effect=[
+                  _FakeResponse(503, "unavailable", {}),
+                  _FakeResponse(503, "unavailable", {}),
+                  _FakeResponse(200, "NAVAREA IX 412/26", {}),
+              ], create=True),
+              mock.patch("scripts.navarea_ix_scraper.time.sleep")):
+            body = fetch_url("https://example.invalid/doc.txt",
+                             "text/plain", stats)
+        self.assertEqual(body, "NAVAREA IX 412/26")
+        self.assertEqual(stats["requests"], 3)
+
+    def test_cap_stop_does_not_trip_the_circuit_breaker(self):
+        # An unreachable row then a clean cap stop: the deliberate stop
+        # must not be reported as a wholesale block (breaker untouched).
+        rows = extract_rows(_MINI_HTML)
+        cap = navarea_ix_scraper.MAX_REQUESTS_PER_RUN
+        stats = self._stats(cap - 2)
+        def _fetch(href):
+            stats["requests"] += 1
+            if href.endswith("412.txt"):
+                return None  # unreachable row (breaker counter = 1)
+            return _FAKE_DOCS.get(href)
+        bulletin = assemble_bulletin(rows, _fetch, stats)
+        self.assertIsNotNone(bulletin)  # 410/26 stored before the cap
+        self.assertIn("NAVAREA IX 410/26", bulletin)
+        self.assertNotIn("NAVAREA IX 412/26", bulletin)
+        self.assertEqual(stats["stop_reason"], "request_cap")
+
+    def test_single_429_ends_the_run_cleanly_with_stored_rows_kept(self):
+        rows = extract_rows(_MINI_HTML)
+        stats = self._stats()
+        def _fetch(href):
+            stats["requests"] += 1
+            if href.endswith("412.txt"):
+                return _FAKE_DOCS.get(href)  # first row stored
+            raise navarea_ix_scraper._HttpRateLimited("HTTP 429")
+        bulletin = assemble_bulletin(rows, _fetch, stats)
+        self.assertIsNotNone(bulletin)
+        self.assertIn("NAVAREA IX 412/26", bulletin)
+        self.assertNotIn("NAVAREA IX 410/26", bulletin)
+        self.assertEqual(stats["http_429"], 1)
+        self.assertEqual(stats["stop_reason"], "http_429")
+        self.assertEqual(stats["rows_remaining"], 3)
+
+    def test_429_on_the_first_requests_is_a_loud_refusal(self):
+        rows = extract_rows(_MINI_HTML)
+        stats = self._stats()
+        def _fetch(href):
+            stats["requests"] += 1
+            raise navarea_ix_scraper._HttpRateLimited("HTTP 429")
+        self.assertIsNone(assemble_bulletin(rows, _fetch, stats))
+        self.assertEqual(stats["stop_reason"], "http_429")
+
+
+class TestArchiveOldWarnings(unittest.TestCase):
+    """Pre-2025 warnings are stored as archive (status 'expired'),
+    never published on the active-only portal (Alfred 2026-10-28)."""
+
+    def test_pre_2025_warnings_are_archived_others_untouched(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "parsed.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"nav_warnings": [
+                    {"warning_id": "NAVAREA IX 412/26"},
+                    {"warning_id": "NAVAREA IX 347/25"},
+                    {"warning_id": "NAVAREA IX 376/23"},
+                    {"warning_id": "NAVAREA IX 100/24"},
+                    {"warning_id": "not a warning id"},
+                ], "memo": {"region": "ix"}}, f)
+            archived = navarea_ix_scraper._archive_old_warnings(path)
+            self.assertEqual(archived, 2)
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            by_id = {r["warning_id"]: r for r in data["nav_warnings"]}
+            self.assertEqual(by_id["NAVAREA IX 376/23"]["status"], "expired")
+            self.assertEqual(by_id["NAVAREA IX 100/24"]["status"], "expired")
+            self.assertNotIn("status", by_id["NAVAREA IX 412/26"])
+            self.assertNotIn("status", by_id["NAVAREA IX 347/25"])
+            self.assertNotIn("status", by_id["not a warning id"])
+            self.assertEqual(data["memo"], {"region": "ix"})
 
 
 if __name__ == "__main__":
