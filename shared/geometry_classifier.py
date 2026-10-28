@@ -78,7 +78,7 @@ MIN_SEQUENTIAL_N = 5
 # "RIGS" — a bare \b...\\b token fails on word suffixes).
 RE_BOUNDED = re.compile(
     r"AREA\s+BOUNDED\s+BY|BOUND\s+BY|EXCLUSION\s+ZONE|RESTRICTED\s+AREA"
-    r"|LINES?\s+JOINING"
+    r"|LINES?\s+JOINING|AREA\s+DELIMITED\s+BY|ENCLOSED\s+BY"
 )
 RE_BBOX = re.compile(r"AREA\s+BOUNDED\s+WITHIN")
 RE_POINT_OPS = re.compile(
@@ -98,7 +98,8 @@ RE_RIG_UNITS = re.compile(
     r"\b(?:RIGS?|JACK-?UPS?|DRILLS?HIPS?|MODUS?)\b"
 )
 # 'ALONG LINE JOINING' is a route: beats RE_BOUNDED's 'LINES? JOINING'.
-RE_ALONG_LINE_JOINING = re.compile(r"ALONG\s+LINE\s+JOINING")
+RE_ALONG_LINE_JOINING = re.compile(
+    r"ALONG\s+(?:LINE|TRACKLINE|TRACK|ROUTE|CENTRELINE)\s+JOINING")
 # Boundary wording for the rig-rule conflict check only — deliberately
 # BROADER than RE_BOUNDED: rig work areas use 'AREA DELIMITED BY' /
 # 'ENCLOSED BY' (NAVAREA III 0122/26). Matching here only sets a review
