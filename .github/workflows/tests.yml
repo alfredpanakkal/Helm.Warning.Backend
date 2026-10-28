@@ -38,7 +38,7 @@ jobs:
             echo "❌ **unittest failed** on ${{ github.sha }}"
             echo ""
             echo '~~~'
-            tail -n 220 unittest.log
+            tail -n 2600 unittest.log
             echo '~~~'
           } > comment.md
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file comment.md
