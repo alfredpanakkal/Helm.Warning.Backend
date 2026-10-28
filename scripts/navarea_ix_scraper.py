@@ -36,6 +36,18 @@ Document-link resolution (re-verified live 2026-10-27):
      with an HTTP-200 body, so status alone proves nothing.
 
 Strategy (fail-closed, mirrors scripts/navarea_vii_scraper.py):
+  0. Skip already-stored rows FIRST (fixes the WAF 429s at the root):
+     on runs with DB access (no ALLOW_DRY_RUN, credentials present)
+     the warnings already stored for source 'manual-navarea-ix' are
+     queried and their documents NOT re-fetched — only new rows,
+     rows inside the recheck window (recent DTGs — coordinators amend
+     recent warnings in place) and rows with unparseable DTGs are
+     fetched. Unknown state (dry run / no credentials / query error)
+     fails OPEN: fetch everything. A partial harvest is NEVER treated
+     as a complete snapshot — the sync's evidence-based cancel pass
+     stays disabled (full_snapshot=False), so warnings skipped because
+     they are stored can never be auto-cancelled. IX_FULL_SNAPSHOT=1
+     forces a full fetch (backfill / lifecycle sweep).
   1. Fetch the page (Scrapling Fetcher — stealthy headers, retries;
      requests fallback); any error -> non-zero exit, harvest untouched,
      parse and sync NEVER run (never sync a partial snapshot).
@@ -58,10 +70,12 @@ Run:
     python -m scripts.run_navarea_ix
 """
 import html as _html
+import json
 import os
 import re
 import sys
 import time
+from datetime import date, datetime
 from typing import Callable, List, Optional, Tuple
 from urllib.parse import quote as _urlquote, urljoin as _urljoin
 
@@ -150,6 +164,18 @@ _MONTHS = {"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
 _DOC_URL_BASE = ("https://hydrography.paknavy.gov.pk/wp-content/plugins/"
                  "navarea-warnings/custom_uploaded_warnings_for_navarea/")
 _DOC_PREFIXES = ("SEC", "EC")  # both live on the site (see docstring)
+
+# --- Stored-state row skipping -------------------------------------------
+# The universal parser stamps source_id 'manual-navarea-ix' and
+# canonical_id 'NAVAREA IX nnn/yy' for every warning it ingests, so a
+# table row whose warning is already in the DB is identifiable from
+# the row alone.
+IX_SOURCE_ID = "manual-navarea-ix"
+# Rows whose DTG falls inside this window are re-fetched even when
+# already stored (catches amendments to recent warnings).
+RECHECK_WINDOW_DAYS = 14
+_STORED_KEY_RE = re.compile(r"^NAVAREA\s+IX\s+(\d{1,4})/(\d{2})$",
+                            re.IGNORECASE)
 
 # Every harvested document must open with its own 'NAVAREA IX nnn/yy'
 # header (verified in every live file sampled: 412/26, 410/26, 409/26,
@@ -315,6 +341,103 @@ def _candidate_doc_urls(number: str, dtg_text: str) -> List[str]:
             for prefix in _DOC_PREFIXES]
 
 
+def _dtg_is_recent(dtg_text: str, today: Optional[date] = None) -> bool:
+    """True when the row DTG falls inside the recheck window.
+
+    Unparseable DTGs are ALWAYS 'recent' (fail-safe: such a row is
+    re-fetched rather than silently skipped on a parsing hiccup).
+    """
+    datestamp = _dtg_datestamp(dtg_text)
+    if not datestamp:
+        return True
+    if today is None:
+        today = datetime.utcnow().date()
+    try:
+        row_date = datetime.strptime(datestamp, "%Y%m%d").date()
+    except ValueError:
+        return True
+    return (today - row_date).days <= RECHECK_WINDOW_DAYS
+
+
+def _supabase_client_or_none():
+    """Supabase client for the stored-state lookup, or None (fail-open).
+
+    None on ALLOW_DRY_RUN (CI PR runs: the pipeline must not touch the
+    DB — the sync layer returns no client in dry-run mode either), on
+    missing credentials (local runs; the sync layer fails loudly later
+    if they are genuinely required) and on any construction error.
+    None => the caller fetches EVERY row.
+    """
+    if os.environ.get("ALLOW_DRY_RUN", "").lower() in ("1", "true", "yes"):
+        print("NOTE: ALLOW_DRY_RUN active - no stored-state lookup; "
+              "fetching every row.")
+        return None
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+    if not url or not key:
+        print("NOTE: SUPABASE_URL/SUPABASE_KEY not set - no stored-state "
+              "lookup; fetching every row.")
+        return None
+    try:
+        from supabase import create_client
+        return create_client(url, key)
+    except Exception as e:
+        print(f"WARNING: Supabase client unavailable ({e}) - no "
+              f"stored-state lookup; fetching every row.")
+        return None
+
+
+def _stored_ix_keys(client) -> Optional[set]:
+    """(number, yy) pairs already stored for source 'manual-navarea-ix'.
+
+    None = stored state unknown (no client / query error) => the
+    caller fetches everything (fail-open). Rows whose warning number
+    is not in this set are new or previously-unstored (e.g. rows whose
+    document was unreachable in an earlier run) and are fetched.
+    """
+    if client is None:
+        return None
+    try:
+        res = (client.table("nav_warnings")
+               .select("canonical_id")
+               .eq("source_id", IX_SOURCE_ID)
+               .execute())
+    except Exception as e:
+        print(f"WARNING: stored-state query failed ({e}); fetching "
+              f"every row.")
+        return None
+    keys = set()
+    for row in (getattr(res, "data", None) or []):
+        m = _STORED_KEY_RE.match(
+            str((row or {}).get("canonical_id") or "").strip())
+        if m:
+            keys.add((int(m.group(1)), m.group(2)))
+    return keys
+
+
+def _filter_stored_rows(rows: List[Tuple[str, str, Optional[str], str]],
+                        stored_keys: Optional[set],
+                        today: Optional[date] = None
+                        ) -> Tuple[List[Tuple[str, str, Optional[str], str]], int]:
+    """Splits rows into (rows_to_fetch, already_stored_count).
+
+    A row is fetched when its warning is NOT stored, when its DTG is
+    recent (recheck window), or when its DTG is unparseable
+    (fail-safe). stored_keys None (unknown state) => fetch everything.
+    """
+    if stored_keys is None:
+        return rows, 0
+    to_fetch = []
+    stored = 0
+    for number, year, href, dtg in rows:
+        if ((int(number), year[-2:]) in stored_keys
+                and not _dtg_is_recent(dtg, today)):
+            stored += 1
+            continue
+        to_fetch.append((number, year, href, dtg))
+    return to_fetch, stored
+
+
 def extract_rows(page_html: str) -> List[Tuple[str, str, Optional[str], str]]:
     """Extracts (number, year, href-or-None, dtg) per in-force warning row.
 
@@ -433,6 +556,46 @@ def main() -> bool:
               f"sync an empty snapshot (page layout change?)")
         return False
 
+    # Skip already-stored rows FIRST (see strategy point 0): the
+    # steady-state harvest fetches only new / recent / unparseable-DTG
+    # rows, which keeps the run inside the WAF's patience.
+    full_snapshot = True
+    if os.environ.get("IX_FULL_SNAPSHOT", "").lower() in ("1", "true", "yes"):
+        print("NOTE: IX_FULL_SNAPSHOT=1 - fetching every row (backfill).")
+        stored_keys = None
+    else:
+        stored_keys = _stored_ix_keys(_supabase_client_or_none())
+    rows_to_fetch, stored_skipped = _filter_stored_rows(rows, stored_keys)
+    if stored_skipped:
+        full_snapshot = False
+        print(f"NOTE: {stored_skipped} of {len(rows)} row(s) already stored "
+              f"and outside the {RECHECK_WINDOW_DAYS}-day recheck window - "
+              f"not fetching their documents (partial snapshot; the sync's "
+              f"cancel pass stays disabled).")
+
+    if not rows_to_fetch:
+        # Steady-state no-op: every row on the page is already stored
+        # and not recent. Record an empty harvest (the workflow verifies
+        # both output files exist); the sync layer treats an empty feed
+        # as 'existing records left untouched' and the cancel pass
+        # never runs on an empty feed.
+        print("NOTE: nothing to fetch - every row is already stored and "
+              "not recent; existing records left untouched.")
+        os.makedirs(HARVEST_DIR, exist_ok=True)
+        with open(RAW_HTML_PATH, "w", encoding="utf-8") as f:
+            f.write(page_html)
+        with open(RAW_TXT_PATH, "w", encoding="utf-8") as f:
+            f.write("")
+        with open(PARSED_PATH, "w", encoding="utf-8") as f:
+            json.dump({"raw_messages": [], "nav_warnings": [],
+                       "spatial_features": [],
+                       "memo": {"region": REGION_KEY, "navarea": "IX",
+                                "source_id": IX_SOURCE_ID,
+                                "in_force_as_on": None}}, f, indent=2)
+        print(f"Empty harvest recorded -> {RAW_TXT_PATH} / {PARSED_PATH}")
+        from scripts.navarea_generic_sync import sync_to_supabase
+        return sync_to_supabase(PARSED_PATH, full_snapshot=full_snapshot)
+
     def _fetch_doc(url: str) -> Optional[str]:
         # Politeness pause before EVERY document fetch — resolved hits
         # and candidate misses alike (see _DOC_PAUSE_S: the site rate-
@@ -441,15 +604,15 @@ def main() -> bool:
             time.sleep(_DOC_PAUSE_S)
         return fetch_url(url, "text/plain;q=0.9,*/*;q=0.8")
 
-    bulletin = assemble_bulletin(rows, _fetch_doc)
+    bulletin = assemble_bulletin(rows_to_fetch, _fetch_doc)
     if bulletin is None:
         return False
 
     n_blocks = len(_HEADER_FOR_RE.findall(bulletin))
-    skipped = len(rows) - n_blocks
+    skipped = len(rows_to_fetch) - n_blocks
     if skipped:
-        print(f"NOTE: resolved {n_blocks} of {len(rows)} warning row(s); "
-              f"{skipped} skipped loudly (see warnings above).")
+        print(f"NOTE: resolved {n_blocks} of {len(rows_to_fetch)} fetched "
+              f"row(s); {skipped} skipped loudly (see warnings above).")
 
     os.makedirs(HARVEST_DIR, exist_ok=True)
     with open(RAW_HTML_PATH, "w", encoding="utf-8") as f:
@@ -464,7 +627,7 @@ def main() -> bool:
         return False
 
     from scripts.navarea_generic_sync import sync_to_supabase
-    return sync_to_supabase(PARSED_PATH)
+    return sync_to_supabase(PARSED_PATH, full_snapshot=full_snapshot)
 
 
 if __name__ == "__main__":

@@ -213,6 +213,34 @@ class TestLifecycleSafety(unittest.TestCase):
         self.assertIn("details", row)
         self.assertIn("cancel_guard", row["details"])
 
+    def test_partial_harvest_flag_disables_cancel_pass(self):
+        """full_snapshot=False (skip-stored-rows harvest): even a feed
+        that would otherwise count as a credible complete snapshot must
+        NOT cancel scrape-absent warnings — their absence is a skipping
+        decision, not evidence that the coordinator withdrew them."""
+        navarea = "NAVAREA IV"
+        source_id = "nga-navarea-iv"
+        db_ids = [f"{n:03d}/26" for n in range(1, 21)]        # 20 actives
+        feed_ids = db_ids[:15]                                 # 75% >= 50%
+
+        warnings, messages = _scraped(source_id, navarea, feed_ids)
+        client = _make_sync_client(_db_rows(navarea, db_ids), [])
+
+        ok = run_differential_sync(
+            source_id=source_id,
+            navarea_name=navarea,
+            scraped_warnings=warnings,
+            scraped_messages=messages,
+            supabase_client=client,
+            full_snapshot=False,
+        )
+        self.assertTrue(ok)
+        # No status transition may be issued: the 5 absent warnings stay
+        # active (unobserved), exactly like a partial scrape.
+        self.assertEqual(_status_updates(client), [])
+        ledger_rows = client.recorded_inserts.get("ingestion_generations", [])
+        self.assertEqual(ledger_rows[0]["details"]["cancel_guard"]["full_snapshot"], False)
+
 
 if __name__ == "__main__":
     unittest.main()

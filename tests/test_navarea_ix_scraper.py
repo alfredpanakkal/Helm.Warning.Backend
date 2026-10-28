@@ -6,6 +6,12 @@ prose, the 6-column metadata table) and verifies the extract -> fetch ->
 concatenate -> universal-parser chain end to end, offline, with an
 injected document fetcher.
 
+Also covers the stored-state row skipping (strategy point 0): rows
+whose warning is already in the DB (source 'manual-navarea-ix',
+canonical 'NAVAREA IX nnn/yy') are not re-fetched; new, recent
+(recheck window) and unparseable-DTG rows are. Unknown stored state
+(dry run / no credentials / query error) fails open to a full fetch.
+
 The fixture mirrors the raw server HTML as re-verified live
 2026-10-27: some ATTACHMENT cells carry a real href (412/26), some carry
 only a link-less 'View Document' placeholder while the row DTG allows
@@ -20,6 +26,7 @@ import os
 import sys
 import types
 import unittest
+from datetime import date
 from unittest import mock
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -29,6 +36,9 @@ if ROOT_DIR not in sys.path:
 from scripts import navarea_ix_scraper
 from scripts.navarea_ix_scraper import (
     _candidate_doc_urls,
+    _dtg_is_recent,
+    _filter_stored_rows,
+    _stored_ix_keys,
     assemble_bulletin,
     extract_rows,
     fetch_url,
@@ -144,6 +154,12 @@ class TestExtractRows(unittest.TestCase):
                                 _BASE + "20261021EC%20394.txt"])
         self.assertEqual(_candidate_doc_urls("378", "NORTHERN GULF KUWAIT"),
                          [], "malformed DTG must yield no candidates")
+
+    def test_malformed_dtg_counts_as_recent(self):
+        # Fail-safe: a row whose DTG cannot be parsed is always fetched.
+        self.assertTrue(_dtg_is_recent("NORTHERN GULF KUWAIT"))
+        self.assertFalse(_dtg_is_recent("211500 UTC OCT 2026",
+                                         today=date(2026, 12, 31)))
 
 
 class TestAssembleBulletin(unittest.TestCase):
@@ -287,6 +303,98 @@ class TestUniversalParserIngestion(unittest.TestCase):
     def test_towing_operation_yields_geometry(self):
         with_geom = [w for w in self.parsed["nav_warnings"] if w.get("spatial")]
         self.assertTrue(with_geom, "expected at least one warning with geometry")
+
+
+class _FakeStoredStateClient:
+    """Minimal supabase-like client serving one canned nav_warnings
+    result for the stored-state lookup (source_id-filtered select)."""
+
+    def __init__(self, canonical_ids):
+        self._rows = [{"canonical_id": cid} for cid in canonical_ids]
+        self.queries = []
+
+    def table(self, name):
+        self.queries.append(name)
+        return self
+
+    def select(self, *_args, **_kw):
+        return self
+
+    def eq(self, column, value):
+        self.queries.append((column, value))
+        return self
+
+    def execute(self):
+        return types.SimpleNamespace(data=self._rows)
+
+
+class _FailingStoredStateClient:
+    def table(self, name):
+        raise RuntimeError("waf block")
+
+
+class TestSkipStoredRows(unittest.TestCase):
+    """Steady-state harvests must not re-fetch documents already in the
+    DB (live 2026-10-28: the site's WAF rate-limited full harvests with
+    persistent 429s). Only NEW rows, RECENT rows (recheck window) and
+    rows whose DTG cannot be parsed are fetched."""
+
+    _FAR_FUTURE = date(2026, 12, 31)   # fixture DTGs (Oct 2026) are old
+    _TODAY = date(2026, 10, 28)        # fixture DTG 27 Oct is recent
+
+    def test_stored_keys_are_parsed_from_canonical_ids(self):
+        client = _FakeStoredStateClient([
+            "NAVAREA IX 412/26", "NAVAREA IX 376/23",
+            "garbage", "NAVAREA II 001/26", "NAVAREA IX 405/2025",
+        ])
+        self.assertEqual(_stored_ix_keys(client),
+                         {(412, "26"), (376, "23")})
+        self.assertIn(("source_id", "manual-navarea-ix"),
+                      client.queries)
+
+    def test_no_client_means_unknown_state(self):
+        self.assertIsNone(_stored_ix_keys(None))
+
+    def test_query_failure_fails_open(self):
+        self.assertIsNone(_stored_ix_keys(_FailingStoredStateClient()))
+
+    def test_stored_rows_are_not_fetched(self):
+        rows = extract_rows(_MINI_HTML)
+        stored = {(412, "26"), (410, "26")}
+        to_fetch, skipped = _filter_stored_rows(
+            rows, stored, today=self._FAR_FUTURE)
+        self.assertEqual([r[0] for r in to_fetch], ["394", "378"])
+        self.assertEqual(skipped, 2)
+
+    def test_new_and_previously_unstored_rows_are_fetched(self):
+        rows = extract_rows(_MINI_HTML)
+        to_fetch, skipped = _filter_stored_rows(
+            rows, {(394, "26")}, today=self._FAR_FUTURE)
+        self.assertEqual([r[0] for r in to_fetch], ["412", "410", "378"])
+        self.assertEqual(skipped, 1)
+
+    def test_recent_stored_rows_are_rechecked(self):
+        rows = [r for r in extract_rows(_MINI_HTML) if r[0] == "394"]
+        # 394/26 DTG 211500 UTC OCT 2026: 7 days before _TODAY -> recent.
+        to_fetch, _ = _filter_stored_rows(
+            rows, {(394, "26")}, today=self._TODAY)
+        self.assertEqual([r[0] for r in to_fetch], ["394"])
+        to_fetch, skipped = _filter_stored_rows(
+            rows, {(394, "26")}, today=self._FAR_FUTURE)
+        self.assertEqual(to_fetch, [])
+        self.assertEqual(skipped, 1)
+
+    def test_unparseable_dtg_is_always_fetched(self):
+        rows = [r for r in extract_rows(_MINI_HTML) if r[0] == "378"]
+        to_fetch, _ = _filter_stored_rows(
+            rows, {(378, "26")}, today=self._FAR_FUTURE)
+        self.assertEqual([r[0] for r in to_fetch], ["378"])
+
+    def test_unknown_state_fetches_everything(self):
+        rows = extract_rows(_MINI_HTML)
+        to_fetch, skipped = _filter_stored_rows(rows, None)
+        self.assertEqual(len(to_fetch), len(rows))
+        self.assertEqual(skipped, 0)
 
 
 if __name__ == "__main__":
