@@ -18,6 +18,7 @@ numbered paragraphs.
 """
 import os
 import sys
+import types
 import unittest
 from unittest import mock
 
@@ -218,9 +219,22 @@ class TestFetchUrlTransientRetry(unittest.TestCase):
     _URL = "https://example.invalid/doc.txt"
 
     def _fetch(self, side_effect):
+        # tests.yml runs unittest discovery on a BARE python (no pip
+        # install — live failure 2026-10-28: ModuleNotFoundError
+        # 'requests' when patching the requests module by string). Patch
+        # the module attribute the scraper actually calls, faking the
+        # module when absent, so the requests-fallback retry path stays
+        # testable in every CI environment.
+        requests_mod = (navarea_ix_scraper.requests
+                        if getattr(navarea_ix_scraper, "requests", None)
+                        is not None
+                        else types.ModuleType("requests"))
         with (mock.patch.object(navarea_ix_scraper, "HAS_SCRAPLING", False),
               mock.patch.object(navarea_ix_scraper, "HAS_REQUESTS", True),
-              mock.patch("requests.get", side_effect=side_effect) as get_mock,
+              mock.patch.object(navarea_ix_scraper, "requests", requests_mod,
+                                create=True),
+              mock.patch.object(requests_mod, "get", side_effect=side_effect,
+                                create=True) as get_mock,
               mock.patch("scripts.navarea_ix_scraper.time.sleep") as sleep_mock):
             body = fetch_url(self._URL, "text/plain")
         return body, get_mock, sleep_mock
