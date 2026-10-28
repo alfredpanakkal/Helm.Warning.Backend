@@ -41,11 +41,15 @@ Strategy (fail-closed, mirrors scripts/navarea_vii_scraper.py):
      parse and sync NEVER run (never sync a partial snapshot).
      Transient HTTP 429 / 503 answers (the site rate-limits request
      bursts) are retried with backoff before any fail-closed refusal.
-  2. Resolve one document per table row: a row whose ADVERTISED link
-     is unreachable or wrong fails the whole harvest; a row with no
-     link whose DTG-derived candidates all miss is skipped loudly
-     (never silently). Zero resolved rows -> refuse (empty snapshot).
-     The verbatim page HTML is archived alongside for provenance.
+  2. Resolve one document per table row. A row whose document
+     cannot be fetched — unreachable even after transient retries; the
+     site advertises links its own WAF refuses (persistent HTTP 429 on
+     20250903SEC 405.txt for the CI runner, live 2026-10-28) — or whose
+     DTG-derived candidates all miss is skipped loudly (never silently).
+     A row whose ADVERTISED document carries the WRONG warning header
+     still fails the whole harvest (systematic link corruption). Zero
+     resolved rows -> refuse (empty snapshot). The verbatim page HTML
+     is archived alongside for provenance.
   3. Hand the harvest to the SAME universal parser + generic sync the
      manual paste pipeline uses — one contract, scrape or paste.
 
@@ -350,12 +354,13 @@ def assemble_bulletin(rows: List[Tuple[str, str, Optional[str], str]],
     """Resolves every row's document and concatenates the blocks.
 
     Fail-closed where it matters:
-      * a row whose ADVERTISED href is unreachable, or whose document
-        does not carry the advertised warning's own 'NAVAREA IX nnn/yy'
-        header, fails the whole harvest (never sync a partial snapshot);
-      * a link-less row probes its DTG-derived candidates; a miss is
-        only a candidate miss (the site's 404 page returns HTTP 200),
-        and a row with no resolvable document at all is skipped loudly;
+      * a row whose document cannot be fetched — unreachable even
+        after transient retries (the site advertises links its own WAF
+        refuses for some clients; seen live 2026-10-28) — is skipped
+        loudly like a candidate miss: one dead document must not abort
+        the whole ~100-warning sync;
+      * a row whose ADVERTISED document carries the WRONG warning
+        header still fails the whole harvest (systemic corruption);
       * zero resolved documents overall -> None (empty snapshot).
     """
     blocks: List[str] = []
@@ -370,10 +375,15 @@ def assemble_bulletin(rows: List[Tuple[str, str, Optional[str], str]],
         for url, skippable in candidates:
             doc = fetch_doc(url)
             if doc is None or not doc.strip():
-                if not skippable:
-                    print(f"ERROR: no content for warning {number}/{year} "
-                          f"from {url}; harvest untouched.")
-                    return None
+                # Unreachable after transient retries (persistent 429/
+                # 404 — the site advertises links its own WAF refuses
+                # for some clients; seen live 2026-10-28). Skip loudly
+                # and keep harvesting — one dead document must not
+                # abort a ~100-warning sync; zero resolved overall
+                # still refuses the empty snapshot below.
+                print(f"WARNING: no content for warning {number}/{year} "
+                      f"from {url} — skipping row loudly "
+                      f"({'advertised link unreachable' if not skippable else 'candidate miss'})")
                 continue
             doc = doc.replace("\r\n", "\n").replace("\r", "\n")
             block = "\n".join(line.rstrip() for line in doc.split("\n")).strip()

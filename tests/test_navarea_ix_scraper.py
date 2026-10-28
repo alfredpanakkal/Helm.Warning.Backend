@@ -173,9 +173,24 @@ class TestAssembleBulletin(unittest.TestCase):
         bulletin = assemble_bulletin(rows, _fake_fetch)
         self.assertNotIn("\r", bulletin)
 
-    def test_fail_closed_when_advertised_document_is_unreachable(self):
+    def test_zero_resolved_documents_refuses_snapshot(self):
+        # Every document unreachable -> zero resolved -> refuse loudly.
         rows = extract_rows(_MINI_HTML)
         self.assertIsNone(assemble_bulletin(rows, lambda href: None))
+
+    def test_unreachable_advertised_doc_is_skipped_loudly(self):
+        # The site advertises links its own WAF can refuse (persistent
+        # HTTP 429 on 20250903SEC 405.txt for the CI runner, live
+        # 2026-10-28): one dead document must NOT abort the whole sync —
+        # it skips loudly and the rest of the harvest survives.
+        rows = extract_rows(_MINI_HTML)
+        bulletin = assemble_bulletin(
+            rows, lambda href: None if href.endswith("412.txt")
+            else _fake_fetch(href))
+        self.assertIsNotNone(bulletin)
+        self.assertNotIn("NAVAREA IX 412/26", bulletin)
+        self.assertIn("NAVAREA IX 410/26", bulletin)
+        self.assertIn("NAVAREA IX 394/26", bulletin)
 
     def test_fail_closed_when_advertised_document_is_the_wrong_warning(self):
         rows = extract_rows(_MINI_HTML)
