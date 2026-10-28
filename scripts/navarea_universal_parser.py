@@ -90,11 +90,15 @@ def _region_config(region_key):
     """Resolves region-dependent constants (regexes, source_id, numeral).
 
     AUSCOAST pseudo-regions ('auscoast-a' ... 'auscoast-h') are
-    Australian national coastal warnings outside NAVAREA numbering:
-    area-scoped warning ids ('AUSCOAST B 327/26'), their own source ids
-    ('manual-auscoast-b'), and no companion region. They parse rule-only
-    by construction (the Gemini layer refuses keys outside
-    UNIVERSAL_REGIONS).
+    Australian national coastal warnings outside NAVAREA numbering.
+    Per Alfred's decision they are FILED UNDER NAVAREA X (navarea 10 —
+    same coordinator, AMSA): navarea_id is 'X' like the region-'x'
+    warnings, so the Data Bank groups them under NAVAREA X. The warning
+    ids stay area-scoped ('AUSCOAST B 327/26') and the sources stay
+    per-area ('manual-auscoast-b') so duplicates AMSA lists under two
+    areas never collide and lifecycle bookkeeping stays per-area.
+    No companion region. They parse rule-only by construction (the
+    Gemini layer refuses keys outside UNIVERSAL_REGIONS).
     """
     if region_key in AUSCOAST_AREAS:
         area = AUSCOAST_AREAS[region_key]
@@ -103,7 +107,7 @@ def _region_config(region_key):
             "roman": area,
             "id_prefix": "AUSCOAST " + area,
             "source_id": "manual-" + region_key,
-            "navarea_id": "AUSCOAST " + area,
+            "navarea_id": "X",
             "header_res": [RE_AUSCOAST_HEADER],
             "cancel_res": [RE_AUSCOAST_CANCEL],
             "companion_re": RE_NEVER_MATCHES,

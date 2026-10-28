@@ -86,7 +86,8 @@ FEEDS = {
                 "universal parser. The same scraper also harvests Part 3 "
                 "(AUSCOAST coastal warnings, areas A-H) as area-scoped "
                 "pseudo-regions with their own sources (manual-auscoast-a "
-                "... -h). NOT url_text: the generic scraper must "
+                "... -h), filed under navarea X alongside the NAVAREA X "
+                "warnings. NOT url_text: the generic scraper must "
                 "not feed raw HTML into the text pipeline.",
     },
     # Norway — Kystverket NAVAREA XIX report page (HTML table view).

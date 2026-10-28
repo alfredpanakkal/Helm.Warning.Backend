@@ -69,10 +69,7 @@ def sync_to_supabase(json_file="navareas/manual/navarea_ii/parsed.json",
 
     return run_differential_sync(
         source_id=source_id,
-        # AUSCOAST pseudo-regions carry a display-ready navarea label
-        # ('AUSCOAST B'); NAVAREA regions keep the 'NAVAREA ' prefix.
-        navarea_name=(navarea if navarea.startswith("AUSCOAST")
-                      else "NAVAREA " + navarea),
+        navarea_name="NAVAREA " + navarea,
         scraped_warnings=scraped_warnings,
         scraped_messages=scraped_messages,
         full_snapshot=full_snapshot,

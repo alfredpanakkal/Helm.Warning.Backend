@@ -287,11 +287,14 @@ class TestAuscoastUniversalParserIngestion(unittest.TestCase):
                             self.parsed_d["nav_warnings"][0]["canonical_id"])
 
     def test_source_and_navarea_labels(self):
+        # AUSCOAST warnings are FILED UNDER NAVAREA X (Alfred's
+        # decision): the ids/sources stay area-scoped, the navarea
+        # label joins the NAVAREA X group.
         w = self.parsed_b["nav_warnings"][0]
         self.assertEqual(w["source_id"], "manual-auscoast-b")
-        self.assertEqual(w["navarea"], "AUSCOAST B")
+        self.assertEqual(w["navarea"], "X")
         self.assertEqual(self.parsed_b["memo"]["source_id"], "manual-auscoast-b")
-        self.assertEqual(self.parsed_b["memo"]["navarea"], "AUSCOAST B")
+        self.assertEqual(self.parsed_b["memo"]["navarea"], "X")
 
     def test_point_warning_yields_geometry(self):
         # 19-55.47S 150-16.09E -> Point (-19.9245, 150.268167)
