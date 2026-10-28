@@ -20,7 +20,10 @@ if hasattr(sys.stdout, 'reconfigure'):
 if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
 
-from shared.utils import convert_to_decimal, parse_coordinates, classify_hazard, classify_hazard_categories
+from shared.utils import (
+    convert_to_decimal, parse_block_geometries, classify_hazard,
+    classify_hazard_categories,
+)
 
 SOURCE_ID = "sma-baltic-subarea"
 NAVAREA_ID = "Baltic"
@@ -52,7 +55,24 @@ def parse_warning(raw_block, reference_header):
     yr_match = re.search(r'/(\d{2})$', warning_id)
     if yr_match and issued_text and not re.search(r'\b20\d{2}\b', issued_text):
         issued_text = f"{issued_text} 20{yr_match.group(1)}"
-    coords_text, lat, lon, spatial = parse_coordinates(raw_block)
+    # Clause-aware parse: lettered sub-areas ('A. 12-34.5N ...') become
+    # SEPARATE geometries instead of one merged shape; line-wrapped
+    # coordinate tokens are rejoined; qa flags / data quality are
+    # aggregated across clauses.
+    geoms, coords_text, qa_flags, data_quality = parse_block_geometries(raw_block)
+    if not geoms:
+        spatial = None
+        lat = lon = None
+    elif len(geoms) == 1:
+        _label, spatial, lat, lon = geoms[0]
+    else:
+        features = [{
+            "type": "Feature",
+            "properties": {"sub_area": g[0], "zone_label": g[0] or "Area"},
+            "geometry": g[1],
+        } for g in geoms]
+        spatial = {"type": "FeatureCollection", "features": features}
+        lat, lon = geoms[0][2], geoms[0][3]
     categories = classify_hazard_categories(raw_block)
     hazard = categories[0] if categories else "general"
     checksum = hashlib.sha256(raw_block.encode('utf-8')).hexdigest()
@@ -78,7 +98,9 @@ def parse_warning(raw_block, reference_header):
         "categories": categories,
         "status": "active",
         "raw_text": raw_block,
-        "spatial": spatial
+        "spatial": spatial,
+        "qa_flags": qa_flags,
+        "data_quality": data_quality or "EXPLICIT",
     }
     return raw_message, nav_warning, spatial
 

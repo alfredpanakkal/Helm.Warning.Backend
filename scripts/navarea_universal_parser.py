@@ -50,7 +50,9 @@ try:
 except ImportError:  # PR-A hotfix: Gemini layer not deployed — stay usable.
     parse_bulletin_with_fallback = None
 
-from shared.utils import parse_coordinates, classify_hazard_categories
+from shared.utils import (
+    parse_coordinates, parse_coordinates_detailed, classify_hazard_categories,
+)
 from shared.navarea_universal_text import (
     UNIVERSAL_REGIONS, NAVAREA_NAMES, regions_in_text,
     region_header_patterns, region_cancel_patterns, normalize_year, warning_header_re,
@@ -63,6 +65,10 @@ from shared import translation
 # Line-anchored: a sentence-ending date like '... UTC oct 26.\nTo report'
 # must never be mistaken for item 26 (NAVAREA II rig-list bug).
 RE_ITEM_LINE = re.compile(r"^[ \t]*(\d{1,2})\.[\s]+(?=[A-Z])", re.MULTILINE)
+# Lettered sub-area line: 'A. 12-34.5N ...' — the letter DIRECTLY introduces
+# coordinates (lookahead digit). NAVAREA XI 0475/26 style: areas A./B./C.
+# must parse as SEPARATE geometries, never one merged shape.
+RE_LETTERED_LINE = re.compile(r"^[ \t]*([A-Z])\.[\s]+(?=\d)", re.MULTILINE)
 # 'WARNINGS IN FORCE AS ON 13 OCTOBER 2026' (Australia X bulletin header).
 RE_AS_ON = re.compile(
     r"WARNINGS?\s+IN\s+FORCE\s+AS\s+ON\s+(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})",
@@ -155,22 +161,33 @@ def _clean_line(line: str) -> str:
 def _segment_clauses(body: str):
     """
     Splits a warning body into geometry clauses:
-      - numbered items (1. 2. ...) and lettered sub-areas (A. B. ...)
+      - numbered items (1. 2. ...) and lettered sub-areas (A. B. ...) —
+        the lettered form only when the letter DIRECTLY introduces a
+        coordinate ('A. 12-34.5N ...'); NAVAREA XI 0475/26 areas A/B/C
+        must never merge into one shape.
       - otherwise a single clause with the full body.
     Returns a list of {label, text}.
     """
-    matches = list(RE_ITEM_LINE.finditer(body))
-    if not matches:
+    marks = [
+        {"start": m.start(), "label": m.group(1).strip()}
+        for m in RE_ITEM_LINE.finditer(body)
+    ] + [
+        {"start": m.start(), "label": m.group(1).strip()}
+        for m in RE_LETTERED_LINE.finditer(body)
+    ]
+    if not marks:
         return [{"label": "Area", "text": body}]
-
+    marks.sort(key=lambda x: x["start"])
     clauses = []
-    preamble = body[:matches[0].start()].strip()
+    preamble = body[:marks[0]["start"]].strip()
     if preamble:
         clauses.append({"label": "Area", "text": preamble})
-    for i, m in enumerate(matches):
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
-        chunk = body[m.start():end].strip()
-        label = m.group(1).strip() or "Item " + str(i + 1)
+    for idx, mark in enumerate(marks):
+        end = marks[idx + 1]["start"] if idx + 1 < len(marks) else len(body)
+        chunk = body[mark["start"]:end].strip()
+        if not chunk:
+            continue
+        label = mark["label"] or "Item " + str(idx + 1)
         clauses.append({"label": label, "text": chunk})
     return clauses
 
@@ -316,11 +333,27 @@ def parse_warning(block, cfg):
     clauses = _segment_clauses(body)
 
     geoms = []
+    qa_flags = []
+    _dq_order = {"EXPLICIT": 0, "INFERRED": 1, "AMBIGUOUS": 2}
+    data_quality = None
     for clause in clauses:
-        _, lat, lon, spatial = parse_coordinates(clause["text"])
+        _, lat, lon, spatial, report = parse_coordinates_detailed(clause["text"])
+        for flag in report.get("flags") or []:
+            if flag not in qa_flags:
+                qa_flags.append(flag)
+        basis = report.get("basis")
+        if basis:
+            entry = "geometry_basis:" + basis
+            if entry not in qa_flags:
+                qa_flags.append(entry)
+        clause_quality = report.get("data_quality")
+        if clause_quality and (
+            data_quality is None
+            or _dq_order[clause_quality] > _dq_order[data_quality]
+        ):
+            data_quality = clause_quality
         if spatial:
             geoms.append((clause["label"], spatial, lat, lon))
-
     if not geoms:
         spatial_fc = None
         lat = lon = None
@@ -376,6 +409,8 @@ def parse_warning(block, cfg):
         "sub_areas": [c["label"] for c in clauses],
         "geometry_sub_areas": geom_labels,
         "cross_refs": _extract_cross_refs(raw_text, cfg),
+        "qa_flags": qa_flags,
+        "data_quality": data_quality or "EXPLICIT",
     }
     return raw_message, nav_warning
 

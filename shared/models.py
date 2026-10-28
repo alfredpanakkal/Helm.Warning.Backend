@@ -301,7 +301,18 @@ def build_master_payload(record: Dict[str, Any]) -> Dict[str, Any]:
     unplotted_reason = record.get("unplotted_reason")
     if not geoms:
         triage_tier = "C"
-        unplotted_reason = unplotted_reason or "no_valid_geometry"
+        if not unplotted_reason:
+            # Silent-discard fix: a blanket 'no_valid_geometry' hid the
+            # actual refusal reason. Map the parser's qa flags onto the
+            # schema's unplotted_reason vocabulary; 'no_valid_geometry'
+            # only when the parse was truly silent.
+            qa_flags = record.get("qa_flags") or []
+            if "MISSING_HEM" in qa_flags:
+                unplotted_reason = "missing_hemisphere"
+            elif "VALIDATION_FAILED" in qa_flags:
+                unplotted_reason = "validation_failed"
+            else:
+                unplotted_reason = "no_valid_geometry"
 
     valid_from = parse_safe_iso_timestamp(record.get("valid_from") or record.get("publication_time") or record.get("issued_text"))
     valid_to = parse_safe_iso_timestamp(record.get("valid_to") or record.get("cancellation_date"))
