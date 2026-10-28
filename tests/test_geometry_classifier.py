@@ -207,6 +207,48 @@ class TestKeywordTaxonomy(unittest.TestCase):
         self.assertEqual(spatial["type"], "MultiPoint")
 
 
+class TestRigListAlwaysPoints(unittest.TestCase):
+    """Standing rule (2026-10-28): rig-class keywords (RIG / JACK-UP /
+    DRILLSHIP / MODU) outrank every area/line keyword — a rig list is
+    always plotted as points, so 'RIGS STATIONED IN AREA BOUNDED BY ...'
+    can never fabricate a filled hazard zone."""
+
+    def test_rig_list_in_bounded_area_is_multipoint(self):
+        raw = ("FOLLOWING RIGS STATIONED IN AREA BOUNDED BY 18-00N 071-00E, "
+               "18-00N 072-00E, 19-00N 072-00E, 19-00N 071-00E")
+        spatial = _spatial(raw)
+        self.assertEqual(spatial["type"], "MultiPoint")
+        self.assertEqual(len(spatial["coordinates"]), 4)
+
+    def test_rig_under_tow_along_trackline_is_multipoint(self):
+        raw = ("RIG UNDER TOW ALONG TRACKLINE JOINING 18-30N 071-00E, "
+               "18-31N 071-05E, 18-32N 071-10E, 18-33N 071-15E")
+        spatial = _spatial(raw)
+        self.assertEqual(spatial["type"], "MultiPoint")
+
+    def test_modu_and_jackup_variants_route_to_points(self):
+        raw = ("MODUS AND JACK-UPS ON LOCATION AT 18-00N 071-00E, "
+               "19-00N 072-00E, 20-00N 073-00E, 21-00N 074-00E")
+        spatial = _spatial(raw)
+        self.assertEqual(spatial["type"], "MultiPoint")
+
+    def test_single_rig_position_stays_point(self):
+        # Live NAVAREA IX 358/26: a single rig position is a plain Point
+        # (a 1-point array never enters the archetype classifier).
+        _, lat, lon, spatial = parse_coordinates(
+            'RIG "ORIENTAL DRAGON 1" STATIONED IN 29-18.68N 048-12.70E')
+        self.assertEqual(spatial["type"], "Point")
+        self.assertIsNotNone(lat)
+
+    def test_bounded_area_without_rigs_stays_polygon(self):
+        # No rig-class keyword: the bounded-area rule keeps its polygon —
+        # aton wording alone does not inherit the rig precedence.
+        raw = ("BUOYS DEPLOYED IN AREA BOUNDED BY 18-00N 071-00E, "
+               "18-00N 072-00E, 19-00N 072-00E, 19-00N 071-00E")
+        spatial = _spatial(raw)
+        self.assertEqual(spatial["type"], "Polygon")
+
+
 class TestMultiPointGeometryRows(unittest.TestCase):
 
     def test_multipoint_explodes_to_point_rows_with_buffer(self):
