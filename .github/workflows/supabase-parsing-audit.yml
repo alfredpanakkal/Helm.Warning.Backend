@@ -35,13 +35,13 @@ on:
         type: boolean
         default: false
 
-  # Phase 5 WP2: weekly scheduled audit_only run, Gemini off, read-only.
-  # Wednesday 10:30 UTC sits inside the verified quiet window (~09:00-11:30 UTC
-  # weekdays, after IX 04:30 / III 06:30 / VII 08:30 and clear of the every-6h
-  # all-sync runs). Scheduled runs carry no workflow_dispatch inputs, so the
-  # audit job defaults INPUT_MODE to 'audit_only' below — a schedule can never
-  # trigger propose_corrections or apply_approved. The concurrency group stays,
-  # so a scheduled run cannot overlap a manual one.
+  # Phase 5 WP2: weekly scheduled audit_only run. Wednesday 10:30 UTC sits
+  # inside the verified quiet window (~09:00-11:30 UTC weekdays, after the
+  # IX/III/VII scrapers, clear of the every-6h all-sync). Scheduled runs
+  # carry no workflow_dispatch inputs, so INPUT_MODE below defaults to
+  # 'audit_only' — a schedule can never trigger propose_corrections (AI
+  # spend) or apply_approved (DB writes). The concurrency group stays, so
+  # a scheduled run cannot overlap a manual one.
   schedule:
     - cron: '30 10 * * 3'
 
@@ -88,38 +88,44 @@ jobs:
           fi
           python -m scripts.audit_supabase_parsing "${ARGS[@]}"
 
-      # Phase 5 WP3-lite: alert on incomplete scheduled scans. The audit script
-      # exits 0 even on a partial scan (status='partial'), so green != complete.
-      # This step makes scheduled runs fail loudly instead, which sends the
-      # GitHub workflow-failure email (chosen alert channel). Manual runs keep
-      # the existing behaviour. always() so the alert fires even if the audit
-      # step itself failed. Alert is on scan completeness only for now; the
-      # baseline_v2.json regression comparison (WP3 full) lands with WP1 after
-      # the Phase 4 after-report exists.
-      - name: Alert on incomplete scheduled scan
-        if: github.event_name == 'schedule' && always()
+      # WP2: workflow-level guard (decision: BOTH the script non-zero
+      # exit AND this step). Belt-and-braces against future drift where
+      # the script might exit 0 on an incomplete scan. The upload step is
+      # `if: always()`, so the artifact is still uploaded for analysis.
+      # Runs for every event, including the WP2 weekly schedule: an
+      # incomplete scheduled scan fails the workflow, which sends the
+      # GitHub failure email (chosen alert channel).
+      - name: Fail on incomplete scan
         run: |
-          SUMMARY_FILE="audit-report/summary.json"
-          if [[ ! -f "$SUMMARY_FILE" ]]; then
-            echo "::error::Scheduled audit produced no summary.json — the run did not complete."
-            exit 1
-          fi
-          STATUS=$(python3 -c "import json; print(json.load(open('$SUMMARY_FILE')).get('status'))")
-          SCAN_COMPLETE=$(python3 -c "import json; print(json.load(open('$SUMMARY_FILE')).get('scan_complete'))")
-          EXAMINED=$(python3 -c "import json; print(json.load(open('$SUMMARY_FILE')).get('examined_count'))")
-          ISSUES=$(python3 -c "import json; print(json.load(open('$SUMMARY_FILE')).get('issue_count'))")
-          {
-            echo "## Scheduled parsing audit"
-            echo "- status: ${STATUS}"
-            echo "- examined: ${EXAMINED}"
-            echo "- issues: ${ISSUES}"
-            echo "- scan complete: ${SCAN_COMPLETE}"
-          } >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$SCAN_COMPLETE" != "True" || "$STATUS" != "succeeded" ]]; then
-            echo "::error::Scheduled audit scan incomplete (status=${STATUS}, scan_complete=${SCAN_COMPLETE}, examined=${EXAMINED}, issues=${ISSUES}). Failing the workflow to trigger the failure email."
-            exit 1
-          fi
-          echo "[audit] Scheduled audit OK: examined=${EXAMINED}, issues=${ISSUES}."
+          python - <<'PY'
+          import json, os, sys
+          try:
+              with open("audit-report/summary.json", encoding="utf-8") as fh:
+                  summary = json.load(fh)
+          except FileNotFoundError:
+              print("::error::summary.json missing - the audit produced no report.")
+              sys.exit(1)
+          if summary.get("scan_complete") is not True:
+              print(
+                  "::error::Scan incomplete (status=%s, scan_status=%s, reason=%s) "
+                  "- artifact uploaded, but counts are NOT trustworthy."
+                  % (
+                      summary.get("status"),
+                      summary.get("scan_status"),
+                      summary.get("incomplete_reason"),
+                  )
+              )
+              sys.exit(1)
+          print("Scan-complete gate passed (report_version=%s)." % summary.get("report_version"))
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as fh:
+                  fh.write("## Parsing audit\n")
+                  fh.write("- status: %s\n" % summary.get("status"))
+                  fh.write("- examined: %s\n" % summary.get("examined_count"))
+                  fh.write("- issues: %s\n" % summary.get("issue_count"))
+                  fh.write("- scan complete: %s\n" % summary.get("scan_complete"))
+          PY
 
       - name: Upload audit report
         if: always()
