@@ -162,7 +162,7 @@ class TestClustering(unittest.TestCase):
         issues = [
             make_issue(code="CODE_A", wid="w-1"),
             make_issue(code="CODE_A", wid="w-2"),
-            make_issue(code="CODE_B", wid="w-3"),
+            make_issue(code="CODE_A", wid="w-3"),
         ]
         records = {
             "w-1": make_record(raw_text="PATTERN ALPHA", status="active"),
