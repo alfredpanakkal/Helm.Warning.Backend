@@ -100,6 +100,11 @@ RE_RIG_UNITS = re.compile(
 # 'ALONG LINE JOINING' is a route: beats RE_BOUNDED's 'LINES? JOINING'.
 RE_ALONG_LINE_JOINING = re.compile(
     r"ALONG\s+(?:LINE|TRACKLINE|TRACK|ROUTE|CENTRELINE)\s+JOINING")
+
+# 'TRACKLINE(S) JOINING' without 'ALONG' (XII 862/24 'IN VICINITY OF
+# TRACKLINE JOINING'; IV 206/26 'SEA ICE LIMIT ... TRACKLINES JOINING'):
+# an explicit open line — must beat the VICINITY rule and every fallback.
+RE_TRACKLINE_JOINING = re.compile(r"TRACKLINES?\s+JOINING")
 # Boundary wording for the rig-rule conflict check only — deliberately
 # BROADER than RE_BOUNDED: rig work areas use 'AREA DELIMITED BY' /
 # 'ENCLOSED BY' (NAVAREA III 0122/26). Matching here only sets a review
@@ -193,7 +198,8 @@ def ring_is_simple(ring: Sequence[Sequence[float]]) -> bool:
 
 
 def classify_geometry_archetype_detailed(
-    raw_text: str, points: Sequence[Sequence[float]]
+    raw_text: str, points: Sequence[Sequence[float]],
+    context_text: Optional[str] = None,
 ):
     """
     Classifies a warning's coordinate array into a display archetype,
@@ -215,6 +221,12 @@ def classify_geometry_archetype_detailed(
     if not raw_text or len(points) < 2:
         return None, None, []
     text = raw_text.upper()
+    if context_text:
+        # Clause-level callers pass the surrounding item/preamble text
+        # as classification context: the governing keyword ('IN AREAS
+        # BOUND BY', 'ALONG TRACKLINES JOINING') often lives outside the
+        # sub-area segment. Coordinates are extracted from raw_text only.
+        text = text + "\n" + context_text.upper()
     flags: list[str] = []
 
     # Rig-class units (standing rule, amended 2026-10-28): forced points
@@ -232,7 +244,7 @@ def classify_geometry_archetype_detailed(
 
     # 'ALONG LINE JOINING ...' is a route: must beat RE_BOUNDED's generic
     # 'LINES? JOINING', or a 4-waypoint route becomes a Polygon.
-    if RE_ALONG_LINE_JOINING.search(text):
+    if RE_ALONG_LINE_JOINING.search(text) or RE_TRACKLINE_JOINING.search(text):
         return "linestring", "keyword:linear", flags
 
     # 'AREA BOUNDED WITHIN <lat> TO <lat> AND <lon> TO <lon>': two opposite

@@ -140,19 +140,25 @@ class TestSubAreas(unittest.TestCase):
         self.raw_151 = _load("151_26.txt")
 
     def test_151_three_sub_areas_with_geometry(self):
-        subs = split_sub_areas(rejoin_wrapped_coords(self.raw_151))
+        fixed = rejoin_wrapped_coords(self.raw_151)
+        subs = split_sub_areas(fixed)
         self.assertEqual([s["label"] for s in subs], ["A", "B", "C"])
         for sub, expected_points in zip(subs, (9, 5, 4)):
-            coords, lat, lon, spatial = parse_coordinates(sub["text"])
+            # The 'IN AREAS BOUND BY' keyword lives in the item preamble,
+            # outside the sub-area segment: pass the block as classification
+            # context, exactly as the parser does via clause "context".
+            coords, lat, lon, spatial = parse_coordinates(sub["text"], fixed)
             self.assertEqual(len(coords), expected_points)
             self.assertEqual(spatial["type"], "Polygon")
             self.assertEqual(len(spatial["coordinates"][0]), expected_points + 1)
 
     def test_148_rejoin_required_for_full_geometry(self):
-        # Without rejoin the wrapped vertex is lost
+        # The shared parser rejoins wrapped tokens internally (A1), so even
+        # the raw, un-rejoined sub-area text recovers all 6 vertices; the
+        # preprocessing rejoin stays for segmentation and grounding.
         subs_raw = split_sub_areas(self.raw_148)
         coords_raw, _, _, _ = parse_coordinates(subs_raw[0]["text"])
-        self.assertEqual(len(coords_raw), 5)
+        self.assertEqual(len(coords_raw), 6)
         # With rejoin all 6 vertices of sub-area A are recovered
         subs = split_sub_areas(rejoin_wrapped_coords(self.raw_148))
         self.assertEqual([s["label"] for s in subs], ["A", "B"])

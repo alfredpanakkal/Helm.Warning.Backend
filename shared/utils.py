@@ -493,7 +493,7 @@ def _scan_rejected_tokens(text: str) -> list:
     return rejected
 
 
-def parse_coordinates_detailed(raw_text: str):
+def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None):
     """
     parse_coordinates() with a structured parse report (geometry basis +
     accepted/rejected tokens). Line-wrapped coordinate tokens are
@@ -570,7 +570,8 @@ def parse_coordinates_detailed(raw_text: str):
             # Centroid calculation for multi-point, polygon, and linestring
             primary_lat = round(sum(p[1] for p in points) / len(points), 6)
             primary_lon = round(sum(p[0] for p in points) / len(points), 6)
-            archetype, basis, cls_flags = classify_geometry_archetype_detailed(text, points)
+            archetype, basis, cls_flags = classify_geometry_archetype_detailed(
+                text, points, context_text)
             for f in cls_flags:
                 if f not in flags:
                     flags.append(f)
@@ -597,7 +598,11 @@ def parse_coordinates_detailed(raw_text: str):
                     ]]}
             elif archetype == "linestring":
                 # Sequential track/route/trackline: open path, never
-                # auto-closed.
+                # auto-closed. A source that repeats the first vertex at
+                # the end (IV 153/26's closed listing) describes a ring:
+                # drop the duplicated closing vertex so the line stays open.
+                if len(points) > 1 and points[0] == points[-1]:
+                    points = points[:-1]
                 spatial = {"type": "LineString", "coordinates": points}
             elif len(points) == 2:
                 spatial = {"type": "LineString", "coordinates": points}
@@ -667,7 +672,7 @@ def parse_coordinates_detailed(raw_text: str):
     return parsed_coords, primary_lat, primary_lon, spatial, report
 
 
-def parse_coordinates(raw_text: str):
+def parse_coordinates(raw_text: str, context_text: Optional[str] = None):
     """
     Extracts navigational coordinates from text (see the pattern block
     above): hyphen DMM (incl. glued tails and 'LAT./LONG.' wording), DMS
@@ -678,8 +683,13 @@ def parse_coordinates(raw_text: str):
     For polygons and line segments, primary_lat and primary_lon represent
     the centroid. Use parse_coordinates_detailed() for the qa report
     (basis, data_quality, accepted/rejected tokens).
+    context_text (optional) is the surrounding clause/item text used for
+    keyword classification only (e.g. an 'IN AREAS BOUND BY' preamble
+    outside the sub-area segment); coordinates are extracted from
+    raw_text alone.
     """
-    parsed_coords, lat, lon, spatial, _report = parse_coordinates_detailed(raw_text)
+    parsed_coords, lat, lon, spatial, _report = parse_coordinates_detailed(
+        raw_text, context_text)
     return parsed_coords, lat, lon, spatial
 
 
