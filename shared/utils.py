@@ -41,10 +41,10 @@ RE_RULE_93 = re.compile(r"^(\d{1,3})-(\d{2}),(\d+)([NSEW])$")
 
 # --- line-wrap rejoining (canonical shared implementation) ------------------
 #
-# Coordinate tokens split across line wraps ("16-
-40.27N", the NAVAREA VIII
-# 1087/26 shape) previously produced 4-of-6 positions and a truncated
-# polygon. This canonical copy lives in shared/utils so parse_coordinates()
+# Coordinate tokens split across line wraps ("16-" at the end of one
+# line, "40.27N" starting the next — the NAVAREA VIII 1087/26 shape)
+# previously produced 4-of-6 positions and a truncated polygon. This
+# canonical copy lives in shared/utils so parse_coordinates()
 # can rejoin EVERY input before extraction (NgaMemoPreprocessor keeps its
 # identical method for the IV/XII memo path; dedup is a deliberate
 # follow-up, not part of this correctness fix).
@@ -54,24 +54,19 @@ _REJOIN_TOKEN = re.compile(r"^(\d{1,3})-(\d{1,2}(?:\.\d{1,4})?)([NSEW])$")
 # Each spec is (compiled_pattern, merge_fn) — a merge only applies when
 # the merged fragment forms a valid coordinate token.
 _REJOIN_WRAP_SPECS = (
-    # "34-27.
-00N" (XII 148/26) / "58-10.
-50N" (IV 1170/25)
+    # "34-27." + wrap + "00N" (XII 148/26); "58-10." + wrap + "50N" (IV 1170/25)
     (re.compile(r"(\d{1,3}-\d{1,2}(?:\.\d{0,4})?)
 (\d{1,2}(?:\.\d{1,4})?)([NSEW])"),
      lambda g: g[0] + g[1] + g[2]),
-    # "57
--00N" (IV 206/26) — degrees at line end, minutes next line
+    # "57" + wrap + "-00N" (IV 206/26) — degrees at line end, minutes next line
     (re.compile(r"(\d{1,3})
 (-\d{1,2}(?:\.\d{1,4})?)([NSEW])"),
      lambda g: g[0] + g[1] + g[2]),
-    # "27-09
-.1N" (IV 204/26) — wrap inside the decimal minutes
+    # "27-09" + wrap + ".1N" (IV 204/26) — wrap inside the decimal minutes
     (re.compile(r"(\d{1,3}-\d{1,2}(?:\.\d{1,4})?)
 (\.\d{1,4})([NSEW])"),
      lambda g: g[0] + g[1] + g[2]),
-    # "12-
-28.85N" (IV 466/25) — degrees-hyphen at line end; the hyphen is
+    # "12-" + wrap + "28.85N" (IV 466/25) — degrees-hyphen at line end; the hyphen is
     # consumed by the pattern and must be re-inserted
     (re.compile(r"(\d{1,3})-
 (\d{1,2}(?:\.\d{1,4})?)([NSEW])"),
