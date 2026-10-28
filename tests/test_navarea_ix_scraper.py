@@ -31,7 +31,7 @@ from scripts.navarea_ix_scraper import (
     assemble_bulletin,
     extract_rows,
     fetch_url,
-}
+)
 from scripts.navarea_universal_parser import parse_bulletin_text
 
 _BASE = ("https://hydrography.paknavy.gov.pk/wp-content/plugins/"
