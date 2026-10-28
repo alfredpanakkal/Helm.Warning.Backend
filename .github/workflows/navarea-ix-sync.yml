@@ -69,7 +69,14 @@ jobs:
           ALLOW_DRY_RUN: ${{ github.event_name == 'pull_request' && '1' || '' }}
         run: |
           set -o pipefail
-          PYTHONPATH=${{ github.workspace }} python -m scripts.run_navarea_ix 2>&1 | tee ix_ingest.log
+          # GNU timeout bounds a wedged harvest (site/WAF stall): the
+          # python dies at 15 min (healthy run ~6-8) with the log kept
+          # by tee, so the failure-report step below still posts the
+          # tail. The job-level timeout-minutes backstop never has to
+          # cancel the whole job — cancellation skips the report step
+          # (seen live 2026-10-28, when a 20-min job timeout cancelled
+          # a wedged run and posted nothing).
+          PYTHONPATH=${{ github.workspace }} timeout 900 python -m scripts.run_navarea_ix 2>&1 | tee ix_ingest.log
 
       - name: Verify Output Files
         run: |

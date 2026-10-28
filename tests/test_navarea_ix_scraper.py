@@ -175,9 +175,34 @@ class TestAssembleBulletin(unittest.TestCase):
         self.assertNotIn("\r", bulletin)
 
     def test_zero_resolved_documents_refuses_snapshot(self):
-        # Every document unreachable -> zero resolved -> refuse loudly.
+        # Every document unreachable: the 3rd consecutive unreachable
+        # row trips the circuit breaker (identical fail-closed refusal
+        # as the zero-resolved check would give).
         rows = extract_rows(_MINI_HTML)
         self.assertIsNone(assemble_bulletin(rows, lambda href: None))
+
+    def test_systemic_block_trips_the_circuit_breaker(self):
+        # Three unreachable rows IN A ROW = wholesale client block
+        # (rate limit / WAF) — abort loudly instead of grinding ~2
+        # minutes of retry sleeps per remaining document (that grind
+        # wedged CI for 20 minutes, live 2026-10-28).
+        rows = extract_rows(_MINI_HTML)
+        self.assertIsNone(assemble_bulletin(rows, lambda href: None))
+
+    def test_intermittent_unreachable_does_not_trip_the_breaker(self):
+        # fail -> success -> fail: the counter resets on every success;
+        # isolated dead documents still skip loudly and the harvest
+        # survives.
+        def _flaky(href):
+            if href.endswith("412.txt") or href.endswith("394.txt"):
+                return None
+            return _fake_fetch(href)
+        rows = extract_rows(_MINI_HTML)
+        bulletin = assemble_bulletin(rows, _flaky)
+        self.assertIsNotNone(bulletin)
+        self.assertNotIn("NAVAREA IX 412/26", bulletin)
+        self.assertIn("NAVAREA IX 410/26", bulletin)
+        self.assertNotIn("NAVAREA IX 394/26", bulletin)
 
     def test_unreachable_advertised_doc_is_skipped_loudly(self):
         # The site advertises links its own WAF can refuse (persistent
