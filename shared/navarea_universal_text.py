@@ -9,9 +9,10 @@ standard, but the live coordinator bulletins (corpus uploaded Oct 2026)
 deviate per region, so this module now carries:
 
   * a tolerant default header regex (optional 'WARNING'/'MSG' word,
-    2- OR 4-digit years as used by II / XVII / XVIII, optional '(.)'
-    prosign separator — the legacy WWNWS form 'NAVAREA IX (.) 376/23'
-    lives in the paknavy 2023-era files, verified live 2026-10-28),
+    2- OR 4-digit years as used by II / XVII / XVIII, and the optional
+    '(.)' WWNWS prosign separator — the legacy form
+    'NAVAREA IX (.) 376/23 (.)' lives in the paknavy 2023-era files,
+    verified live 2026-10-28),
   * per-region extra header patterns for the known quirks:
       V    Brazil publishes bare '0648/26' lines (no NAVAREA numeral)
       VI   Argentina: 'NAVAREA - 0355-2026' (numeral omitted)

@@ -33,9 +33,11 @@ Document-link resolution (re-verified live 2026-10-27):
      zero-padded to three digits. Both prefixes are probed, in order.
      Every candidate is validated against the advertised warning's
      own 'NAVAREA IX nnn/yy' header — or the legacy WWNWS prosign
-     form 'NAVAREA IX (.) nnn/yy' used by the 2023-era files — the
-     site's 404 page comes back
-     with an HTTP-200 body, so status alone proves nothing.
+     form 'NAVAREA IX (.) nnn/yy (.)' used by the 2023-era files
+     (live failure 2026-10-28: a correct 376/23 document was refused
+     as a wrong link because of the '(.)' separator) — the site's
+     404 page comes back with an HTTP-200 body, so status alone
+     proves nothing.
 
 Strategy (fail-closed, mirrors scripts/navarea_vii_scraper.py):
   1. Fetch the page (Scrapling Fetcher — stealthy headers, retries;
@@ -345,11 +347,11 @@ def extract_rows(page_html: str) -> List[Tuple[str, str, Optional[str], str]]:
 
 
 def _expected_header_re(number: str, year: str) -> "re.Pattern":
-    # Tolerates BOTH live header forms: 'NAVAREA IX 412/26' (2024+
-    # files) and the legacy WWNWS prosign form 'NAVAREA IX (.) 376/23
-    # (.)' (2023-era files). Live failure 2026-10-28: a correct 376/23
-    # document was refused as a wrong link because of the '(.)'
-    # separator between the numeral and the number.
+    # Accepts BOTH live header forms: the plain 'NAVAREA IX nnn/yy'
+    # (2024+ files) and the legacy WWNWS prosign form
+    # 'NAVAREA IX (.) nnn/yy (.)' (2023-era files — live failure
+    # 2026-10-28: a correct 376/23 document was refused as a wrong
+    # link because of the '(.)' separator between numeral and number).
     yy = year[-2:]
     return re.compile(
         r"NAV\s*AREA\s+IX\b\s*(?:\(\.\)\s*)?\s*" + re.escape(number) +

@@ -6,11 +6,11 @@ prose, the 6-column metadata table) and verifies the extract -> fetch ->
 concatenate -> universal-parser chain end to end, offline, with an
 injected document fetcher.
 
-One row (376/23) uses the legacy WWNWS prosign header
-'NAVAREA IX (.) 376/23 (.)' of the site's 2023-era files (live CI
-failure 2026-10-28: the correct document was refused as a wrong link
-because of the '(.)' separator) and must validate AND parse like any
-other warning.
+Also covers the legacy WWNWS prosign header
+'NAVAREA IX (.) nnn/yy (.)' of the site's 2023-era files (live CI
+failure 2026-10-28: the correct 376/23 document was refused as a
+wrong link because of the '(.)' separator) — it must validate AND
+parse like any other warning, while wrong numbers/years stay refused.
 
 The fixture mirrors the raw server HTML as re-verified live
 2026-10-27: some ATTACHMENT cells carry a real href (412/26), some carry
@@ -60,9 +60,6 @@ _MINI_HTML = """<html><body>
 <tr><td>13</td><td>SOUTHERN GULF/ UAE</td><td>211500 UTC OCT 2026</td>
 <td>394/26</td><td>BOUYS UNLIT</td>
 <td>View Document</td></tr>
-<tr><td>15</td><td>IRAN, TANGEH-YE HORMOZ</td><td>091500 UTC OCT 2023</td>
-<td>376/23</td><td>ATON CHANGES</td>
-<td><a href="__BASE__20231009SEC%20376.txt">View Document</a></td></tr>
 <tr><td>16</td><td>NORTHERN GULF KUWAIT</td>
 <td>NORTHERN GULF KUWAIT</td><td>378/26</td>
 <td>BATHYMETRIC SURVEY</td><td>View Document</td></tr>
@@ -103,28 +100,11 @@ _DOC_394 = (
     "(.) MARINERS CAUTIONED\r\n"
 )
 
-# Legacy 2023-era prosign header form (live file 20231009SEC 376.txt,
-# verified 2026-10-28): 'NAVAREA IX (.) 376/23 (.)' — the '(.)'
-# separator once failed validation and aborted the whole CI harvest.
-_DOC_376 = (
-    "SECURITE\n\n"
-    "091500 UTC OCT 2023\n\n"
-    "NAVAREA IX (.) 376/23 (.) IRAN (.) TANGEH-YE HORMOZ (.)\n"
-    "CHARTS BA 2888, 2851 AND 3173\n\n"
-    "2. FOLLOWING CHANGES IN AIDS TO NAVIGATION OF HORMOZGAN COASTAL "
-    "WATERS\n\n"
-    "A. STARBOARD HAND BEACON TOWER FL 5 SEC 5 M 5 METERS\n"
-    "ESTABLISHED IN POSITION 25-40.99N 057-51.93E\n\n"
-    "B. PORT HAND BEACON TOWER FL 5 SEC 5 M 5 METERS\n"
-    "ESTABLISHED IN POSITION 25-41.04N 057-51.92E\n"
-)
-
 _FAKE_DOCS = {
     _BASE + "20261027SEC%20412.txt": _DOC_412,
     _BASE + "20261027SEC%20410.txt": _DOC_410,
     # 394/26 exists ONLY under the EC prefix (live behaviour).
     _BASE + "20261021EC%20394.txt": _DOC_394,
-    _BASE + "20231009SEC%20376.txt": _DOC_376,
 }
 
 # Same table with the message rows removed (layout change regression).
@@ -145,13 +125,12 @@ class TestExtractRows(unittest.TestCase):
         rows = extract_rows(_MINI_HTML)
         self.assertEqual([(r[0], r[1]) for r in rows],
                          [("412", "26"), ("410", "26"),
-                          ("394", "26"), ("376", "23"), ("378", "26")])
+                          ("394", "26"), ("378", "26")])
 
     def test_only_linked_row_carries_an_href(self):
         rows = extract_rows(_MINI_HTML)
         by_num = {r[0]: r for r in rows}
         self.assertTrue(by_num["412"][2].startswith(_BASE), rows)
-        self.assertTrue(by_num["376"][2].startswith(_BASE), rows)
         self.assertIsNone(by_num["410"][2])
         self.assertIsNone(by_num["394"][2])
         self.assertIsNone(by_num["378"][2])
@@ -181,26 +160,14 @@ class TestAssembleBulletin(unittest.TestCase):
         self.assertIn("NAVAREA IX 412/26", bulletin)
         self.assertIn("NAVAREA IX 410/26", bulletin)
         self.assertIn("NAVAREA IX 394/26", bulletin)
-        self.assertIn("NAVAREA IX (.) 376/23", bulletin)
         self.assertLess(bulletin.index("412/26"), bulletin.index("410/26"))
         self.assertLess(bulletin.index("410/26"), bulletin.index("394/26"))
-        self.assertLess(bulletin.index("394/26"), bulletin.index("376/23"))
 
     def test_linkless_row_resolved_via_dtg_candidate(self):
         rows = [r for r in extract_rows(_MINI_HTML) if r[0] == "394"]
         bulletin = assemble_bulletin(rows, _fake_fetch)
         self.assertIsNotNone(bulletin)
         self.assertIn("NAVAREA IX 394/26", bulletin)
-
-    def test_legacy_prosign_header_document_passes_validation(self):
-        # Live failure 2026-10-28: the 2023-era 'NAVAREA IX (.) 376/23'
-        # prosign header was refused as a wrong link and aborted the
-        # whole CI harvest. The document is correct — it must validate
-        # and be harvested like any other.
-        rows = [r for r in extract_rows(_MINI_HTML) if r[0] == "376"]
-        bulletin = assemble_bulletin(rows, _fake_fetch)
-        self.assertIsNotNone(bulletin)
-        self.assertIn("NAVAREA IX (.) 376/23", bulletin)
 
     def test_row_without_link_and_malformed_dtg_is_skipped_loudly(self):
         rows = extract_rows(_MINI_HTML)
@@ -310,15 +277,14 @@ class TestUniversalParserIngestion(unittest.TestCase):
         self.parsed = parse_bulletin_text(
             assemble_bulletin(rows, _fake_fetch), "ix")
 
-    def test_exactly_four_warnings(self):
-        self.assertEqual(len(self.parsed["nav_warnings"]), 4)
+    def test_exactly_three_warnings(self):
+        self.assertEqual(len(self.parsed["nav_warnings"]), 3)
 
     def test_warning_ids_carry_the_block_numbers(self):
         ids = [w["warning_id"] for w in self.parsed["nav_warnings"]]
         self.assertTrue(any("412" in i for i in ids), ids)
         self.assertTrue(any("410" in i for i in ids), ids)
         self.assertTrue(any("394" in i for i in ids), ids)
-        self.assertTrue(any("376" in i for i in ids), ids)
 
     def test_cancel_crossref_is_not_a_phantom_warning(self):
         ids = [w["warning_id"] for w in self.parsed["nav_warnings"]]
@@ -327,6 +293,52 @@ class TestUniversalParserIngestion(unittest.TestCase):
     def test_towing_operation_yields_geometry(self):
         with_geom = [w for w in self.parsed["nav_warnings"] if w.get("spatial")]
         self.assertTrue(with_geom, "expected at least one warning with geometry")
+
+
+class TestLegacyProsignHeader(unittest.TestCase):
+    """Live CI failure 2026-10-28: the 2023-era paknavy files open with
+    the legacy WWNWS prosign header 'NAVAREA IX (.) 376/23 (.)' — the
+    '(.)' separator once failed the scraper's header validation and
+    aborted the whole harvest. The form must validate AND parse like
+    any other warning; wrong numbers/years stay refused."""
+
+    # Verbatim shape of the live file 20231009SEC 376.txt.
+    _DOC_376 = (
+        "091500 UTC OCT 2023\r\n"
+        "NAVAREA IX (.) 376/23 (.) IRAN (.) TANGEH-YE HORMOZ (.)\r\n"
+        "CHARTS BA 2888, 2851 AND 3173\r\n"
+        "\r\n"
+        "2. FOLLOWING CHANGES IN AIDS TO NAVIGATION OF HORMOZGAN\r\n"
+        "COASTAL WATERS\r\n"
+        "\r\n"
+        "A. STARBOARD HAND BEACON TOWER FL 5 SEC 5 M 5 METERS\r\n"
+        "ESTABLISHED IN POSITION 25-40.99N 057-51.93E\r\n"
+    )
+
+    def _rows(self, number, year):
+        return [(number, year, _BASE + "20231009SEC%20376.txt",
+                 "091500 UTC OCT 2023")]
+
+    def test_prosign_form_is_accepted(self):
+        bulletin = assemble_bulletin(self._rows("376", "23"),
+                                     lambda href: self._DOC_376)
+        self.assertIsNotNone(bulletin)
+        self.assertIn("NAVAREA IX (.) 376/23", bulletin)
+
+    def test_prosign_header_with_wrong_number_is_refused(self):
+        self.assertIsNone(assemble_bulletin(self._rows("377", "23"),
+                                             lambda href: self._DOC_376))
+
+    def test_prosign_header_with_wrong_year_is_refused(self):
+        self.assertIsNone(assemble_bulletin(self._rows("376", "26"),
+                                             lambda href: self._DOC_376))
+
+    def test_prosign_block_parses_via_universal_parser(self):
+        bulletin = assemble_bulletin(self._rows("376", "23"),
+                                     lambda href: self._DOC_376)
+        parsed = parse_bulletin_text(bulletin, "ix")
+        ids = [w["warning_id"] for w in parsed["nav_warnings"]]
+        self.assertEqual(ids, ["NAVAREA IX 376/23"])
 
 
 if __name__ == "__main__":
