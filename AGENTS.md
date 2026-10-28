@@ -7,3 +7,5 @@ See [agent.md](agent.md) for the complete, authoritative knowledge base covering
 - PostGIS Master-Child schema, atomic RPC contracts, and plain `REFERENCES` foreign key standards.
 - Supabase Parsing Audit & AI Correction Engine (`audit_only`, `propose_corrections`, `apply_approved` modes with keyset pagination, atomic conditional updates, and zero secret logging).
 - Test execution commands and contributor safety guardrails.
+
+See [docs/DECISION_LOG.md](docs/DECISION_LOG.md) for *why* each safety rule exists (incident-rooted decision log) and where each validator sits from scrape to publication. When a PR adds or changes a safety rule, append its reason there in the same PR.
