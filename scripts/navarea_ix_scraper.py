@@ -39,6 +39,8 @@ Strategy (fail-closed, mirrors scripts/navarea_vii_scraper.py):
   1. Fetch the page (Scrapling Fetcher — stealthy headers, retries;
      requests fallback); any error -> non-zero exit, harvest untouched,
      parse and sync NEVER run (never sync a partial snapshot).
+     Transient HTTP 429 / 503 answers (the site rate-limits request
+     bursts) are retried with backoff before any fail-closed refusal.
   2. Resolve one document per table row: a row whose ADVERTISED link
      is unreachable or wrong fails the whole harvest; a row with no
      link whose DTG-derived candidates all miss is skipped loudly
@@ -89,7 +91,17 @@ PARSED_PATH = os.path.join(HARVEST_DIR, "parsed.json")
 
 _TIMEOUT_S = 45
 _MIN_WARNINGS = 1  # a live-but-empty feed fails loudly; never sync 0.
-_DOC_PAUSE_S = 0.2  # politeness pause between document fetches
+# Politeness pause before EVERY document fetch (resolved hits and
+# candidate misses alike). The site rate-limited a ~1.8 req/s harvest
+# burst with HTTP 429 (Cloudflare) after ~110 files in ~60s — seen
+# live 2026-10-28, when one 429 on a single advertised document
+# aborted the whole harvest.
+_DOC_PAUSE_S = 0.6
+# Transient HTTP answers retried with backoff before a fetch fails
+# closed: rate limiting (429) / temporary unavailability (503).
+_TRANSIENT_STATUSES = frozenset({429, 503})
+_TRANSIENT_RETRIES = 3
+_RETRY_AFTER_DEFAULT_S = 20.0
 
 _BROWSER_HEADERS = {
     "accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
@@ -149,51 +161,89 @@ def _strip_tags(fragment: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def fetch_url(url: str, accept: str) -> Optional[str]:
-    """Fetches a URL as text.
+def _retry_after_seconds(headers) -> Optional[float]:
+    """Numeric 'Retry-After' header value in seconds, when present."""
+    if not headers:
+        return None
+    try:
+        raw = headers.get("Retry-After")
+        return float(raw) if raw else None
+    except (AttributeError, TypeError, ValueError):
+        return None
 
-    Scrapling's stealthy Fetcher when available, plain requests
-    otherwise. Returns the body text, or None (fail-closed; printed).
+
+def _fetch_once(url: str, headers: dict
+                ) -> Tuple[Optional[str], Optional[int], Optional[float]]:
+    """One fetch attempt: Scrapling Fetcher first, requests fallback.
+
+    Returns (body_text, status, retry_after_seconds). body_text is
+    None on any failure; status is reported for HTTP-level failures so
+    the caller can retry the transient ones (429 / 503).
     """
-    _headers = dict(_BROWSER_HEADERS)
-    _headers["accept"] = accept
-    body_text = ""
-
     if HAS_SCRAPLING:
         try:
-            page = Fetcher.get(url, headers=_headers, timeout=_TIMEOUT_S,
+            page = Fetcher.get(url, headers=headers, timeout=_TIMEOUT_S,
                                retries=3, stealthy_headers=True)
             status = getattr(page, "status", None)
             body = page.body
             if isinstance(body, bytes):
                 body = body.decode("utf-8", errors="replace")
             body_text = str(body or "")
-            if status != 200:
-                snippet = body_text[:200].replace("\n", " ")
-                print(f"WARNING: {url} returned HTTP {status}: {snippet}")
-                return None
+            if status == 200:
+                return body_text, status, None
+            if status in _TRANSIENT_STATUSES:
+                return None, status, _retry_after_seconds(
+                    getattr(page, "headers", None))
+            snippet = body_text[:200].replace("\n", " ")
+            print(f"WARNING: {url} returned HTTP {status}: {snippet}")
+            return None, status, None
         except Exception as e:
             print(f"WARNING: Scrapling fetch failed for {url} ({e}); "
                   f"falling back to requests...")
-            body_text = ""
 
-    if not body_text:
-        if not HAS_REQUESTS:
-            print("ERROR: no HTTP client available "
-                  "(install scrapling or requests).")
-            return None
-        try:
-            resp = requests.get(url, headers=_headers, timeout=_TIMEOUT_S)
-        except Exception as e:
-            print(f"ERROR: fetch failed for {url} ({e}); harvest untouched.")
-            return None
-        if resp.status_code != 200:
-            snippet = (resp.text or "")[:200].replace("\n", " ")
-            print(f"ERROR: {url} returned HTTP {resp.status_code}: {snippet}")
-            return None
-        body_text = resp.text or ""
+    if not HAS_REQUESTS:
+        print("ERROR: no HTTP client available "
+              "(install scrapling or requests).")
+        return None, None, None
+    try:
+        resp = requests.get(url, headers=headers, timeout=_TIMEOUT_S)
+    except Exception as e:
+        print(f"ERROR: fetch failed for {url} ({e}); harvest untouched.")
+        return None, None, None
+    if resp.status_code == 200:
+        return resp.text or "", resp.status_code, None
+    if resp.status_code in _TRANSIENT_STATUSES:
+        return None, resp.status_code, _retry_after_seconds(resp.headers)
+    snippet = (resp.text or "")[:200].replace("\n", " ")
+    print(f"ERROR: {url} returned HTTP {resp.status_code}: {snippet}")
+    return None, resp.status_code, None
 
-    return body_text
+
+def fetch_url(url: str, accept: str) -> Optional[str]:
+    """Fetches a URL as text.
+
+    Scrapling's stealthy Fetcher when available, plain requests
+    otherwise. Transient answers (HTTP 429 / 503 — the site rate-limits
+    request bursts; seen live 2026-10-28) are retried with backoff,
+    honouring a numeric Retry-After header when present, before the
+    fetch fails closed. Returns the body text, or None (printed).
+    """
+    _headers = dict(_BROWSER_HEADERS)
+    _headers["accept"] = accept
+
+    for attempt in range(_TRANSIENT_RETRIES + 1):
+        body_text, status, retry_after = _fetch_once(url, _headers)
+        if body_text is not None:
+            return body_text
+        if status not in _TRANSIENT_STATUSES:
+            return None
+        if attempt < _TRANSIENT_RETRIES:
+            wait_s = retry_after or (_RETRY_AFTER_DEFAULT_S * (attempt + 1))
+            print(f"WARNING: {url} returned HTTP {status}; retrying in "
+                  f"{wait_s:.0f}s "
+                  f"(attempt {attempt + 1}/{_TRANSIENT_RETRIES})...")
+            time.sleep(wait_s)
+    return None
 
 
 def _attr_url_values(fragment: str) -> List[str]:
@@ -343,8 +393,6 @@ def assemble_bulletin(rows: List[Tuple[str, str, Optional[str], str]],
                   f"— skipping row loudly (page layout change?)")
             continue
         blocks.append(block)
-        if _DOC_PAUSE_S:
-            time.sleep(_DOC_PAUSE_S)
 
     if not blocks:
         print("ERROR: no warning document resolved; refusing to sync an "
@@ -375,8 +423,15 @@ def main() -> bool:
               f"sync an empty snapshot (page layout change?)")
         return False
 
-    bulletin = assemble_bulletin(
-        rows, lambda href: fetch_url(href, "text/plain;q=0.9,*/*;q=0.8"))
+    def _fetch_doc(url: str) -> Optional[str]:
+        # Politeness pause before EVERY document fetch — resolved hits
+        # and candidate misses alike (see _DOC_PAUSE_S: the site rate-
+        # limits request bursts).
+        if _DOC_PAUSE_S:
+            time.sleep(_DOC_PAUSE_S)
+        return fetch_url(url, "text/plain;q=0.9,*/*;q=0.8")
+
+    bulletin = assemble_bulletin(rows, _fetch_doc)
     if bulletin is None:
         return False
 

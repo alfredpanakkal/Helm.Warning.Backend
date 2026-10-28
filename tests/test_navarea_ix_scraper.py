@@ -19,16 +19,19 @@ numbered paragraphs.
 import os
 import sys
 import unittest
+from unittest import mock
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
+from scripts import navarea_ix_scraper
 from scripts.navarea_ix_scraper import (
     _candidate_doc_urls,
     assemble_bulletin,
     extract_rows,
-)
+    fetch_url,
+}
 from scripts.navarea_universal_parser import parse_bulletin_text
 
 _BASE = ("https://hydrography.paknavy.gov.pk/wp-content/plugins/"
@@ -181,6 +184,56 @@ class TestAssembleBulletin(unittest.TestCase):
     def test_fail_closed_when_no_document_resolves_at_all(self):
         rows = [r for r in extract_rows(_MINI_HTML) if r[0] == "378"]
         self.assertIsNone(assemble_bulletin(rows, _fake_fetch))
+
+
+class _FakeResponse:
+    """Minimal requests-like response object for fetch_url tests."""
+    def __init__(self, status_code, text, headers):
+        self.status_code = status_code
+        self.text = text
+        self.headers = headers
+
+
+class TestFetchUrlTransientRetry(unittest.TestCase):
+    """Transient HTTP 429/503 answers must be retried with backoff, not
+    failed closed at once. Live failure 2026-10-28: the site rate-limited
+    the harvest mid-run and a single 429 on one advertised document
+    aborted the whole sync (the runner had fetched ~110 docs cleanly)."""
+
+    _URL = "https://example.invalid/doc.txt"
+
+    def _fetch(self, side_effect):
+        with (mock.patch.object(navarea_ix_scraper, "HAS_SCRAPLING", False),
+              mock.patch.object(navarea_ix_scraper, "HAS_REQUESTS", True),
+              mock.patch("requests.get", side_effect=side_effect) as get_mock,
+              mock.patch("scripts.navarea_ix_scraper.time.sleep") as sleep_mock):
+            body = fetch_url(self._URL, "text/plain")
+        return body, get_mock, sleep_mock
+
+    def test_transient_429_is_retried_until_success(self):
+        body, get_mock, sleep_mock = self._fetch([
+            _FakeResponse(429, "slow down", {"Retry-After": "7"}),
+            _FakeResponse(200, "NAVAREA IX 412/26", {}),
+        ])
+        self.assertEqual(body, "NAVAREA IX 412/26")
+        self.assertEqual(get_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(7.0)
+
+    def test_persistent_429_fails_closed_after_retries(self):
+        body, get_mock, sleep_mock = self._fetch(
+            [_FakeResponse(429, "slow down", {})] * 10)
+        self.assertIsNone(body)
+        self.assertEqual(get_mock.call_count,
+                         navarea_ix_scraper._TRANSIENT_RETRIES + 1)
+        self.assertEqual(sleep_mock.call_count,
+                         navarea_ix_scraper._TRANSIENT_RETRIES)
+
+    def test_non_transient_status_is_not_retried(self):
+        body, get_mock, sleep_mock = self._fetch(
+            [_FakeResponse(404, "not found", {})] * 10)
+        self.assertIsNone(body)
+        self.assertEqual(get_mock.call_count, 1)
+        sleep_mock.assert_not_called()
 
 
 class TestUniversalParserIngestion(unittest.TestCase):
