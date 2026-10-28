@@ -358,6 +358,28 @@ def parse_warning(block, cfg):
         spatial_fc = None
         lat = lon = None
         geom_labels = []
+    elif (len(geoms) >= 2
+          and all(g[1].get("type") == "Point" for g in geoms)):
+        # Numbered/lettered item lists of DISCRETE positions (rig
+        # lists, buoy lists): per-clause Point features would regress
+        # the scattered-markers contract (NAVAREA II 349/26, VII
+        # 258/26 fixture tests) — ONE MultiPoint feature holds every
+        # position. Lettered sub-areas that yield areas (XI 475/26
+        # A/B/C polygons) are unaffected (not all Points).
+        coords = [g[1]["coordinates"] for g in geoms]
+        spatial_fc = {
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "properties": {"zone_label": "Area"},
+                "geometry": {"type": "MultiPoint", "coordinates": coords},
+            }],
+        }
+        lats = [g[2] for g in geoms if g[2] is not None]
+        lons = [g[3] for g in geoms if g[3] is not None]
+        lat = round(sum(lats) / len(lats), 6) if lats else None
+        lon = round(sum(lons) / len(lons), 6) if lons else None
+        geom_labels = [g[0] for g in geoms]
     elif len(geoms) == 1:
         label, spatial, lat, lon = geoms[0]
         spatial_fc = {

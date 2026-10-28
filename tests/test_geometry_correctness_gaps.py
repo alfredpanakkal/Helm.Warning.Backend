@@ -77,18 +77,15 @@ class TestLineWrapRejoin(unittest.TestCase):
     """A1: wrapped coordinate tokens rejoin before extraction."""
 
     def test_rejoin_wrapped_degrees_hyphen(self):
-        self.assertEqual(rejoin_wrapped_coords("16-
-40.27N"), "16-40.27N")
-        self.assertEqual(rejoin_wrapped_coords("082-
-10.55E"), "082-10.55E")
+        self.assertEqual(rejoin_wrapped_coords("16-\n40.27N"), "16-40.27N")
+        self.assertEqual(rejoin_wrapped_coords("082-\n10.55E"), "082-10.55E")
 
     def test_rejoin_is_idempotent(self):
         once = rejoin_wrapped_coords(V1087)
         self.assertEqual(rejoin_wrapped_coords(once), once)
 
     def test_rejoin_leaves_prose_wraps_alone(self):
-        raw = "IN AREA BO
-UND BY 18-00N 071-00E"
+        raw = "IN AREA BO\nUND BY 18-00N 071-00E"
         self.assertEqual(rejoin_wrapped_coords(raw), raw)
 
     def test_v1087_extracts_all_six_vertices(self):
