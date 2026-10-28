@@ -37,7 +37,9 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from scripts.audit_supabase_parsing import (
+    GeometrySchemaError,
     fetch_all_warnings,
+    fetch_geometries_for_warnings,
     validate_warning_record,
     validate_warning_geometry,
     assess_warning_with_gemini,
@@ -785,6 +787,58 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertIsNotNone(proposal.get("applied_at"))
         # Idempotent: no RPC write was issued for an already-correct value
         self.assertEqual(len(client.recorded_rpcs), 0)
+
+
+    # 20. Geometry fetch consumes the st_asgeojson computed column (real schema
+    # has no geojson column; geometry lives in PostGIS geom_postgis).
+    def test_geometry_fetch_accepts_st_asgeojson_computed_key(self):
+        geom_row = {
+            "warning_id": self.sample_active_warning["id"],
+            "zone_label": "Centroid",
+            "feature_type": "POINT",
+            "st_asgeojson": {
+                "type": "Point",
+                "coordinates": [-91.25, 95.0]  # out of bounds on purpose
+            },
+        }
+        client = MockSupabaseClient({"nav_warning_geometries": [geom_row]})
+        geoms = fetch_geometries_for_warnings(client, [self.sample_active_warning["id"]])
+        self.assertEqual(len(geoms[self.sample_active_warning["id"]]), 1)
+        # The validator must consume the st_asgeojson payload
+        issues = validate_warning_geometry(
+            dict(self.sample_active_warning),
+            geoms[self.sample_active_warning["id"]],
+        )
+        self.assertTrue(any(iss["code"] == "COORDINATE_OUT_OF_BOUNDS" for iss in issues))
+
+    # 21. Geometry rows without any GeoJSON payload key fail loudly instead of
+    # letting every geometry check silently no-op.
+    def test_geometry_fetch_fails_loudly_without_geojson_key(self):
+        geom_row = {
+            "warning_id": self.sample_active_warning["id"],
+            "zone_label": "Centroid",
+            "feature_type": "POINT",
+            "geom_postgis": "0101000000000000000000F03F",  # raw WKB hex, no payload
+        }
+        client = MockSupabaseClient({"nav_warning_geometries": [geom_row]})
+        with self.assertRaises(GeometrySchemaError):
+            fetch_geometries_for_warnings(client, [self.sample_active_warning["id"]])
+
+    # 22. Legacy geojson key still honored (backwards compatibility of the lookup)
+    def test_validator_still_accepts_legacy_geojson_key(self):
+        record = dict(self.sample_active_warning)
+        legacy_geom = {
+            "geom_id": "g-legacy",
+            "warning_id": record["id"],
+            "feature_type": "POINT",
+            "geojson": {
+                "type": "Point",
+                "coordinates": [-91.25, 95.0]
+            }
+        }
+        issues = validate_warning_geometry(record, [legacy_geom])
+        self.assertTrue(any(iss["code"] == "COORDINATE_OUT_OF_BOUNDS" for iss in issues))
+
 
 
 if __name__ == "__main__":
