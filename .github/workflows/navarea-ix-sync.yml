@@ -30,6 +30,7 @@ concurrency:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   ingest-navarea-ix-warnings:
@@ -52,7 +53,8 @@ jobs:
 
       - name: Run Unit Tests for NAVAREA IX
         run: |
-          python -m unittest tests.test_navarea_ix_scraper -v
+          set -o pipefail
+          python -m unittest tests.test_navarea_ix_scraper -v 2>&1 | tee ix_tests.log
 
       - name: Scrape, Parse and Sync NAVAREA IX
         env:
@@ -60,7 +62,8 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           ALLOW_DRY_RUN: ${{ github.event_name == 'pull_request' && '1' || '' }}
         run: |
-          PYTHONPATH=${{ github.workspace }} python -m scripts.run_navarea_ix
+          set -o pipefail
+          PYTHONPATH=${{ github.workspace }} python -m scripts.run_navarea_ix 2>&1 | tee ix_ingest.log
 
       - name: Verify Output Files
         run: |
@@ -74,6 +77,26 @@ jobs:
           fi
           echo "Output files verified successfully."
 
+      - name: Report failure on PR
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "❌ **ingest-navarea-ix-warnings failed** on ${{ github.sha }}"
+            echo ""
+            echo '~~~'
+            for f in ix_tests.log ix_ingest.log; do
+              if [ -f "$f" ]; then
+                echo "--- $f (tail 200) ---"
+                tail -n 200 "$f"
+                echo ""
+              fi
+            done
+            echo '~~~'
+          } > comment_ix.md
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file comment_ix.md
       - name: Upload Output Artifacts
         uses: actions/upload-artifact@v4
         if: always()
