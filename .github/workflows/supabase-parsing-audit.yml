@@ -78,6 +78,34 @@ jobs:
           fi
           python -m scripts.audit_supabase_parsing "${ARGS[@]}"
 
+      # WP2: workflow-level guard (decision: BOTH the script non-zero
+      # exit AND this step). Belt-and-braces against future drift where
+      # the script might exit 0 on an incomplete scan. The upload step is
+      # `if: always()`, so the artifact is still uploaded for analysis.
+      - name: Fail on incomplete scan
+        run: |
+          python - <<'PY'
+          import json, sys
+          try:
+              with open("audit-report/summary.json", encoding="utf-8") as fh:
+                  summary = json.load(fh)
+          except FileNotFoundError:
+              print("::error::summary.json missing - the audit produced no report.")
+              sys.exit(1)
+          if summary.get("scan_complete") is not True:
+              print(
+                  "::error::Scan incomplete (status=%s, scan_status=%s, reason=%s) "
+                  "- artifact uploaded, but counts are NOT trustworthy."
+                  % (
+                      summary.get("status"),
+                      summary.get("scan_status"),
+                      summary.get("incomplete_reason"),
+                  )
+              )
+              sys.exit(1)
+          print("Scan-complete gate passed (report_version=%s)." % summary.get("report_version"))
+          PY
+
       - name: Upload audit report
         if: always()
         uses: actions/upload-artifact@v4

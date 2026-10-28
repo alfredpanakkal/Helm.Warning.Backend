@@ -164,6 +164,27 @@ def fetch_all_warnings(
     return rows, is_complete, error_msg
 
 
+def count_warnings(client: Any, navarea: Optional[str] = None) -> Optional[int]:
+    """WP2: exact row count for the completeness check.
+
+    Uses the PostgREST count="exact" header when the client supports it
+    (res.count); falls back to len(res.data) otherwise (mock clients).
+    Any failure returns None — the completeness rule treats "count unknown"
+    as incomplete, never as a silent complete.
+    """
+    try:
+        query = client.table("nav_warnings").select("id", count="exact")
+        if navarea:
+            query = query.eq("navarea", navarea)
+        res = query.execute()
+        count = getattr(res, "count", None)
+        if count is None:
+            count = len(res.data or [])
+        return int(count)
+    except Exception:
+        return None
+
+
 def fetch_geometries_for_warnings(
     client: Any,
     warning_ids: List[str],
@@ -1105,12 +1126,53 @@ def run_audit(
             report["status"] = "succeeded"
 
         else:
+            # 0. WP2 coverage: count query BEFORE the scan.
+            expected_before = count_warnings(supabase_client, navarea=navarea)
+
             # 1. Fetch all warnings with complete keyset pagination
             warnings, is_complete, fetch_err = fetch_all_warnings(
                 supabase_client, navarea=navarea, batch_size=batch_size
             )
             report["examined_count"] = len(warnings)
-            report["scan_complete"] = is_complete
+
+            # 1b. WP2 coverage: count query AFTER the scan; per-status counts
+            # come from the scanned rows themselves, not a second query.
+            expected_after = count_warnings(supabase_client, navarea=navarea)
+            scanned_status_counts: Dict[str, int] = {}
+            for w in warnings:
+                status_value = w.get("status")
+                scanned_status_counts[status_value] = scanned_status_counts.get(status_value, 0) + 1
+
+            # 1c. WP2 completeness rule: loop ended on a short page AND no
+            # fetch error AND expected_before <= examined <= expected_after.
+            # Anything else is an incomplete scan with a NAMED reason —
+            # never a silent complete.
+            complete = is_complete and not fetch_err
+            incomplete_reason = None
+            if not complete:
+                incomplete_reason = (
+                    "fetch_error" if fetch_err else "pagination_short_page_or_error"
+                )
+            elif expected_before is None or expected_after is None:
+                complete = False
+                incomplete_reason = "expected_count_unavailable"
+            elif not (expected_before <= len(warnings) <= expected_after):
+                complete = False
+                incomplete_reason = (
+                    f"coverage_mismatch: expected_before={expected_before}, "
+                    f"examined={len(warnings)}, expected_after={expected_after}"
+                )
+
+            report["scan_complete"] = complete
+            report["coverage"] = {
+                "run_start": report.get("started_at"),
+                "expected_before": expected_before,
+                "expected_after": expected_after,
+                "examined_count": len(warnings),
+                "per_status": scanned_status_counts,
+                "scan_status": "complete" if complete else "incomplete",
+                "incomplete_reason": incomplete_reason,
+            }
 
             if fetch_err:
                 report["fetch_error"] = fetch_err
@@ -1158,7 +1220,7 @@ def run_audit(
                     report["proposal_count"] = len(all_proposals)
 
             report["proposals"] = all_proposals
-            report["status"] = "succeeded" if is_complete else "partial"
+            report["status"] = "succeeded" if complete else "partial"
 
     except Exception as exc:
         report["status"] = "failed"
@@ -1212,6 +1274,9 @@ def run_audit(
                 "applied_count": report.get("applied_count"),
                 "scan_complete": report.get("scan_complete"),
                 "completed_at": report.get("completed_at"),
+                "report_version": report.get("report_version"),
+                "scan_status": (report.get("coverage") or {}).get("scan_status"),
+                "incomplete_reason": (report.get("coverage") or {}).get("incomplete_reason"),
             }
             json.dump(summary, f, indent=2)
 
@@ -1291,7 +1356,21 @@ def main() -> int:
         )
         status = res.get("status")
         print(f"[audit] Run completed with status='{status}'. Examined={res.get('examined_count')}, Issues={res.get('issue_count')}, Proposals={res.get('proposal_count')}, Applied={res.get('applied_count')}")
-        return 0 if status in ("succeeded", "partial") else 1
+        # WP2: an incomplete scan exits non-zero — a green tick must never
+        # mask a partial scan. Decision (Alfred): BOTH a non-zero script
+        # exit AND a workflow-level guard on summary.json.
+        mode = res.get("mode")
+        scan_based = mode in ("audit_only", "propose_corrections")
+        if scan_based and (status != "succeeded" or not res.get("scan_complete", False)):
+            coverage = res.get("coverage") or {}
+            print(
+                f"[audit] Scan incomplete or failed (status={status}, "
+                f"scan_complete={res.get('scan_complete')}, "
+                f"reason={coverage.get('incomplete_reason')}); exiting non-zero.",
+                file=sys.stderr,
+            )
+            return 1
+        return 0 if status == "succeeded" else 1
     except Exception as exc:
         print(f"[error] Fatal execution failure: {exc}", file=sys.stderr)
         return 1
