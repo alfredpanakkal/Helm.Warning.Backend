@@ -4,8 +4,10 @@
 Reproduces the live AMSA.Web.MSIPublication/Home page structure in
 miniature (page chrome, Part 1, Part 2 with two in-force warnings —
 including the weekly in-force summary warning — Part 3 AUSCOAST blocks
-that must never leak into the regional harvest, Part 4 tables) and
-verifies the extract -> universal-parser chain end to end, offline.
+(harvested separately as area-scoped pseudo-regions and never leaking
+into the regional 'x' harvest), Part 4 tables) and verifies the
+extract -> universal-parser chain end to end, offline, for both the
+NAVAREA X and the AUSCOAST area harvests.
 """
 import os
 import sys
@@ -15,7 +17,7 @@ ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from scripts.navarea_x_scraper import extract_message_text
+from scripts.navarea_x_scraper import extract_message_text, extract_auscoast_areas
 from scripts.navarea_universal_parser import parse_bulletin_text
 
 # Miniature clone of the live publication page (verified 2026-10-27):
@@ -57,6 +59,24 @@ FM RCC AUSTRALIA 170642Z OCT 26<br>
 AUSCOAST WARNING 327/26<br>
 WHITE TIP REEF (MAIN &amp; REAR) LIGHT K3054.1 IN POSITION 19-55.47S 150-16.09E<br>
 UNRELIABLE<br>
+NNNN</p>
+<p>AUSCOAST coastal warning - area C:<br>
+SECURITE<br>
+FM JRCC AUSTRALIA 291202Z JUN 26<br>
+AUSCOAST WARNING 231/26<br>
+1. . SPECIAL PURPOSE VESSEL RESPONDER / V7CY9 CONDUCTING CABLE LAYING OPERATIONS 5 NM EITHER SIDE OF A LINE JOINING<br>
+A. 38-19.86S 144-19.61E<br>
+B. 39-06.11S 145-33.18E<br>
+2. 1.0NM CLEARANCE REQUESTED.<br>
+SEE ALSO NAVAREA X 113/26.<br>
+NNNN</p>
+<p>AUSCOAST coastal warning - area D:<br>
+SECURITE<br>
+FM JRCC AUSTRALIA 291202Z JUN 26<br>
+AUSCOAST WARNING 231/26<br>
+1. . SPECIAL PURPOSE VESSEL RESPONDER / V7CY9 CONDUCTING CABLE LAYING OPERATIONS 5 NM EITHER SIDE OF A LINE JOINING<br>
+A. 38-19.86S 144-19.61E<br>
+2. 1.0NM CLEARANCE REQUESTED.<br>
 NNNN</p>
 <p>Part 4. Summary of Mobile Drilling Rigs:</p>
 <table><tr><td>JANSZ FCS</td><td>AXA001</td><td>19 52.7S 114 36.5E</td></tr></table>
@@ -199,6 +219,105 @@ class TestUniversalParserIngestion(unittest.TestCase):
     def test_title_keeps_the_warning_subject(self):
         w = self.by_id("NAVAREA X 113/26")
         self.assertIn("SPECIAL PURPOSE VESSEL LAYLA", w["title"])
+
+
+class TestExtractAuscoastAreas(unittest.TestCase):
+    def setUp(self):
+        self.areas = extract_auscoast_areas(_MINI_HTML)
+
+    def test_returns_one_bulletin_per_area_with_warnings(self):
+        # Areas B, C and D carry warnings; the nil area A is omitted.
+        self.assertEqual(sorted(self.areas), ["b", "c", "d"])
+
+    def test_nil_area_is_omitted(self):
+        self.assertNotIn("a", self.areas)
+
+    def test_area_blocks_start_at_header_and_drop_preamble(self):
+        lines = [ln.strip() for ln in self.areas["b"].split("\n") if ln.strip()]
+        self.assertEqual(lines[0], "AUSCOAST WARNING 327/26")
+        self.assertNotIn("SECURITE", self.areas["b"])
+        self.assertNotIn("FM RCC AUSTRALIA", self.areas["b"])
+        self.assertNotIn("NNNN", self.areas["b"])
+
+    def test_same_number_in_two_areas_stays_two_harvests(self):
+        # AMSA lists 231/26 under BOTH areas C and D: each area keeps its
+        # own verbatim harvest (area-scoped pseudo-regions downstream).
+        self.assertIn("AUSCOAST WARNING 231/26", self.areas["c"])
+        self.assertIn("AUSCOAST WARNING 231/26", self.areas["d"])
+
+    def test_fail_closed_on_missing_part4_anchor(self):
+        broken = _MINI_HTML.replace("Part 4. Summary of Mobile Drilling Rigs:",
+                                    "Part IV. Summary of Mobile Drilling Rigs:")
+        with self.assertRaises(ValueError):
+            extract_auscoast_areas(broken)
+
+    def test_fail_closed_when_no_area_heading_survives(self):
+        broken = _MINI_HTML.replace("AUSCOAST coastal warning - area",
+                                    "Coastal warning - zone")
+        with self.assertRaises(ValueError):
+            extract_auscoast_areas(broken)
+
+    def test_fail_closed_on_missing_part3_anchor(self):
+        with self.assertRaises(ValueError):
+            extract_auscoast_areas(_NO_PART3_HTML)
+
+    def test_fail_closed_on_missing_part4_anchor_only(self):
+        # Part 3 anchor present, Part 4 absent: unbounded slice refused.
+        with self.assertRaises(ValueError):
+            extract_auscoast_areas(_EMPTY_PART2_HTML)
+
+
+class TestAuscoastUniversalParserIngestion(unittest.TestCase):
+    def setUp(self):
+        self.areas = extract_auscoast_areas(_MINI_HTML)
+        self.parsed_b = parse_bulletin_text(self.areas["b"], "auscoast-b")
+        self.parsed_c = parse_bulletin_text(self.areas["c"], "auscoast-c")
+        self.parsed_d = parse_bulletin_text(self.areas["d"], "auscoast-d")
+
+    def test_area_scoped_warning_ids(self):
+        ids_b = [w["warning_id"] for w in self.parsed_b["nav_warnings"]]
+        ids_c = [w["warning_id"] for w in self.parsed_c["nav_warnings"]]
+        ids_d = [w["warning_id"] for w in self.parsed_d["nav_warnings"]]
+        self.assertEqual(ids_b, ["AUSCOAST B 327/26"])
+        self.assertEqual(ids_c, ["AUSCOAST C 231/26"])
+        self.assertEqual(ids_d, ["AUSCOAST D 231/26"])
+
+    def test_same_number_two_areas_two_distinct_warnings(self):
+        self.assertNotEqual(self.parsed_c["nav_warnings"][0]["canonical_id"],
+                            self.parsed_d["nav_warnings"][0]["canonical_id"])
+
+    def test_source_and_navarea_labels(self):
+        w = self.parsed_b["nav_warnings"][0]
+        self.assertEqual(w["source_id"], "manual-auscoast-b")
+        self.assertEqual(w["navarea"], "AUSCOAST B")
+        self.assertEqual(self.parsed_b["memo"]["source_id"], "manual-auscoast-b")
+        self.assertEqual(self.parsed_b["memo"]["navarea"], "AUSCOAST B")
+
+    def test_point_warning_yields_geometry(self):
+        # 19-55.47S 150-16.09E -> Point (-19.9245, 150.268167)
+        w = self.parsed_b["nav_warnings"][0]
+        self.assertIsNotNone(w["spatial"])
+        from shared.utils import _extract_coord_pairs
+        pairs = {(round(lat, 6), round(lon, 6))
+                 for _kind, lat, lon, _canon in _extract_coord_pairs(w["raw_text"])}
+        self.assertIn((-19.924500, 150.268167), pairs)
+
+    def test_cable_line_area_yields_geometry(self):
+        w = self.parsed_c["nav_warnings"][0]
+        self.assertIsNotNone(w["spatial"])
+
+    def test_navarea_x_cross_reference_never_splits_a_block(self):
+        # Area C body carries 'SEE ALSO NAVAREA X 113/26.': the AUSCOAST
+        # pseudo-region has no companion truncation and only AUSCOAST
+        # headers start blocks — still exactly one warning.
+        self.assertEqual(len(self.parsed_c["nav_warnings"]), 1)
+
+    def test_raw_text_free_of_preamble_and_terminator(self):
+        for parsed in (self.parsed_b, self.parsed_c, self.parsed_d):
+            for w in parsed["nav_warnings"]:
+                self.assertNotIn("SECURITE", w["raw_text"])
+                self.assertNotIn("FM JRCC", w["raw_text"])
+                self.assertNotIn("NNNN", w["raw_text"])
 
 
 if __name__ == "__main__":

@@ -53,6 +53,32 @@ UNIVERSAL_REGIONS = {
 
 _ROMAN_TO_KEY = {roman: key for key, roman in UNIVERSAL_REGIONS.items()}
 
+# AUSCOAST coastal warnings (Australia / AMSA): Australian NATIONAL
+# warnings outside NAVAREA numbering, published per area letter A-H in
+# Part 3 of the same RCC Australia MSI publication page as NAVAREA X
+# (Part 2). They are ingested as area-scoped pseudo-regions
+# ('auscoast-a' ... 'auscoast-h'): the same number AMSA lists under two
+# areas (e.g. 231/26 under both C and D) stays TWO distinct warnings,
+# and per-area in-force bookkeeping stays possible.
+AUSCOAST_AREAS = {"auscoast-" + ch: ch.upper() for ch in "abcdefgh"}
+
+# 'AUSCOAST WARNING 327/26' (the 'WARNING' word is optional for
+# tolerance; live header shape verified 2026-10-28). Same group contract
+# as the NAVAREA headers: group(1)=number, group(2)=year.
+RE_AUSCOAST_HEADER = re.compile(
+    r"AUS\s*COAST\s+(?:WARNING\s+)?(\d{1,4})\s*/\s*(\d{4}|\d{2})(?!\d)",
+    re.IGNORECASE)
+
+# 'CANCEL AUSCOAST WARNING 3xx/26' cross-reference inside a body.
+RE_AUSCOAST_CANCEL = re.compile(
+    r"CANCEL\s+AUS\s*COAST\s+(?:WARNING\s+)?(\d{1,4})\s*/\s*(\d{4}|\d{2})(?!\d)",
+    re.IGNORECASE)
+
+# A regex that can never match (negative lookahead on an empty pattern):
+# the AUSCOAST pseudo-regions have NO companion region, and the parser
+# iterates cfg['companion_re'] unconditionally.
+RE_NEVER_MATCHES = re.compile(r"(?!)")
+
 # Display names for every NAVAREA / MET area (I–XXI + Baltic), for logs
 # and the admin panel.
 NAVAREA_NAMES = {
@@ -78,6 +104,15 @@ NAVAREA_NAMES = {
     "xx": "Russia / Arctic West",
     "xxi": "Russia / Arctic East",
     "baltic": "Baltic",
+    # AUSCOAST pseudo-regions (Australian national coastal warnings).
+    "auscoast-a": "AUSCOAST Area A (Australia)",
+    "auscoast-b": "AUSCOAST Area B (Australia)",
+    "auscoast-c": "AUSCOAST Area C (Australia)",
+    "auscoast-d": "AUSCOAST Area D (Australia)",
+    "auscoast-e": "AUSCOAST Area E (Australia)",
+    "auscoast-f": "AUSCOAST Area F (Australia)",
+    "auscoast-g": "AUSCOAST Area G (Australia)",
+    "auscoast-h": "AUSCOAST Area H (Australia)",
 }
 
 # All 21 NAVAREA / MET numerals, longest-first for safe alternation matching.

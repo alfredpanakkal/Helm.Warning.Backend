@@ -16,8 +16,11 @@ warnings as SECURITE ... NNNN radio blocks — already the format the
 universal parser ingests for region 'x' (see
 tests/fixtures/navarea_x_sample.txt). 'Part 3. Coastal warnings'
 (AUSCOAST areas A-H) are Australian national warnings outside NAVAREA
-numbering — sliced out loudly, the same way the NAVAREA V scraper skips
-the Brazilian costeiro/SAR records.
+numbering — harvested as area-scoped pseudo-regions ('auscoast-a' ...
+'auscoast-h', one source each: manual-auscoast-<letter>) by the SAME
+scraper run, parsed by the same universal parser (rule-only for the
+pseudo-regions) + generic sync; they never leak into the region 'x'
+harvest.
 
 Strategy (fail-closed, mirrors scripts/navarea_vii_scraper.py):
   1. Fetch the page (Scrapling Fetcher — stealthy headers, retries;
@@ -42,6 +45,7 @@ Run:
     python -m scripts.navarea_x_scraper
     python -m scripts.run_navarea_x
 """
+import json
 import os
 import re
 import sys
@@ -114,6 +118,20 @@ _HEADER_RE = re.compile(
 _NNNN_LINE_RE = re.compile(r"^[ \t]*N{3,6}[ \t.=]*$", re.MULTILINE)
 
 
+# Part 3 (AUSCOAST coastal warnings, areas A-H) anchors. The end anchor
+# (Part 4) is required too: without it the rig/vessel summary tables
+# would leak into the AUSCOAST harvest (same fail-closed slicing
+# philosophy as Part 2).
+_PART3_START_RE = re.compile(r"Part\s*3\.\s*Coastal\s+warnings[^\n]*",
+                             re.IGNORECASE)
+_PART3_END_RE = re.compile(r"Part\s*4\.", re.IGNORECASE)
+
+# Per-area heading inside Part 3: 'AUSCOAST coastal warning - area D:'.
+_AUSCOAST_AREA_RE = re.compile(
+    r"AUS\s*COAST\s+coastal\s+warning\s*-\s*area\s+([A-H])\s*:",
+    re.IGNORECASE)
+
+
 class _TextExtractor(HTMLParser):
     """Minimal HTML -> text extractor (stdlib only, no new dependency).
 
@@ -148,6 +166,41 @@ class _TextExtractor(HTMLParser):
         return "".join(self._chunks)
 
 
+def _slice_broadcast_blocks(part_text: str, header_re, part_label: str) -> List[str]:
+    """Splits one publication part into radio-message blocks on the NNNN
+    broadcast terminator, keeping each block from its warning header up
+    to (excluding) the terminator. The dropped 'SECURITE' / 'FM JRCC
+    AUSTRALIA ...' preamble is discarded by the universal parser anyway
+    (blocks start at the header match); removing it here ALSO prevents
+    the next message's preamble from leaking into the previous block's
+    raw_text tail. Segments without a warning header are skipped loudly
+    (page junk, layout change); a missing terminator between two
+    messages is tolerated (the universal parser still splits the
+    segment on its own header patterns)."""
+    segments = []
+    prev_end = 0
+    for term in _NNNN_LINE_RE.finditer(part_text):
+        segments.append((prev_end, term.start()))
+        prev_end = term.end()
+    if part_text[prev_end:].strip():
+        segments.append((prev_end, len(part_text)))  # unterminated last msg
+
+    blocks = []
+    for seg_start, seg_end in segments:
+        segment = part_text[seg_start:seg_end]
+        header = header_re.search(segment)
+        if header is None:
+            if segment.strip():
+                print("WARNING: skipping non-warning segment in "
+                      + part_label + " (no warning header): "
+                      + repr(segment.strip()[:80]))
+            continue
+        block = segment[header.start():seg_end]
+        lines = [line.rstrip() for line in block.split("\n")]
+        blocks.append("\n".join(lines).strip())
+    return blocks
+
+
 def extract_message_text(html: str) -> str:
     """Strips the AMSA publication page to the in-force NAVAREA X text.
 
@@ -178,39 +231,73 @@ def extract_message_text(html: str) -> str:
             "(AUSCOAST leak guard — page layout change?)")
     part2 = text[start_m.end():end_m.start()]
 
-    # Split into radio messages on the NNNN terminator line. A missing
-    # terminator between two messages is tolerated: the segment then
-    # carries two headers and the universal parser still splits it on
-    # the region header. Segments without a NAVAREA X header are skipped
-    # loudly (page junk, layout change).
-    segments = []
-    prev_end = 0
-    for term in _NNNN_LINE_RE.finditer(part2):
-        segments.append((prev_end, term.start()))
-        prev_end = term.end()
-    if part2[prev_end:].strip():
-        segments.append((prev_end, len(part2)))  # unterminated last message
-
-    blocks = []
-    for seg_start, seg_end in segments:
-        segment = part2[seg_start:seg_end]
-        header = _HEADER_RE.search(segment)
-        if header is None:
-            if segment.strip():
-                print("WARNING: skipping non-NAVAREA-X segment in Part 2 "
-                      "(no 'NAVAREA X nnn/yy' header): "
-                      + repr(segment.strip()[:80]))
-            continue
-        block = segment[header.start():seg_end]
-        lines = [line.rstrip() for line in block.split("\n")]
-        blocks.append("\n".join(lines).strip())
-
+    # Split into radio messages on the NNNN terminator line and keep
+    # each block from its 'NAVAREA X nnn/yy' header (see
+    # _slice_broadcast_blocks).
+    blocks = _slice_broadcast_blocks(part2, _HEADER_RE, "Part 2")
     if not blocks:
         raise ValueError(
             "no 'NAVAREA X nnn/yy' warning found between the Part 2 and "
             "Part 3 anchors; refusing to archive a junk harvest "
             "(page layout change?)")
     return "\n\n".join(blocks) + "\n"
+
+
+def extract_auscoast_areas(html: str) -> dict:
+    """Harvests the AUSCOAST coastal warnings (Part 3) per area letter.
+
+    Returns {'b': '<bulletin text>', ...} for every area that carries at
+    least one 'AUSCOAST WARNING nnn/yy' block; areas published as 'nil'
+    are omitted (an empty per-area snapshot must never be synced). The
+    per-area text is already the universal-parser bulletin shape for the
+    'auscoast-<letter>' pseudo-regions (see AUSCOAST_AREAS in
+    shared/navarea_universal_text.py).
+
+    Fail-closed: a missing Part 3 or Part 4 anchor, or no
+    'AUSCOAST coastal warning - area X:' heading at all, raises
+    ValueError (page layout change — never archive a junk harvest). A
+    Part 3 whose areas are ALL nil returns {} (nothing to sync; nil
+    areas are a legitimate AMSA publication state, not a layout change).
+    """
+    extractor = _TextExtractor()
+    extractor.feed(html)
+    extractor.close()
+    text = extractor.get_text()
+    text = text.replace("\xa0", " ").replace("\r\n", "\n").replace("\r", "\n")
+
+    start_m = _PART3_START_RE.search(text)
+    if not start_m:
+        raise ValueError(
+            "start anchor 'Part 3. Coastal warnings:' not found in the "
+            "page; refusing to archive a junk AUSCOAST harvest (page "
+            "layout change?)")
+    end_m = _PART3_END_RE.search(text, start_m.end())
+    if not end_m:
+        raise ValueError(
+            "end anchor 'Part 4.' not found after the Part 3 anchor; "
+            "refusing to slice an unbounded AUSCOAST harvest (rig-table "
+            "leak guard — page layout change?)")
+    part3 = text[start_m.end():end_m.start()]
+
+    area_matches = list(_AUSCOAST_AREA_RE.finditer(part3))
+    if not area_matches:
+        raise ValueError(
+            "no 'AUSCOAST coastal warning - area X:' heading found in "
+            "Part 3; refusing to archive a junk AUSCOAST harvest (page "
+            "layout change?)")
+
+    from shared.navarea_universal_text import RE_AUSCOAST_HEADER as _auscoast_header_re
+    areas: dict = {}
+    for i, m in enumerate(area_matches):
+        area_key = m.group(1).lower()
+        seg_end = (area_matches[i + 1].start() if i + 1 < len(area_matches)
+                   else len(part3))
+        area_text = part3[m.end():seg_end]
+        blocks = _slice_broadcast_blocks(area_text, _auscoast_header_re,
+                                         "Part 3 area " + area_key.upper())
+        if blocks:
+            areas[area_key] = "\n\n".join(blocks) + "\n"
+    return areas
 
 
 def fetch_page_html() -> Optional[str]:
@@ -278,6 +365,15 @@ def main() -> bool:
         print(f"ERROR: {exc}")
         return False
 
+    # AUSCOAST coastal warnings (Part 3, areas A-H): extracted BEFORE any
+    # write or sync so a Part 3 layout change fails the whole run
+    # atomically (fail-closed — never leave a stale half-harvest).
+    try:
+        auscoast_areas = extract_auscoast_areas(html)
+    except ValueError as exc:
+        print(f"ERROR: {exc}")
+        return False
+
     n_blocks = len(_HEADER_RE.findall(bulletin))
     if n_blocks < _MIN_WARNINGS:
         print(f"ERROR: page carried {n_blocks} NAVAREA X block(s); "
@@ -297,7 +393,47 @@ def main() -> bool:
         return False
 
     from scripts.navarea_generic_sync import sync_to_supabase
-    return sync_to_supabase(PARSED_PATH)
+    if not sync_to_supabase(PARSED_PATH):
+        return False
+
+    # AUSCOAST coastal warnings: parsed by the SAME universal parser
+    # (rule-only by construction — the Gemini layer refuses keys outside
+    # UNIVERSAL_REGIONS) and synced by the SAME generic sync, one source
+    # per area. A per-area harvest is only synced when it carries at
+    # least one warning: an empty snapshot is never synced (absence is
+    # not withdrawal evidence).
+    if not auscoast_areas:
+        print("NOTE: every AUSCOAST area (A-H) is nil on this publication "
+              "— nothing to parse or sync for AUSCOAST.")
+        return True
+
+    from scripts.navarea_universal_parser import parse_bulletin_text
+    total_auscoast = 0
+    for area_key in sorted(auscoast_areas):
+        region_key = "auscoast-" + area_key
+        area_dir = os.path.join("navareas", region_key)
+        area_txt_path = os.path.join(area_dir, "latest_raw.txt")
+        area_parsed_path = os.path.join(area_dir, "parsed.json")
+        os.makedirs(area_dir, exist_ok=True)
+        with open(area_txt_path, "w", encoding="utf-8") as f:
+            f.write(auscoast_areas[area_key])
+        parsed_data = parse_bulletin_text(auscoast_areas[area_key], region_key)
+        n_area = len(parsed_data["nav_warnings"])
+        if n_area < 1:
+            print("ERROR: AUSCOAST area " + area_key.upper()
+                  + " carried no warning after parsing; refusing to sync "
+                  "an empty snapshot.")
+            return False
+        with open(area_parsed_path, "w", encoding="utf-8") as f:
+            json.dump(parsed_data, f, indent=2, ensure_ascii=False)
+        total_auscoast += n_area
+        print("AUSCOAST area " + area_key.upper() + ": harvested "
+              + str(n_area) + " warning(s) -> " + area_parsed_path)
+        if not sync_to_supabase(area_parsed_path):
+            return False
+    print("AUSCOAST total: " + str(total_auscoast) + " warning(s) across "
+          + str(len(auscoast_areas)) + " area(s)")
+    return True
 
 
 if __name__ == "__main__":
