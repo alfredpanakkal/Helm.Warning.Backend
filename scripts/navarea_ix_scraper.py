@@ -331,7 +331,11 @@ def fetch_url(url: str, accept: str,
 
     for attempt in range(_TRANSIENT_RETRIES + 1):
         if stats is not None:
-            stats["requests"] += 1
+            # Tolerate a partially-initialised stats dict: the rest of
+            # this module uses the same .get idiom, and a bare += raised
+            # KeyError: 'requests' when a caller passed stats={}
+            # (live CI failure 2026-10-28, two fetch_url tests).
+            stats["requests"] = stats.get("requests", 0) + 1
         body_text, status, retry_after = _fetch_once(url, _headers)
         if body_text is not None:
             return body_text

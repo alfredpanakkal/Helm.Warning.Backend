@@ -39,8 +39,16 @@ class TestRegionRegistry(unittest.TestCase):
         for region, (_parser_mod, sync_mod, _sub) in REGIONS.items():
             mod = importlib.import_module(sync_mod)
             self.assertTrue(callable(mod.sync_to_supabase), region)
-            params = list(inspect.signature(mod.sync_to_supabase).parameters)
-            self.assertEqual(len(params), 1, f"{region} sync_to_supabase() args")
+            sig = inspect.signature(mod.sync_to_supabase)
+            params = list(sig.parameters)
+            # Manual paste calls sync_to_supabase(parsed_json) with ONE positional
+            # arg; extra parameters are allowed only when defaulted (e.g.
+            # navarea_generic_sync.full_snapshot for skip-stored-rows partial
+            # harvests, PR #51) so the one-positional-arg contract holds.
+            self.assertGreaterEqual(len(params), 1, f"{region} sync_to_supabase() args")
+            for extra in params[1:]:
+                self.assertNotEqual(sig.parameters[extra].default, inspect.Parameter.empty,
+                                    f"{region} sync_to_supabase() extra param {extra!r} must be defaulted")
 
 
 class TestRunnerGuards(unittest.TestCase):
