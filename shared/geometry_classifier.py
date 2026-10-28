@@ -31,6 +31,14 @@ Keyword taxonomy (validated against live NAVAREA bulletins, Oct 2026):
   Point -> WELL HEAD / PLATFORM / RIG / BUOY / RACON / BEACON / MOORING /
            LIGHT VESSEL / WRECK / SHOAL / ROCK (incl. plural forms)
 
+Standing rule (2026-10-28): rig-class units (RIG / JACK-UP / DRILLSHIP /
+MODU) are ALWAYS discrete point locations. Rig lists frequently arrive
+wrapped in area wording ('FOLLOWING RIGS STATIONED IN AREA BOUNDED BY ...')
+or even tow wording ('RIG UNDER TOW ALONG TRACKLINE ...') — the rig rule
+outranks the Area and Line rules so a rig list can never be drawn as a
+filled hazard zone or a tow polygon. A single rig position is unaffected
+(a 1-point array stays a plain Point).
+
 Sequential-vs-scattered detection uses the adjacent-nearest-neighbour test:
   scattered sets score ~0.1-0.15, a realistically sampled survey track ~1.0.
 Threshold 0.70; only trusted for n >= 5 (small scattered sets can pass by
@@ -70,6 +78,12 @@ RE_LINEAR_OPS = re.compile(
 )
 RE_SURVEY = re.compile(r"\bSURVEY\b")
 RE_VICINITY = re.compile(r"VICINITY\s+OF")
+
+# Rig-class offshore drilling units. Checked BEFORE every other keyword
+# rule: rig lists are always plotted as points (standing rule above).
+RE_RIG_UNITS = re.compile(
+    r"\b(?:RIGS?|JACK-?UPS?|DRILLS?HIPS?|MODUS?)\b"
+)
 
 
 def _haversine_m(a: Sequence[float], b: Sequence[float]) -> float:
@@ -165,6 +179,12 @@ def classify_geometry_archetype(
     if not raw_text or len(points) < 2:
         return None
     text = raw_text.upper()
+
+    # Rig-class units FIRST, above every other keyword rule: a rig list
+    # is always discrete points, even when the same clause carries
+    # bounded-area or trackline wording (standing rule, 2026-10-28).
+    if RE_RIG_UNITS.search(text):
+        return "multipoint"
 
     # 'AREA BOUNDED WITHIN <lat> TO <lat> AND <lon> TO <lon>': two opposite
     # corners (NAVAREA VIII 1102/26). Expand into a rectangle ring.
