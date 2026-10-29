@@ -88,7 +88,10 @@ def _build_spatial(clauses):
     """
     geoms = []  # (label, spatial, lat, lon)
     for clause in clauses:
-        _, lat, lon, spatial = parse_coordinates(clause["text"])
+        # clause["context"] (item preamble + clause text) supplies the
+        # classification keywords that live outside the sub-area segment.
+        _, lat, lon, spatial = parse_coordinates(
+            clause["text"], clause.get("context"))
         if spatial and clause.get("is_trackline"):
             spatial = ring_to_trackline(spatial)
         if spatial:

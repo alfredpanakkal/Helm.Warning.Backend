@@ -10,7 +10,10 @@ import math
 from typing import Dict, List, Tuple, Set, Any, Optional
 
 from shared.exceptions import ParseError, ValidationError
-from shared.geometry_classifier import classify_geometry_archetype, ring_is_simple
+from shared.geometry_classifier import (
+    classify_geometry_archetype, classify_geometry_archetype_detailed,
+    ring_is_simple,
+)
 from shared.validation import (
     validate_coordinate_token,
     validate_warning_id,
@@ -34,6 +37,83 @@ RE_RULE_20_LAT = re.compile(r"^0(\d{2})-(\d{2}(?:\.\d+)?)([NS])$")
 RE_RULE_20_LON = re.compile(r"^(\d{2})-(\d{2}(?:\.\d+)?)([EW])$")
 # Rule 93 (European decimal comma): 44-05,12N -> 44-05.12N
 RE_RULE_93 = re.compile(r"^(\d{1,3})-(\d{2}),(\d+)([NSEW])$")
+
+
+# --- line-wrap rejoining (canonical shared implementation) ------------------
+#
+# Coordinate tokens split across line wraps ("16-" at the end of one
+# line, "40.27N" starting the next — the NAVAREA VIII 1087/26 shape)
+# previously produced 4-of-6 positions and a truncated polygon. This
+# canonical copy lives in shared/utils so parse_coordinates()
+# can rejoin EVERY input before extraction (NgaMemoPreprocessor keeps its
+# identical method for the IV/XII memo path; dedup is a deliberate
+# follow-up, not part of this correctness fix).
+
+_REJOIN_TOKEN = re.compile(r"^(\d{1,3})-(\d{1,2}(?:\.\d{1,4})?)([NSEW])$")
+
+# Line wrap INSIDE a coordinate token: optional CR then LF. Kept as a
+# named constant so every raw-string pattern below stays a single
+# physical line (a raw string can never span a real newline).
+_WRAP = r"\r?\n"
+
+# Each spec is (compiled_pattern, merge_fn) — a merge only applies when
+# the merged fragment forms a valid coordinate token.
+_REJOIN_WRAP_SPECS = (
+    # "34-27." + wrap + "00N" (XII 148/26); "58-10." + wrap + "50N" (IV 1170/25)
+    (re.compile(r"(\d{1,3}-\d{1,2}(?:\.\d{0,4})?)" + _WRAP
+               + r"(\d{1,2}(?:\.\d{1,4})?)([NSEW])"),
+     lambda g: g[0] + g[1] + g[2]),
+    # "57" + wrap + "-00N" (IV 206/26) — degrees at line end, minutes next line
+    (re.compile(r"(\d{1,3})" + _WRAP
+               + r"(-\d{1,2}(?:\.\d{1,4})?)([NSEW])"),
+     lambda g: g[0] + g[1] + g[2]),
+    # "27-09" + wrap + ".1N" (IV 204/26) — wrap inside the decimal minutes
+    (re.compile(r"(\d{1,3}-\d{1,2}(?:\.\d{1,4})?)" + _WRAP
+               + r"(\.\d{1,4})([NSEW])"),
+     lambda g: g[0] + g[1] + g[2]),
+    # "12-" + wrap + "28.85N" (IV 466/25) — degrees-hyphen at line end; the hyphen is
+    # consumed by the pattern and must be re-inserted
+    (re.compile(r"(\d{1,3})-" + _WRAP
+               + r"(\d{1,2}(?:\.\d{1,4})?)([NSEW])"),
+     lambda g: g[0] + "-" + g[1] + g[2]),
+)
+
+
+def _rejoin_token_valid(token: str) -> bool:
+    m = _REJOIN_TOKEN.match(token)
+    if not m:
+        return False
+    deg = int(m.group(1))
+    minutes = float(m.group(2))
+    if minutes >= 60.0:
+        return False
+    if m.group(3) in ("N", "S"):
+        return deg <= 90
+    return deg <= 180
+
+
+def rejoin_wrapped_coords(text: str) -> str:
+    """Join DDM coordinate tokens split across line wraps (idempotent).
+
+    Only merges when the merged fragment forms a valid coordinate token;
+    prose word-wraps ("IN AREA BO
+UND BY") are left untouched.
+    """
+    if not text:
+        return text
+
+    previous = None
+    while previous != text:
+        previous = text
+        for pattern, merge in _REJOIN_WRAP_SPECS:
+            def _merge(m, merge=merge):
+                merged = merge(m.groups())
+                if _rejoin_token_valid(merged):
+                    return merged
+                return m.group(0)
+            text = pattern.sub(_merge, text)
+    return text
+
 
 
 def repair_coordinate_token(raw_token: str) -> tuple[str, list[str]]:
@@ -307,6 +387,17 @@ RE_PAIR_SPACE = re.compile(
 )
 
 
+# Hemisphere-bearing coordinate-looking token (loose completeness count and
+# rejected-token scan). One token per hemisphere letter attached to digits:
+# every extracted pair accounts for exactly two.
+RE_LOOSE_HEM_TOKEN = re.compile(r"\d[\d.,-]*\s*[NSEW]\b")
+# Decimal-minute value with NO hemisphere letter ('18-30.5 ' from a partial
+# or wrapped position): missing_hemisphere — never guessed (Rule 17).
+RE_MISSING_HEM_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9.-])(\d{1,3}-\d{1,2}\.\d{1,4})(?!\s*[NSEW])(?=[\s,;]|$)"
+)
+
+
 def _extract_coord_pairs(raw_text: str):
     """Extracts validated coordinate pairs from text in ALL supported
     syntaxes. Returns a position-ordered list of
@@ -364,42 +455,127 @@ def _extract_coord_pairs(raw_text: str):
     return [(kind, lat, lon, canon) for _s, kind, lat, lon, canon in found]
 
 
-def parse_coordinates(raw_text: str):
+def _classify_loose_token(token: str):
+    """Failure reason for a hemisphere-bearing token the pair patterns
+    refused, or None when the token is well-formed (an unpaired axis
+    value inside a 'BOUNDED WITHIN' range listing is not an error)."""
+    t = token.strip()
+    m = re.match(r"^(\d{1,3})-(\d{1,2}(?:[.,]\d+)?)\s*([NSEW])$", t)
+    if not m:
+        return None
+    deg_s, min_s, hem = m.groups()
+    try:
+        deg_f = float(deg_s)
+        min_f = float(min_s.replace(",", "."))
+    except ValueError:
+        return "validation_failed"
+    if min_f >= 60.0:
+        return "validation_failed"
+    limit = 90.0 if hem in ("N", "S") else 180.0
+    if deg_f + min_f / 60.0 > limit:
+        return "validation_failed"
+    return None
+
+
+def _scan_rejected_tokens(text: str) -> list:
+    """Rejected coordinate tokens with reasons (silent-discard fix):
+    out-of-range hemisphere-bearing values ('91-00.0N' ->
+    validation_failed) and decimal-minute values missing their hemisphere
+    letter ('18-30.5 ' -> missing_hemisphere). Well-formed unpaired
+    tokens (axis listings) are NOT errors and are skipped."""
+    rejected = []
+    for m in RE_LOOSE_HEM_TOKEN.finditer(text):
+        reason = _classify_loose_token(m.group(0))
+        if reason:
+            rejected.append({"token": m.group(0).strip(), "reason": reason})
+    for m in RE_MISSING_HEM_TOKEN.finditer(text):
+        rejected.append({"token": m.group(1), "reason": "missing_hemisphere"})
+    return rejected
+
+
+def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None):
     """
-    Extracts navigational coordinates from text.
-    Handles the four live-bulletin pair syntaxes (see the pattern block
-    above): hyphen DMM (incl. glued tails and 'LAT./LONG.' wording),
-    DMS with (decimal) seconds, Peru fractional-hyphen, spaced-hyphen
-    (South Africa) and space/tab-separated DMM (Canada, Pakistan).
-    Returns: (parsed_coords_list, primary_lat, primary_lon, spatial_geojson)
-    For polygons and line segments, primary_lat and primary_lon represent the centroid.
+    parse_coordinates() with a structured parse report (geometry basis +
+    accepted/rejected tokens). Line-wrapped coordinate tokens are
+    rejoined before extraction. Returns
+    (parsed_coords_list, primary_lat, primary_lon, spatial_geojson, report):
+
+      report["flags"]        qa_flags entries for the record:
+                             COORD_COUNT_MISMATCH (loose coordinate-looking
+                             tokens exceed the extracted pairs — never
+                             build a polygon from the remainder),
+                             AMBIGUOUS_FALLBACK (geometry came from a
+                             fallback, not the source wording),
+                             RIG_AREA_CONFLICT (rig keyword + boundary
+                             phrase with few positions), MISSING_HEM,
+                             VALIDATION_FAILED
+      report["basis"]        how the geometry was decided, e.g.
+                             "keyword:area_bounded" / "heuristic:sequential"
+                             / "fallback:legacy_polygon"
+      report["data_quality"] EXPLICIT (keyword-explicit), INFERRED
+                             (heuristic), AMBIGUOUS (fallback); None when
+                             no geometry was built
+      report["accepted"]     [{"canonical", "kind"}] extracted pairs
+      report["rejected"]     [{"token", "reason"}] refused tokens
     """
     if not raw_text or not isinstance(raw_text, str):
-        return [], None, None, None
+        return [], None, None, None, {
+            "flags": [], "basis": None, "data_quality": None,
+            "accepted": [], "rejected": [],
+        }
 
-    pairs = _extract_coord_pairs(raw_text)
+    text = rejoin_wrapped_coords(raw_text)
+    pairs = _extract_coord_pairs(text)
 
     parsed_coords = []
     points = []
-
     for _kind, lat, lon, canon in pairs:
         points.append([lon, lat])
         parsed_coords.append(canon)
 
+    accepted = [
+        {"canonical": canon, "kind": kind} for kind, _lat, _lon, canon in pairs
+    ]
+    rejected = _scan_rejected_tokens(text)
+
+    flags = []
+    for r in rejected:
+        if r["reason"] == "validation_failed" and "VALIDATION_FAILED" not in flags:
+            flags.append("VALIDATION_FAILED")
+        elif r["reason"] == "missing_hemisphere" and "MISSING_HEM" not in flags:
+            flags.append("MISSING_HEM")
+
     spatial = None
     primary_lat = None
     primary_lon = None
+    basis = None
+    quality = None
 
     if points:
+        # Completeness check: a loose count of hemisphere-bearing
+        # coordinate-looking tokens above the extracted pairs means the
+        # text holds positions the patterns refused — never close them
+        # into a polygon.
+        loose_count = len(RE_LOOSE_HEM_TOKEN.findall(text))
+        count_mismatch = loose_count > 2 * len(points)
+        if count_mismatch:
+            flags.append("COORD_COUNT_MISMATCH")
+
         if len(points) == 1:
             primary_lat = points[0][1]
             primary_lon = points[0][0]
             spatial = {"type": "Point", "coordinates": points[0]}
+            basis = "explicit:single_position"
         else:
             # Centroid calculation for multi-point, polygon, and linestring
             primary_lat = round(sum(p[1] for p in points) / len(points), 6)
             primary_lon = round(sum(p[0] for p in points) / len(points), 6)
-            archetype = classify_geometry_archetype(raw_text, points)
+            archetype, basis, cls_flags = classify_geometry_archetype_detailed(
+                text, points, context_text)
+            for f in cls_flags:
+                if f not in flags:
+                    flags.append(f)
+
             if archetype == "multipoint":
                 # Discrete scattered locations (e.g. 'IN VICINITY OF'
                 # wellhead/platform lists, buoy lists): individual
@@ -407,46 +583,193 @@ def parse_coordinates(raw_text: str):
                 # tangled-polygon bug.
                 spatial = {"type": "MultiPoint", "coordinates": points}
             elif archetype == "bounding_box":
-                # 'AREA BOUNDED WITHIN <lat> TO <lat> AND <lon> TO <lon>'
-                # (NAVAREA VIII 1102/26): two opposite corners define the
-                # rectangle — expand into a proper closed ring rather than
-                # misplotting a 2-point corridor LineString.
-                lon_a, lat_a = points[0]
-                lon_b, lat_b = points[1]
-                spatial = {"type": "Polygon", "coordinates": [[
-                    [lon_a, lat_a], [lon_b, lat_a], [lon_b, lat_b],
-                    [lon_a, lat_b], [lon_a, lat_a],
-                ]]}
-            elif archetype == "linestring" or len(points) in (2, 3):
+                if count_mismatch:
+                    spatial = {"type": "MultiPoint", "coordinates": points}
+                    basis = "fallback:count_mismatch"
+                else:
+                    # 'AREA BOUNDED WITHIN': two opposite corners define
+                    # the rectangle — expand into a proper closed ring
+                    # rather than a 2-point corridor LineString.
+                    lon_a, lat_a = points[0]
+                    lon_b, lat_b = points[1]
+                    spatial = {"type": "Polygon", "coordinates": [[
+                        [lon_a, lat_a], [lon_b, lat_a], [lon_b, lat_b],
+                        [lon_a, lat_b], [lon_a, lat_a],
+                    ]]}
+            elif archetype == "linestring":
                 # Sequential track/route/trackline: open path, never
-                # auto-closed.
+                # auto-closed. A source that repeats the first vertex at
+                # the end (IV 153/26's closed listing) describes a ring:
+                # drop the duplicated closing vertex so the line stays open.
+                if len(points) > 1 and points[0] == points[-1]:
+                    points = points[:-1]
                 spatial = {"type": "LineString", "coordinates": points}
+            elif len(points) == 2:
+                spatial = {"type": "LineString", "coordinates": points}
+                if basis is None:
+                    basis = "fallback:two_point_line"
+            elif len(points) == 3 and basis is None:
+                # THREE unlabelled open positions can never close into
+                # a declared ring: a LineString would invent a path
+                # (A5). Discrete markers + review flag. Larger
+                # unlabelled lists fall through to the ring guard: a
+                # 5-position list is geometrically indistinguishable
+                # from a genuine 5-corner area (XII 151/26 sub-area B),
+                # so only the ring topology can decide.
+                if "AMBIGUOUS_FALLBACK" not in flags:
+                    flags.append("AMBIGUOUS_FALLBACK")
+                spatial = {"type": "MultiPoint", "coordinates": points}
+                basis = "fallback:unlabelled_points"
             else:
                 # Legacy default for bounded areas / unknown multi-vertex
                 # arrays: closed polygon ring — but only if the ring is a
                 # valid, non-self-intersecting boundary (>= 3 unique
-                # vertices). A crooked/bowtie ring means the listed order
-                # is not a genuine perimeter: fall back to an open path
-                # instead of fabricating a filled, tangled hazard zone.
+                # vertices) AND the completeness check passed.
                 ring = points if points[0] == points[-1] else points + [points[0]]
                 unique_vertices = {tuple(p) for p in ring}
-                # >= 3 UNIQUE vertices: a closed triangle listing (A,B,C,A)
-                # has 3 unique corners and is a genuine polygon (Baltic
-                # Skagerrak detonation areas); bowties fail ring_is_simple.
-                if len(unique_vertices) >= 3 and ring_is_simple(ring):
+                ring_ok = len(unique_vertices) >= 3 and ring_is_simple(ring)
+                if ring_ok and not count_mismatch:
                     spatial = {"type": "Polygon", "coordinates": [ring]}
+                    if basis is None:
+                        basis = "fallback:legacy_polygon"
+                elif count_mismatch:
+                    # Refused positions present: never close the
+                    # remainder into a ring (A1 completeness check).
+                    if "AMBIGUOUS_FALLBACK" not in flags:
+                        flags.append("AMBIGUOUS_FALLBACK")
+                    spatial = {"type": "MultiPoint", "coordinates": points}
+                    basis = "fallback:count_mismatch"
+                elif basis is None:
+                    # Bowtie/crooked order with NO keyword evidence:
+                    # discrete markers + review flag, never a
+                    # fabricated shape or path (A5).
+                    if "AMBIGUOUS_FALLBACK" not in flags:
+                        flags.append("AMBIGUOUS_FALLBACK")
+                    spatial = {"type": "MultiPoint", "coordinates": points}
+                    basis = "fallback:bowtie"
                 else:
+                    # Keyword-declared boundary enumeration ('LINES
+                    # JOINING' / bounded-area wording) in crooked list
+                    # order: keep the legacy OPEN PATH. The memo
+                    # pipelines (IV/XII ring-to-trackline contract:
+                    # 206/26 iceberg limits, 862/24) rely on never
+                    # receiving marker clouds for declared tracks.
                     spatial = {"type": "LineString", "coordinates": points}
 
-    if not points:
-        # 'AREA BOUNDED WITHIN <lat> TO <lat> AND <lon> TO <lon>' lists its
-        # axes separately (no pairs): fall back to axis tokens so these
-        # bounded-area warnings plot as rectangles instead of nothing.
-        bbox_spatial, bbox_lat, bbox_lon = _bbox_from_axis_tokens(raw_text)
+            if basis:
+                if basis.startswith("keyword:") or basis.startswith("explicit:"):
+                    quality = "EXPLICIT"
+                elif basis.startswith("heuristic:"):
+                    quality = "INFERRED"
+                else:
+                    quality = "AMBIGUOUS"
+            if "AMBIGUOUS_FALLBACK" in flags:
+                quality = "AMBIGUOUS"
+    else:
+        # 'AREA BOUNDED WITHIN <lat> TO <lat> AND <lon> TO <lon>' lists
+        # its axes separately (no pairs): fall back to axis tokens so
+        # these bounded-area warnings plot as rectangles instead of
+        # nothing.
+        bbox_spatial, bbox_lat, bbox_lon = _bbox_from_axis_tokens(text)
         if bbox_spatial:
-            return [], bbox_lat, bbox_lon, bbox_spatial
+            return [], bbox_lat, bbox_lon, bbox_spatial, {
+                "flags": [], "basis": "keyword:bounding_box",
+                "data_quality": "EXPLICIT", "accepted": [], "rejected": [],
+            }
+        if RE_LOOSE_HEM_TOKEN.search(text):
+            flags.append("COORD_COUNT_MISMATCH")
 
-    return parsed_coords, primary_lat, primary_lon, spatial
+    report = {
+        "flags": flags,
+        "basis": basis,
+        "data_quality": quality,
+        "accepted": accepted,
+        "rejected": rejected,
+    }
+    return parsed_coords, primary_lat, primary_lon, spatial, report
+
+
+def parse_coordinates(raw_text: str, context_text: Optional[str] = None):
+    """
+    Extracts navigational coordinates from text (see the pattern block
+    above): hyphen DMM (incl. glued tails and 'LAT./LONG.' wording), DMS
+    with (decimal) seconds, Peru fractional-hyphen, spaced-hyphen (South
+    Africa) and space/tab-separated DMM (Canada, Pakistan). Line-wrapped
+    coordinate tokens are rejoined before extraction.
+    Returns: (parsed_coords_list, primary_lat, primary_lon, spatial_geojson)
+    For polygons and line segments, primary_lat and primary_lon represent
+    the centroid. Use parse_coordinates_detailed() for the qa report
+    (basis, data_quality, accepted/rejected tokens).
+    context_text (optional) is the surrounding clause/item text used for
+    keyword classification only (e.g. an 'IN AREAS BOUND BY' preamble
+    outside the sub-area segment); coordinates are extracted from
+    raw_text alone.
+    """
+    parsed_coords, lat, lon, spatial, _report = parse_coordinates_detailed(
+        raw_text, context_text)
+    return parsed_coords, lat, lon, spatial
+
+
+RE_LETTERED_CLAUSE = re.compile(r"^[ \t]*([A-Z])\.[\s]+(?=\d)", re.MULTILINE)
+
+
+def parse_block_geometries(raw_text: str):
+    """
+    Clause-aware geometry parse for the dedicated single-block parsers
+    (NAVAREA I, XI, Baltic): lettered sub-areas ('A. 12-34.5N ...') that
+    directly introduce coordinates are parsed as SEPARATE geometries
+    (NAVAREA XI 0475/26: areas A/B/C must never merge into one shape).
+    Rejoins line-wrapped tokens, aggregates qa flags and worst-case data
+    quality across clauses.
+
+    Returns (geoms, coords_text, qa_flags, data_quality) where geoms is a
+    list of (label, spatial, lat, lon) and coords_text the canonical
+    coordinate strings of all clauses in order.
+    """
+    text = rejoin_wrapped_coords(raw_text or "")
+    marks = [(m.start(), m.group(1)) for m in RE_LETTERED_CLAUSE.finditer(text)]
+    clauses = []
+    if marks:
+        preamble = text[:marks[0][0]].strip()
+        if preamble:
+            clauses.append((None, preamble))
+        for k, (start, label) in enumerate(marks):
+            end = marks[k + 1][0] if k + 1 < len(marks) else len(text)
+            seg = text[start:end].strip()
+            if seg:
+                clauses.append((label, seg))
+    else:
+        clauses.append((None, text))
+
+    _dq_order = {"EXPLICIT": 0, "INFERRED": 1, "AMBIGUOUS": 2}
+    geoms = []
+    coords_text = []
+    qa_flags = []
+    data_quality = None
+
+    for label, clause_text in clauses:
+        if not clause_text:
+            continue
+        coords, lat, lon, spatial, report = parse_coordinates_detailed(clause_text)
+        coords_text.extend(coords)
+        for flag in report.get("flags") or []:
+            if flag not in qa_flags:
+                qa_flags.append(flag)
+        basis = report.get("basis")
+        if basis:
+            entry = "geometry_basis:" + basis
+            if entry not in qa_flags:
+                qa_flags.append(entry)
+        clause_quality = report.get("data_quality")
+        if clause_quality and (
+            data_quality is None
+            or _dq_order[clause_quality] > _dq_order[data_quality]
+        ):
+            data_quality = clause_quality
+        if spatial:
+            geoms.append((label, spatial, lat, lon))
+
+    return geoms, coords_text, qa_flags, data_quality
 
 
 def classify_hazard_categories(raw_text: str) -> list[str]:

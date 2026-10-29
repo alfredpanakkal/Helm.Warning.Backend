@@ -334,6 +334,10 @@ class NgaMemoPreprocessor:
                          Duplicate marker labels across items are
                          disambiguated as "N.L" (e.g. "5.A").
           text         — the clause's verbatim text (coordinates live here).
+          context      — the classification scope (item preamble + clause
+                         text): the governing keyword ('IN AREAS BOUND BY',
+                         'ALONG TRACKLINES JOINING') often lives in the
+                         preamble, outside the sub-area segment.
           is_trackline — True when the clause or its item preamble says
                          "TRACKLINE(S) JOINING": the geometry is an open
                          boundary/survey line, not a closed area. The parser
@@ -365,6 +369,7 @@ class NgaMemoPreprocessor:
             return [{
                 "label": None,
                 "text": raw_text,
+                "context": raw_text,
                 "is_trackline": bool(self.RE_TRACKLINE_CLAUSE.search(raw_text)),
             }]
 
@@ -396,6 +401,7 @@ class NgaMemoPreprocessor:
                 clauses.append({
                     "label": label,
                     "text": text,
+                    "context": context,
                     "is_trackline": bool(self.RE_TRACKLINE_CLAUSE.search(context)),
                     "_item": item,
                 })
