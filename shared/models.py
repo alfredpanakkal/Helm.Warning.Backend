@@ -190,10 +190,10 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
             # Discrete locations (e.g. 'IN VICINITY OF' wellhead lists):
             # persist one POINT geometry row per location instead of a
             # single row holding a MultiPoint (which would tempt
-            renderers to connect or hull the points). The radius is
-            whatever the source states (properties.buffer_nm) or 0:
-            a safety radius the source never stated is invented data
-            (e.g. NAVAREA I 230/26 states 500 METRES, not 1 NM).
+            # renderers to connect or hull the points). The radius is
+            # whatever the source states (properties.buffer_nm) or 0:
+            # a safety radius the source never stated is invented data
+            # (e.g. NAVAREA I 230/26 states 500 METRES, not 1 NM).
             coords = geojson_obj.get("coordinates") or []
             for idx, c in enumerate(coords):
                 try:
