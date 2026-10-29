@@ -96,18 +96,18 @@ MONTHS = {
 #                "CANCEL THIS MSG 301000Z NOV" (authoritative end date)
 #   until:       "UNTIL 31 DEC 2026" (never "UNTIL FURTHER NOTICE")
 RE_VALIDITY_RANGE = re.compile(
-    r"(?:FROM\s+)?(\d{1,2})(\d{2})?(\d{2})?
-     r"(?:\s*(?:Z|UTC))?\s+([A-Za-z]{3,9})\.?(?:\s+(\d{2,4}))?"
-     r"\s+TO\s+(\d{1,2})(\d{2})?(\d{2})?
-     r"(?:\s*(?:Z|UTC))?\s+([A-Za-z]{3,9})\.?(?:\s+(\d{2,4}))?",
+    r"(?:FROM\s+)?(\d{1,2})(\d{2})?(\d{2})?(?:\s*(?:Z|UTC))?"
+    r"\s+([A-Za-z]{3,9})\.?(?:\s+(\d{2,4}))?\s+TO\s+"
+    r"(\d{1,2})(\d{2})?(\d{2})?(?:\s*(?:Z|UTC))?"
+    r"\s+([A-Za-z]{3,9})\.?(?:\s+(\d{2,4}))?",
     re.IGNORECASE)
 RE_CANCEL_SELF = re.compile(
-    r"CANCEL\s+THIS\s+(?:WARNING|MSG|MESSAGE)\s+
-     r"(\d{1,2})(\d{2})?(\d{2})?(?:\s*(?:Z|UTC))?
-     r"\s+([A-Za-z]{3,9})\.?(?:[/\s]+(\d{2,4}))?",
+    r"CANCEL\s+THIS\s+(?:WARNING|MSG|MESSAGE)\s+"
+    r"(\d{1,2})(\d{2})?(\d{2})?(?:\s*(?:Z|UTC))?"
+    r"\s+([A-Za-z]{3,9})\.?(?:[/\s]+(\d{2,4}))?",
     re.IGNORECASE)
 RE_UNTIL = re.compile(
-    r"\bUNTIL\s+(\d{1,2})\s+([A-Za-z]{3,9})\.?(?:\s+(\d{2,4}))?"
+    r"\bUNTIL\s+(\d{1,2})\s+([A-Za-z]{3,9})\.?(?:\s+(\d{2,4}))?",
     re.IGNORECASE)
 
 # NAVAREA I (UK / North Atlantic) is a tolerated COMPANION region: its
