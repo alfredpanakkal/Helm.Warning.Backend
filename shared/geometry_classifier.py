@@ -78,8 +78,8 @@ MIN_SEQUENTIAL_N = 5
 # LINE matches "COASTLINE". Plurals are explicit (\bRIG\b does NOT match
 # "RIGS" — a bare \b...\\b token fails on word suffixes).
 RE_BOUNDED = re.compile(
-    r"AREA\s+BOUNDED\s+BY|BOUND\s+BY|EXCLUSION\s+ZONE|RESTRICTED\s+AREA"
-    r"|LINES?\s+JOINING|AREA\s+DELIMITED\s+BY|ENCLOSED\s+BY"
+    r"AREAS?\s+BOUNDED\s+BY|BOUND\s+BY|EXCLUSION\s+ZONE|RESTRICTED\s+AREA"
+    r"|LINES?\s+JOINING|AREAS?\s+DELIMITED\s+BY|ENCLOSED\s+BY"
 )
 RE_BBOX = re.compile(r"AREA\s+BOUNDED\s+WITHIN")
 RE_POINT_OPS = re.compile(
@@ -111,8 +111,8 @@ RE_TRACKLINE_JOINING = re.compile(r"TRACKLINES?\s+JOINING")
 # 'ENCLOSED BY' (NAVAREA III 0122/26). Matching here only sets a review
 # flag; it never builds geometry by itself.
 RE_AREA_BOUNDARY_PHRASE = re.compile(
-    r"AREA\s+BOUNDED|BOUND\s+BY|AREA\s+DELIMITED\s+BY|ENCLOSED\s+BY"
-    r"|AREA\s+BOUNDED\s+WITHIN|EXCLUSION\s+ZONE|RESTRICTED\s+AREA"
+    r"AREAS?\s+BOUNDED|BOUND\s+BY|AREAS?\s+DELIMITED\s+BY|ENCLOSED\s+BY"
+    r"|AREAS?\s+BOUNDED\s+WITHIN|EXCLUSION\s+ZONE|RESTRICTED\s+AREA"
 )
 # At or below this many positions, a rig keyword inside area wording
 # cannot be resolved by keyword precedence alone.
