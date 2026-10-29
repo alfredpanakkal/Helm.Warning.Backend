@@ -271,7 +271,7 @@ class TestRigListAlwaysPoints(unittest.TestCase):
 
 class TestMultiPointGeometryRows(unittest.TestCase):
 
-    def test_multipoint_explodes_to_point_rows_with_buffer(self):
+    def test_multipoint_explodes_to_point_rows_no_invented_radius(self):
         record = {
             "title": "NAVAREA VIII 961/26",
             "spatial": {
@@ -291,7 +291,7 @@ class TestMultiPointGeometryRows(unittest.TestCase):
         for g in geoms:
             self.assertEqual(g["feature_type"], "POINT")
             self.assertEqual(g["geojson"]["type"], "Point")
-            self.assertGreaterEqual(g["buffer_nm"], 1.0)  # 1 NM safety radius
+            self.assertEqual(g["buffer_nm"], 0.0)  # radius only when the source states one
 
     def test_point_feature_unchanged(self):
         record = {

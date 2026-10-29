@@ -357,8 +357,9 @@ def _bbox_from_axis_tokens(raw_text: str):
 # than clamped.
 
 # Lat/lon separation inside a pair: whitespace, comma, slash, a trailing
-# '.' after the latitude, and the Chilean 'LONG.'/'LON.' wording.
-_PAIR_SEP = r"[\s,/]*(?:\.\s*)?(?:LONG\.?\s*|LON\.?\s*)?[\s,/]*"
+# '.' after the latitude, the Chilean 'LONG.'/'LON.' wording, and the
+# 'N - E' dash separator (NAVAREA III 0122/26 '18-00N - 071-00E').
+_PAIR_SEP = r"[\s,/]*(?:\.\s*)?(?:LONG\.?\s*|LON\.?\s*)?[\s,/]*(?:-[\s,/]*)?"
 
 RE_PAIR_PERU = re.compile(
     r"(\d{1,2})-(\d{2})-(\d{3})([NS])" + _PAIR_SEP +
@@ -366,25 +367,48 @@ RE_PAIR_PERU = re.compile(
     re.IGNORECASE,
 )
 RE_PAIR_DMS = re.compile(
-    r"(\d{1,2})-(\d{2})-(\d{1,2}(?:\.\d+)?)\s*([NS])" + _PAIR_SEP +
-    r"(\d{1,3})-(\d{2})-(\d{1,2}(?:\.\d+)?)\s*([EW])",
+    r"(\d{1,2})-(\d{2})-(\d{1,2}(?:[.,]\d+)?)\s*([NS])" + _PAIR_SEP +
+    r"(\d{1,3})-(\d{2})-(\d{1,2}(?:[.,]\d+)?)\s*([EW])",
     re.IGNORECASE,
 )
+# European decimal-comma minutes (III 0086/26 '44-05,12N 013-45,27E')
+# and single-digit minutes (SWEDISH 175/26 '018-4.7E') share this
+# pattern: ',' is normalized to '.' at extraction.
 RE_PAIR_DMM = re.compile(
-    r"(\d{1,2})-(\d{2}(?:\.\d+)?)\s*([NS])" + _PAIR_SEP +
-    r"(\d{1,3})-(\d{2}(?:\.\d+)?)\s*([EW])",
+    r"(\d{1,2})-(\d{1,2}(?:[.,]\d+)?)\s*([NS])" + _PAIR_SEP +
+    r"(\d{1,3})-(\d{1,2}(?:[.,]\d+)?)\s*([EW])",
     re.IGNORECASE,
 )
 RE_PAIR_DMM_SPACED = re.compile(
-    r"(\d{1,3})\s*-\s*(\d{2}(?:\.\d+)?)\s+([NS])\s+"
-    r"(\d{1,3})\s*-\s*(\d{2}(?:\.\d+)?)\s+([EW])",
+    r"(\d{1,3})\s*-\s*(\d{1,2}(?:[.,]\d+)?)\s+([NS])\s+"
+    r"(\d{1,3})\s*-\s*(\d{1,2}(?:[.,]\d+)?)\s+([EW])",
+    re.IGNORECASE,
+)
+# Space-separated DMS with seconds (IX 118/26 '25 02 37.67N 054 59 18.27E'):
+# must be tried BEFORE RE_PAIR_SPACE, or the space-DMM pattern misreads
+# '25 02 37.67N' as deg 25 / min 02 and the seconds as the next latitude.
+RE_PAIR_SPACE_DMS = re.compile(
+    r"(\d{1,2})[ \t]+(\d{2})[ \t]+(\d{1,2}(?:[.,]\d+)?)\s*([NS])[\s,]+"
+    r"(\d{1,3})[ \t]+(\d{2})[ \t]+(\d{1,2}(?:[.,]\d+)?)\s*([EW])",
     re.IGNORECASE,
 )
 RE_PAIR_SPACE = re.compile(
-    r"(\d{1,2})[ \t]+(\d{1,2}(?:\.\d+)?)\s*([NS])[\s,]+"
-    r"(\d{1,3})[ \t]+(\d{1,2}(?:\.\d+)?)\s*([EW])",
+    r"(\d{1,2})[ \t]+(\d{1,2}(?:[.,]\d+)?)\s*([NS])[\s,]+"
+    r"(\d{1,3})[ \t]+(\d{1,2}(?:[.,]\d+)?)\s*([EW])",
     re.IGNORECASE,
 )
+
+# Last-pass mixed-syntax pairing (IX 489/22 '23 59.10N, 038-01.70E'):
+# lat and lon written in DIFFERENT syntaxes (one space-separated, one
+# hyphen-separated) that no uniform pair pattern matches together. Only
+# spans the higher-priority patterns left unconsumed are claimed, and
+# the gap between lat and lon may hold nothing but whitespace/comma/
+# dash — a word ('TO', 'AND', 'LONG.') rejects the pairing.
+RE_TOKEN_LAT = re.compile(
+    r"(\d{1,2})(?:[ \t]+|-\s*)(\d{1,2}(?:[.,]\d+)?)\s*([NS])", re.IGNORECASE)
+RE_TOKEN_LON = re.compile(
+    r"(\d{1,3})(?:[ \t]+|-\s*)(\d{1,2}(?:[.,]\d+)?)\s*([EW])", re.IGNORECASE)
+_ADJACENT_GAP = re.compile(r"^[\s,;.\-]{0,12}$")
 
 
 # Hemisphere-bearing coordinate-looking token (loose completeness count and
@@ -411,6 +435,7 @@ def _extract_coord_pairs(raw_text: str):
         (RE_PAIR_DMS, "dms"),
         (RE_PAIR_DMM, "dmm"),
         (RE_PAIR_DMM_SPACED, "dmm_spaced"),
+        (RE_PAIR_SPACE_DMS, "dms_space"),
         (RE_PAIR_SPACE, "dmm_space"),
     ):
         for m in rex.finditer(raw_text):
@@ -430,8 +455,10 @@ def _extract_coord_pairs(raw_text: str):
                 lon = convert_to_decimal(lon_d, lon_min, lon_h)
                 canon = (f"{lat_d}-{lat_min:06.3f}".rstrip('0').rstrip('.') + lat_h
                          + " " + f"{lon_d.zfill(3)}-{lon_min:06.3f}".rstrip('0').rstrip('.') + lon_h)
-            elif kind == "dms":
+            elif kind in ("dms", "dms_space"):
                 lat_d, lat_m, lat_s, lat_h, lon_d, lon_m, lon_s, lon_h = g
+                lat_s = lat_s.replace(",", ".")
+                lon_s = lon_s.replace(",", ".")
                 if not _is_valid_latlon(lat_d, lat_m, lon_d, lon_m):
                     continue
                 lat = convert_to_decimal(lat_d, lat_m, lat_s, lat_h)
@@ -440,6 +467,8 @@ def _extract_coord_pairs(raw_text: str):
                          f"{lon_d}-{lon_m}-{lon_s}{lon_h}")
             else:
                 lat_d, lat_m, lat_h, lon_d, lon_m, lon_h = g
+                lat_m = lat_m.replace(",", ".")
+                lon_m = lon_m.replace(",", ".")
                 if not _is_valid_latlon(lat_d, lat_m, lon_d, lon_m):
                     continue
                 lat = convert_to_decimal(lat_d, lat_m, lat_h)
@@ -450,6 +479,44 @@ def _extract_coord_pairs(raw_text: str):
                 continue
             consumed.append((s, e))
             found.append((m.start(), kind, lat, lon, canon))
+
+    # Last pass (mixed syntaxes): adjacent lat/lon tokens written in
+    # different syntaxes the uniform patterns cannot pair together.
+    # Claims only unconsumed spans, so nothing already extracted is
+    # ever re-claimed or misread.
+    def _unclaimed(start, end):
+        return not any(start >= a and start < b for a, b in consumed)
+
+    lat_tokens = [
+        (m.start(), m.end(), m) for m in RE_TOKEN_LAT.finditer(raw_text)
+        if _unclaimed(m.start(), m.end())
+    ]
+    lon_tokens = [
+        (m.start(), m.end(), m) for m in RE_TOKEN_LON.finditer(raw_text)
+        if _unclaimed(m.start(), m.end())
+    ]
+    claimed_lons = set()
+    for lat_start, lat_end, lm in lat_tokens:
+        for lon_start, lon_end, om in lon_tokens:
+            if lon_start < lat_end or lon_start in claimed_lons:
+                continue
+            if not _ADJACENT_GAP.match(raw_text[lat_end:lon_start]):
+                break
+            lat_d, lat_m, lat_h = lm.groups()
+            lon_d, lon_m, lon_h = om.groups()
+            lat_m = lat_m.replace(",", ".")
+            lon_m = lon_m.replace(",", ".")
+            if not _is_valid_latlon(lat_d, lat_m, lon_d, lon_m):
+                break
+            lat = convert_to_decimal(lat_d, lat_m, lat_h)
+            lon = convert_to_decimal(lon_d, lon_m, lon_h)
+            if lat is None or lon is None or math.isnan(lat) or math.isnan(lon):
+                break
+            canon = f"{lat_d}-{lat_m}{lat_h} {lon_d}-{lon_m}{lon_h}"
+            consumed.append((lat_start, lon_end))
+            claimed_lons.add(lon_start)
+            found.append((lat_start, "dmm_mixed", lat, lon, canon))
+            break
 
     found.sort(key=lambda item: item[0])
     return [(kind, lat, lon, canon) for _s, kind, lat, lon, canon in found]
