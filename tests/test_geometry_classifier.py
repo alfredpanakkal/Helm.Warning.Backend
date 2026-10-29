@@ -305,5 +305,42 @@ class TestMultiPointGeometryRows(unittest.TestCase):
         self.assertEqual(geoms[0]["feature_type"], "POINT")
 
 
+
+
+class TestPositionsList(unittest.TestCase):
+    """IN POSITIONS enumerations (audit 2026-10-29, finding F6,
+    NAVAREA V 0370/26): bare position lists are discrete locations,
+    never an auto-closed polygon (was a 153,800 km2 phantom area over
+    a USV survey track)."""
+
+    def test_v0370_usv_positions_list_is_multipoint(self):
+        raw = ("UNDERWATER OPERATIONS BY USV FUGRO VAQUITA IN POSITIONS "
+               "22-03.00S 037-06.48W, 20-27.24S 040-20.52W, "
+               "22-59.46S 042-00.84W, 25-55.32S 040-11.58W")
+        spatial = _spatial(raw)
+        self.assertEqual(spatial["type"], "MultiPoint")
+        self.assertEqual(len(spatial["coordinates"]), 4)
+
+    def test_following_positions_is_multipoint(self):
+        raw = ("FOLLOWING POSITIONS MARKED BY BUOYS: 18-00N 071-00E, "
+               "18-30N 071-30E, 19-00N 072-00E, 19-30N 072-30E")
+        spatial = _spatial(raw)
+        self.assertEqual(spatial["type"], "MultiPoint")
+
+    def test_positions_list_inside_bounded_area_keeps_polygon(self):
+        # An explicit boundary phrase wins over the positions-list rule:
+        # the source states an area, not discrete locations.
+        raw = ("OPERATIONS IN POSITIONS WITHIN AREA BOUNDED BY 18-00N 071-00E, "
+               "18-00N 072-00E, 19-00N 072-00E, 19-00N 071-00E")
+        spatial = _spatial(raw)
+        self.assertEqual(spatial["type"], "Polygon")
+
+    def test_bare_position_list_wording_matches_nothing(self):
+        # POSITION LIST without IN/FOLLOWING keeps the word-boundary
+        # guarantee (companion to test_word_boundary_guards).
+        self.assertIsNone(classify_geometry_archetype(
+            "THIS IS THE POSITION LIST", [[71.0, 19.0], [72.0, 20.0]]))
+
+
 if __name__ == "__main__":
     unittest.main()

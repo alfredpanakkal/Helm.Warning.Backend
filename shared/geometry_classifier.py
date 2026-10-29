@@ -29,7 +29,7 @@ Keyword taxonomy (validated against live NAVAREA bulletins, Oct 2026):
   Line  -> TRACKLINE / CENTRELINE / ALONG LINE JOINING / FOLLOWING ROUTES /
            TRACK / ROUTE / TOW / TOWING / CABLE LAY / PIPELINE / SWEEP
   Point -> WELL HEAD / PLATFORM / RIG / BUOY / RACON / BEACON / MOORING /
-           LIGHT VESSEL / WRECK / SHOAL / ROCK (incl. plural forms)
+           LIGHT VESSEL / WRECK / SHOAL / ROCK (incl. plural forms) + 'IN/FOLLOWING POSITIONS' lists
 
 Standing rule (2026-10-28, AMENDED same day by owner decision):
 rig-class units (RIG / JACK-UP / DRILLSHIP / MODU) plot as discrete points
@@ -92,6 +92,15 @@ RE_LINEAR_OPS = re.compile(
 )
 RE_SURVEY = re.compile(r"\bSURVEY\b")
 RE_VICINITY = re.compile(r"VICINITY\s+OF")
+
+# IN POSITIONS / FOLLOWING POSITIONS enumerations (audit 2026-10-29,
+# finding F6, NAVAREA V 0370/26): a bare position list names discrete
+# locations — it never states a boundary. Without this rule the 5-point
+# USV survey track fell through every keyword check to the legacy
+# auto-closed polygon: a 153,800 km2 phantom area over the
+# Vitoria-Rio track. Word-boundary guarded, so bare POSITION LIST
+# wording (no IN/FOLLOWING) still matches nothing.
+RE_POSITIONS_LIST = re.compile(r"\b(?:IN|FOLLOWING)\s+POSITIONS?\b")
 
 # Rig-class offshore drilling units (standing rule, amended 2026-10-28:
 # forced points only when no boundary phrase is present or > 6 positions).
@@ -260,7 +269,8 @@ def classify_geometry_archetype_detailed(
 
     # Discrete structures (buoys, rigs, racons, wrecks, moorings) and
     # 'vicinity of' lists are scattered individual locations.
-    if RE_POINT_OPS.search(text) or RE_VICINITY.search(text):
+    if (RE_POINT_OPS.search(text) or RE_VICINITY.search(text)
+            or RE_POSITIONS_LIST.search(text)):
         return "multipoint", "keyword:point_list", flags
 
     # Declared routes (TRACKLINE / CENTRELINE / ALONG LINE JOINING /
