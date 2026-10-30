@@ -579,11 +579,14 @@ def assemble_bulletin(rows: List[Tuple[str, str, Optional[str], str]],
         the whole ~100-warning sync;
       * circuit breaker: three unreachable rows IN A ROW is a
         wholesale client block (rate limit / WAF), not one dead
-        document — the harvest aborts loudly instead of grinding retry
+        document — the scrape STOPS there instead of grinding retry
         sleeps per remaining document (that grind wedged CI for 20
-        minutes, live 2026-10-28);
+        minutes, live 2026-10-28), and every row already harvested is
+        still handed to the parser (Alfred 2026-10-30, live dispatch
+        run #83: never waste a partial harvest);
       * a row whose ADVERTISED document carries the WRONG warning
-        header still fails the whole harvest (systemic corruption);
+        header stops the scrape the same way — the already-harvested
+        rows survive, the suspect document is never ingested;
       * zero resolved documents overall -> None (empty snapshot).
 
     Clean stops (NOT errors — the stored rows are kept and the run
@@ -658,10 +661,20 @@ def assemble_bulletin(rows: List[Tuple[str, str, Optional[str], str]],
             block = "\n".join(line.rstrip() for line in doc.split("\n")).strip()
             if not expected.search(block):
                 if not skippable:
-                    print(f"ERROR: document for {number}/{year} does not carry "
-                          f"its own 'NAVAREA IX {number}/{year[-2:]}' header; "
-                          f"refusing it (wrong link? {url})")
-                    return None
+                    stats["rows_stored"] = len(blocks)
+                    stats["rows_remaining"] = len(rows) - row_index
+                    stats["stop_reason"] = "wrong_header"
+                    if not blocks:
+                        print(f"ERROR: document for {number}/{year} does not "
+                              f"carry its own 'NAVAREA IX {number}/{year[-2:]}' "
+                              f"header; refusing it (wrong link? {url})")
+                        return None
+                    print(f"WARNING: document for {number}/{year} does not carry "
+                          f"its own 'NAVAREA IX {number}/{year[-2:]}' header "
+                          f"(wrong link? {url}); stopping the scrape and handing "
+                          f"the {len(blocks)} row(s) already harvested to the "
+                          f"parser ({stats['rows_remaining']} row(s) left).")
+                    return "\n\n".join(blocks) + "\n"
                 block = None
                 continue
             break
@@ -683,11 +696,22 @@ def assemble_bulletin(rows: List[Tuple[str, str, Optional[str], str]],
             # wedged CI for 20 minutes, live 2026-10-28).
             consecutive_unreachable += 1
             if consecutive_unreachable >= _MAX_CONSECUTIVE_UNREACHABLE:
-                print(f"ERROR: {consecutive_unreachable} consecutive warning "
+                stats["rows_stored"] = len(blocks)
+                stats["rows_remaining"] = len(rows) - row_index
+                stats["stop_reason"] = "circuit_breaker"
+                if not blocks:
+                    print(f"ERROR: {consecutive_unreachable} consecutive warning "
+                          f"row(s) unreachable and nothing harvested — the site "
+                          f"appears to be blocking this client (rate limit / "
+                          f"WAF); refusing to sync an empty snapshot.")
+                    return None
+                print(f"WARNING: {consecutive_unreachable} consecutive warning "
                       f"row(s) unreachable — the site appears to be blocking "
-                      f"this client (rate limit / WAF); aborting the harvest "
-                      f"loudly rather than syncing a badly partial snapshot.")
-                return None
+                      f"this client (rate limit / WAF); stopping the scrape and "
+                      f"handing the {len(blocks)} row(s) already harvested to "
+                      f"the parser ({stats['rows_remaining']} row(s) left for "
+                      f"the next run).")
+                return "\n\n".join(blocks) + "\n"
 
     if not blocks:
         print("ERROR: no warning document resolved; refusing to sync an "
@@ -815,6 +839,18 @@ def main() -> bool:
     bulletin = assemble_bulletin(rows_to_fetch, _fetch_doc, run_stats)
     if bulletin is None:
         return False
+    if run_stats.get("stop_reason") not in (None, "completed"):
+        # The scrape stopped early (request cap / first 429 / circuit
+        # breaker / wrong header): the harvest is PARTIAL. Never treat
+        # it as a complete snapshot, or the sync's evidence-based
+        # cancel pass could cancel rows that are merely missing from
+        # THIS run.
+        if full_snapshot:
+            full_snapshot = False
+            print(f"NOTE: run stopped early (stop reason: "
+                  f"{run_stats['stop_reason']}) - treating the harvest as "
+                  f"a PARTIAL snapshot; the sync's cancel pass stays "
+                  f"disabled.")
     _print_run_summary(run_stats)
 
     n_blocks = len(_HEADER_FOR_RE.findall(bulletin))
