@@ -5,9 +5,17 @@ Covers the three Step 6 findings from the 2026-10-30 audit:
   F7 — universal-parser titles cut at the first sentence boundary
        at/after 30 characters instead of running to the 255 cap;
   F5 — zone labels built from the source's own sub-area markers
-       ('A' -> 'Area A', '1'..'3' -> 'Areas 1-3');
+       ('A' -> 'Area A', lettered groups -> 'Areas A-C', numbered
+       rig lists -> 'Areas 1-3');
   F9 — NAVAREA IX .txt documents decoded as UTF-8 even when the
        response declares ISO-8859-1 (charset-less text/plain).
+
+Fixtures follow the live corpus conventions: numbered items must
+start with a word (RE_ITEM_LINE requires an uppercase lookahead),
+and the IX fetch tests inject a fake requests module with
+create=True because the CI unittest environment has no requests
+package (HAS_REQUESTS=False there, and ix_mod.requests does not
+exist to patch).
 """
 import os
 import sys
@@ -42,7 +50,7 @@ class TestTitleExtraction(unittest.TestCase):
         text = ("NAVAREA VII 005/26" + chr(10)
                 + "FIRING PRACTICE IN THE AREA BOUNDED BY THE COAST." + chr(10)
                 + "FURTHER DETAILS AVAILABLE ON REQUEST." + chr(10)
-                + " 1. 30-00N 140-00E" + chr(10))
+                + " 1. FIRING AT 30-00N 140-00E" + chr(10))
         w = self._parse(text)
         self.assertEqual(w["title"],
                           "FIRING PRACTICE IN THE AREA BOUNDED BY THE COAST.")
@@ -87,11 +95,15 @@ class TestZoneLabels(unittest.TestCase):
         self.assertEqual(labels, ["Area A", "Area B", "Area C"])
 
     def test_numbered_points_get_single_range_label(self):
+        # Numbered items must start with a WORD (RE_ITEM_LINE has an
+        # uppercase lookahead) — corpus rig lists are lettered or
+        # word-led, never bare coordinates after the item number.
         text = ("NAVAREA VII 003/26" + chr(10)
                 + "GULF." + chr(10)
-                + " 1. 16-00.0N 082-00.0E" + chr(10)
-                + " 2. 16-00.0N 083-00.0E" + chr(10)
-                + " 3. 17-00.0N 083-00.0E" + chr(10))
+                + "RIG LIST." + chr(10)
+                + " 1. RIG AT 22-00.80S 014-00.55E" + chr(10)
+                + " 2. RIG AT 22-00.85S 014-00.45E" + chr(10)
+                + " 3. RIG AT 29-00.46S 013-00.25E" + chr(10))
         data = parse_bulletin_text(text, "vii")
         w = data["nav_warnings"][0]
         feats = w["spatial"]["features"]
@@ -119,11 +131,22 @@ class TestIxFetchUtf8(unittest.TestCase):
             if content is not None:
                 self.content = content
 
+    class _FakeRequestsModule:
+        # The CI unittest env has no requests package: HAS_REQUESTS
+        # is False and ix_mod.requests does not exist. Injected with
+        # create=True so the patch works either way.
+        def __init__(self, resp):
+            self._resp = resp
+
+        def get(self, url, headers=None, timeout=None):
+            return self._resp
+
     def _fetch(self, resp):
         with mock.patch.object(ix_mod, "HAS_SCRAPLING", False), \
              mock.patch.object(ix_mod, "HAS_REQUESTS", True), \
-             mock.patch.object(ix_mod.requests, "get",
-                                return_value=resp):
+             mock.patch.object(ix_mod, "requests",
+                                self._FakeRequestsModule(resp),
+                                create=True):
             return ix_mod._fetch_once("http://x", {})
 
     def test_latin1_declared_utf8_content_decodes_utf8(self):
