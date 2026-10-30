@@ -45,9 +45,10 @@ RE_RULE_93 = re.compile(r"^(\d{1,3})-(\d{2}),(\d+)([NSEW])$")
 # line, "40.27N" starting the next — the NAVAREA VIII 1087/26 shape)
 # previously produced 4-of-6 positions and a truncated polygon. This
 # canonical copy lives in shared/utils so parse_coordinates()
-# can rejoin EVERY input before extraction (NgaMemoPreprocessor keeps its
-# identical method for the IV/XII memo path; dedup is a deliberate
-# follow-up, not part of this correctness fix).
+# can rejoin EVERY input before extraction. NgaMemoPreprocessor now
+# delegates here too (dedup landed), so the IV/XII memo path shares
+# the exact same wrap specs - including the CRLF-tolerant _WRAP it
+# previously lacked.
 
 _REJOIN_TOKEN = re.compile(r"^(\d{1,3})-(\d{1,2}(?:\.\d{1,4})?)([NSEW])$")
 
