@@ -99,7 +99,7 @@ def sync_to_supabase(json_file="navareas/manual/navarea_ii/parsed.json",
 
     scraped_messages = data.get("raw_messages", [])
     # navarea column normalization (audit F3): the engine only fills
-    navarea when a record lacks it, so the record value IS the DB
+    # navarea when a record lacks it, so the record value IS the DB
     # column — normalize it before persisting. Copies, never in-place
     # mutation of the loaded JSON. Records missing navarea get the
     # normalized memo code, so the prefixed display label never lands
