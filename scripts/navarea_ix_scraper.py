@@ -295,7 +295,22 @@ def _fetch_once(url: str, headers: dict
         print(f"ERROR: fetch failed for {url} ({e}); harvest untouched.")
         return None, None, None
     if resp.status_code == 200:
-        return resp.text or "", resp.status_code, None
+        # Audit finding F9 (IX 050/26 mojibake): the .txt documents are
+        # UTF-8, but the server omits the charset and requests falls
+        # back to ISO-8859-1 for text/plain, corrupting every non-ASCII
+        # byte. Prefer a UTF-8 decode of the raw body whenever the
+        # response does not declare a real charset (the Scrapling branch
+        # above already decodes UTF-8). Responses without .content
+        # (test fakes) keep today's resp.text behaviour.
+        text = resp.text or ""
+        declared = (getattr(resp, "encoding", None) or "").lower()
+        raw = getattr(resp, "content", None)
+        if declared in ("", "iso-8859-1", "latin-1") and raw:
+            try:
+                text = raw.decode("utf-8")
+            except (UnicodeDecodeError, AttributeError):
+                text = resp.text or ""
+        return text, resp.status_code, None
     if resp.status_code in _TRANSIENT_STATUSES:
         return None, resp.status_code, _retry_after_seconds(resp.headers)
     snippet = (resp.text or "")[:200].replace("\n", " ")

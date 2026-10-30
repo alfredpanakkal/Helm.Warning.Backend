@@ -80,6 +80,13 @@ RE_PATH_REGION = re.compile(r"navarea[_-]([a-z0-9]+)", re.IGNORECASE)
 # N's so a trailing single-coordinate hemisphere letter is never eaten.
 RE_BROADCAST_TAIL = re.compile(r"(?:[\s=.]*N{3,6}[\s=.]*)+\s*$")
 
+# Title cut length (audit finding F7, 2026-10-30): the title cuts at
+# the first sentence boundary at or past this many characters — a
+# short location opener keeps its operation sentence, an already-long
+# first sentence ends the title, and the 255 hard cap is never the
+# thing that truncates a title mid-word.
+_TITLE_MIN_CHARS = 30
+
 MONTHS = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
     "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
@@ -306,13 +313,49 @@ def _segment_clauses(body: str):
     return clauses
 
 
+def _zone_label(labels):
+    """Display zone label built from the source's own sub-area markers.
+
+    Audit finding F5 (2026-10-30): the live DB held 270 generic 'Area'
+    zone labels plus bare numbers and letters. Labels now come from the
+    markers the source itself used: 'A' -> 'Area A', a short lettered
+    or numbered group -> 'Areas A-D'; longer prose labels pass through
+    unchanged; nothing stays bare.
+    """
+    clean = [str(l).strip() for l in labels or [] if str(l or "").strip()]
+    if not clean:
+        return "Area"
+    if len(clean) == 1:
+        label = clean[0]
+        return ("Area " + label) if len(label) <= 2 else label
+    if all(len(l) <= 2 for l in clean):
+        return "Areas " + clean[0] + "-" + clean[-1]
+    return "Areas"
+
+
 def _extract_title(body: str, cfg) -> str:
     """Title = leading text before the first numbered item (typically the
-    location / operation description)."""
+    location / operation description).
+
+    Audit finding F7 (2026-10-30): the title joined the whole head, so
+    the median title ran past 100 characters and the longest hit the
+    255 hard cap mid-word. The title now cuts at the first sentence
+    boundary at or past _TITLE_MIN_CHARS: a short location opener
+    ('EAST CHINA SEA.') keeps the operation sentence after it, an
+    already-long first sentence ends the title there, and a head with
+    no sentence boundary (coordinate lists) keeps today's behaviour.
+    """
     m = RE_ITEM_LINE.search(body)
     head = body[:m.start()] if m else body
     lines = [_clean_line(l) for l in head.split("\n") if l.strip()]
     title = " ".join(lines).strip()
+    cut = None
+    for sm in re.finditer(r"[.!?](?=\s|$)", title):
+        if sm.end() >= _TITLE_MIN_CHARS:
+            cut = sm.end()
+            break
+    if cut:
+        title = title[:cut].strip()
     title = re.sub(r"\b\d{6}Z?\s*/?\s*[A-Z]{3}\s+\d{2}\s*$", "", title).strip()
     return title[:255] or ((cfg.get("id_prefix") or ("NAVAREA " + cfg["roman"]))
                               + " Warning")
@@ -485,7 +528,7 @@ def parse_warning(block, cfg):
             "type": "FeatureCollection",
             "features": [{
                 "type": "Feature",
-                "properties": {"zone_label": "Area"},
+                "properties": {"zone_label": _zone_label([g[0] for g in geoms])},
                 "geometry": {"type": "MultiPoint", "coordinates": coords},
             }],
         }
@@ -500,7 +543,7 @@ def parse_warning(block, cfg):
             "type": "FeatureCollection",
             "features": [{
                 "type": "Feature",
-                "properties": {"sub_area": label, "zone_label": label or "Area"},
+                "properties": {"sub_area": label, "zone_label": _zone_label([label])},
                 "geometry": spatial,
             }],
         }
@@ -508,7 +551,7 @@ def parse_warning(block, cfg):
     else:
         features = [{
             "type": "Feature",
-            "properties": {"sub_area": g[0], "zone_label": g[0]},
+            "properties": {"sub_area": g[0], "zone_label": _zone_label([g[0]])},
             "geometry": g[1],
         } for g in geoms]
         spatial_fc = {"type": "FeatureCollection", "features": features}
