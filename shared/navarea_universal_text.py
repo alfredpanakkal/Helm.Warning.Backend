@@ -74,7 +74,27 @@ RE_AUSCOAST_CANCEL = re.compile(
     r"CANCEL\s+AUS\s*COAST\s+(?:WARNING\s+)?(\d{1,4})\s*/\s*(\d{4}|\d{2})(?!\d)",
     re.IGNORECASE)
 
-# A regex that can never match (negative lookahead on an empty pattern):
+
+# Norwegian coastal warnings (Kystverket 'Navigasjonsvarsler'): national
+# coastal warnings (kystvarsel) outside NAVAREA numbering, one numbered
+# series per year, ingested as the 'coastal-no' pseudo-region (the same
+# pattern as the AUSCOAST pseudo-regions above). The scraper
+# (scripts/kystverket_coastal_scraper.py) synthesizes 'COASTAL NO
+# WARNING nnn/yy' headers from the table's own 'Navco År'/'Nr' columns.
+COASTAL_NO_REGION_KEY = "coastal-no"
+
+# 'COASTAL NO WARNING 407/26' — synthesized header (same group contract
+# as the NAVAREA headers: group(1)=number, group(2)=year).
+RE_COASTAL_NO_HEADER = re.compile(
+    r"COASTAL\s+NO\s+(?:WARNING\s+)?(\d{1,4})\s*/\s*(\d{4}|\d{2})(?!\d)",
+    re.IGNORECASE)
+
+# 'CANCEL COASTAL NO WARNING nnn/yy' cross-reference inside a body.
+RE_COASTAL_NO_CANCEL = re.compile(
+    r"CANCEL\s+COASTAL\s+NO\s+(?:WARNING\s+)?(\d{1,4})\s*/\s*(\d{4}|\d{2})(?!\d)",
+    re.IGNORECASE)
+
+
 # the AUSCOAST pseudo-regions have NO companion region, and the parser
 # iterates cfg['companion_re'] unconditionally.
 RE_NEVER_MATCHES = re.compile(r"(?!)")
@@ -113,6 +133,8 @@ NAVAREA_NAMES = {
     "auscoast-f": "AUSCOAST Area F (Australia)",
     "auscoast-g": "AUSCOAST Area G (Australia)",
     "auscoast-h": "AUSCOAST Area H (Australia)",
+    # Norwegian coastal warnings pseudo-region (Kystverket kystvarsel).
+    "coastal-no": "Norwegian Coastal Warnings (Kystverket)",
 }
 
 # All 21 NAVAREA / MET numerals, longest-first for safe alternation matching.

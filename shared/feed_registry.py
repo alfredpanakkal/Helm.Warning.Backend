@@ -102,7 +102,26 @@ FEEDS = {
                 "parser. NOT url_text: the generic scraper must not feed "
                 "the table HTML into the text pipeline.",
     },
-    # Pakistan — NHO 'NAVAREA IX Warnings' page. The page is a metadata
+    # Norway — Kystverket coastal warnings ('Navigasjonsvarsler') report
+    # page (HTML table view, the same NavcoReport application as the
+    # NAVAREA XIX page above). Norwegian NATIONAL coastal warnings
+    # outside NAVAREA numbering, ingested as the 'coastal-no'
+    # pseudo-region.
+    "coastal-no": {
+        "url": "https://kyvreports.kystverket.no/NavcoReport/navigasjonsvarsler.aspx",
+        "type": "html_table",
+        "status": "reference_only",
+        "note": "One in-force coastal warning per table row ('Navco År', "
+                "'Nr', 'Kunngjort', Norwegian 'Varsel' and English "
+                "'Warning' cells; verified live 2026-10-30). Scraped by "
+                "scripts/kystverket_coastal_scraper.py, which prefers "
+                "the official English cell (the Norwegian original kept "
+                "as provenance / fallback with fail-closed AI title "
+                "translation) and synthesizes the 'coastal-no' "
+                "bulletin. NOT url_text: the generic scraper must not "
+                "feed the table HTML into the text pipeline.",
+    },
+ The page is a metadata
     # table; each row links a plain-text document that is already the
     # exact region 'ix' bulletin block format (verified 2026-10-27).
     # A dedicated scraper resolves the row documents (follows the row

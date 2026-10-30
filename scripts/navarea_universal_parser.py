@@ -58,6 +58,7 @@ from shared.navarea_universal_text import (
     region_header_patterns, region_cancel_patterns, normalize_year, warning_header_re,
     RE_YEAR_HINT, TITLE_TRANSLATION_REGIONS,
     AUSCOAST_AREAS, RE_AUSCOAST_HEADER, RE_AUSCOAST_CANCEL, RE_NEVER_MATCHES,
+    COASTAL_NO_REGION_KEY, RE_COASTAL_NO_HEADER, RE_COASTAL_NO_CANCEL,
 )
 from shared import translation
 
@@ -146,6 +147,28 @@ def _region_config(region_key):
             "cancel_res": [RE_AUSCOAST_CANCEL],
             "companion_re": RE_NEVER_MATCHES,
             "translate_titles": False,
+        }
+    if region_key == COASTAL_NO_REGION_KEY:
+        # Norwegian coastal warnings (Kystverket kystvarsel): national
+        # warnings outside NAVAREA numbering, scraped from the Kystverket
+        # 'Navigasjonsvarsler' report page by the dedicated scraper, which
+        # synthesizes 'COASTAL NO WARNING nnn/yy' headers from the
+        # table's own year/number columns. Same ingestion pattern as the
+        # AUSCOAST pseudo-regions: rule-only parse (the Gemini bulletin
+        # layer refuses keys outside UNIVERSAL_REGIONS) and no companion
+        # region — but a row published Norwegian-only gets its title
+        # machine-translated, fail-closed, exactly like XIX (the official
+        # English cell is preferred whenever the source carries one).
+        return {
+            "key": region_key,
+            "roman": "NO",
+            "id_prefix": "COASTAL NO",
+            "source_id": "manual-coastal-no",
+            "navarea_id": "COASTAL NO",
+            "header_res": [RE_COASTAL_NO_HEADER],
+            "cancel_res": [RE_COASTAL_NO_CANCEL],
+            "companion_re": RE_NEVER_MATCHES,
+            "translate_titles": True,
         }
     roman = UNIVERSAL_REGIONS[region_key]
     return {
