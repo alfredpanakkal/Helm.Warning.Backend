@@ -85,6 +85,16 @@ class TestCancelRefTargetIds(unittest.TestCase):
         }
         self.assertEqual(_cancel_ref_target_ids([w], "NAVAREA V", set()), {})
 
+    def test_self_reference_padding_variant_excluded(self):
+        # F8 self-guard: the digits variant of the carrier's own
+        # padded number ("088" -> "88") is still the carrier itself.
+        w = {
+            "warning_id": "NAVAREA XII 088/26",
+            "canonical_id": "NAVAREA XII 088/26",
+            "cross_refs": [{"number": "088", "year": "26"}],
+        }
+        self.assertEqual(_cancel_ref_target_ids([w], "NAVAREA XII", set()), {})
+
     def test_in_feed_target_excluded(self):
         # the feed still lists the referenced warning in force: the feed
         # is fresher evidence than the cross-reference
@@ -137,7 +147,9 @@ class TestResolveCancelCrossRefs(unittest.TestCase):
     def test_unresolved_ref_logged_no_write(self):
         client = _ref_client([])
         counts = resolve_cancel_cross_refs(client, [CARRIER], "NAVAREA XI")
-        self.assertEqual(counts["unresolved"], 1)
+        # F8: both padding variants ("0430" and "430") are un-found;
+        # each logs loudly, neither writes.
+        self.assertEqual(counts["unresolved"], 2)
         self.assertEqual(counts["resolved"], 0)
         self.assertEqual(client.recorded_updates, [])
 
@@ -276,13 +288,16 @@ class TestRefNumberPaddingVariants(unittest.TestCase):
         self.assertIn("NAVAREA XII 088/26", targets)
 
     def test_unpadded_ref_resolves_padded_stored_id(self):
+        # unpadded 2-digit ref vs a 3-digit padded stored id: the
+        # zfill(3) variant is the alias that matches. (No live id pads
+        # a 3-digit ref to 4 — V refs are extracted already padded.)
         carrier = {
-            "canonical_id": "NAVAREA V 0700/26",
-            "cross_refs": [{"number": "700", "year": "26"}],
+            "canonical_id": "NAVAREA V 0450/26",
+            "cross_refs": [{"number": "45", "year": "26"}],
         }
         targets = _cancel_ref_target_ids([carrier], "NAVAREA V", set())
-        self.assertIn("NAVAREA V 700/26", targets)
-        self.assertIn("NAVAREA V 0700/26", targets)
+        self.assertIn("NAVAREA V 45/26", targets)
+        self.assertIn("NAVAREA V 045/26", targets)
 
     def test_variants_dedupe_to_distinct_forms(self):
         targets = _cancel_ref_target_ids([dict(CARRIER)], "NAVAREA XI", set())

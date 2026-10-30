@@ -202,10 +202,22 @@ def _apply_status_transition(supabase_client, canonical_id: str, patch: Dict[str
 # status -> 'cancelled' (status_basis 'cancelled_by_cross_reference') —
 # a status change, never a deletion (safeguard: never erase history).
 # ---------------------------------------------------------------------------
+def _carrier_number_year(carrier):
+    """Splits a canonical id into its own number and year
+    ("NAVAREA V 0622/26" -> ("0622", "26")) so padding variants of the
+    carrier's own number can be excluded as self-references."""
+    tail = carrier.rsplit(" ", 1)[-1] if carrier else ""
+    num, _, year = tail.partition("/")
+    if num and year:
+        return num, year
+    return "", ""
+
+
 def _cancel_ref_target_ids(scraped_warnings, navarea_name, scraped_ids):
     """Pure mapping: CANCEL cross-refs -> {target canonical_id: carrier id}.
 
-    Excludes self-references and targets still present in the current
+    Excludes self-references (including padding variants of the
+    carrier's own number) and targets still present in the current
     feed (the feed listing a warning in force is fresher evidence than
     a cross-reference). Registers every padding variant of each ref
     number (as-is, zero-padded, unpadded digits) so verbatim-stored ids
@@ -216,6 +228,7 @@ def _cancel_ref_target_ids(scraped_warnings, navarea_name, scraped_ids):
         if not isinstance(warn, dict):
             continue
         carrier = str(warn.get("canonical_id") or warn.get("warning_id") or "")
+        carrier_num, carrier_year = _carrier_number_year(carrier)
         for ref in warn.get("cross_refs") or []:
             if not isinstance(ref, dict):
                 continue
@@ -235,7 +248,13 @@ def _cancel_ref_target_ids(scraped_warnings, navarea_name, scraped_ids):
             for variant in dict.fromkeys(
                     (number, number.zfill(3), digits or number)):
                 target = (navarea_name + " " + variant + "/" + year).strip()
-                if not target or target == carrier or target in (scraped_ids or set()):
+                if (not target or target == carrier
+                        or target in (scraped_ids or set())):
+                    continue
+                if (carrier_num and year == carrier_year
+                        and variant.lstrip("0") == carrier_num.lstrip("0")):
+                    # a padding variant of the carrier's own number is
+                    # the carrier itself, not a target (F8 self-guard)
                     continue
                 targets.setdefault(target, carrier)
     return targets
