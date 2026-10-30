@@ -848,8 +848,8 @@ def parse_block_geometries(raw_text: str):
 # (NAVAREA XI 0479/26 tagged 'drifting'). Such sentences are stripped
 # before keyword matching; a notice whose text is only cancellations
 # classifies as 'general'.
-RE_CANCEL_SENTENCE = re.compile(r"\bCANCEL(?:L?ATION|L?ED|L?ING|S?)\b[^.!?\n]*[.!?\n]?", re.IGNORECASE)
-RE_NO_LONGER_SENTENCE = re.compile(r"\bNO LONGER\b[^.!?\n]*[.!?\n]?", re.IGNORECASE)
+RE_CANCEL_SENTENCE = re.compile(r"(?:^|[.!?\n])[^.!?\n]*\bCANCEL(?:L?ATION|L?ED|L?ING|S?)\b[^.!?\n]*[.!?\n]?", re.IGNORECASE)
+RE_NO_LONGER_SENTENCE = re.compile(r"(?:^|[.!?\n])[^.!?\n]*\bNO LONGER\b[^.!?\n]*[.!?\n]?", re.IGNORECASE)
 
 
 def classify_hazard_categories(raw_text: str) -> list[str]:
