@@ -31,7 +31,7 @@
 ```text
 Helm.Warning.Backend/
 ├── .github/workflows/
-│   ├── all-sync.yml               # Master scheduled sync (all 7 regions)
+│   ├── all-sync.yml               # Master scheduled sync (all regions, every 6 hours)
 │   ├── baltic-sync.yml            # Baltic Subarea (SMA Sweden, 15m)
 │   ├── manual-ingest.yml          # Manual Bulk Paste Ingest (drains Supabase admin paste queue, 15m)
 │   ├── navarea-1-sync.yml         # NAVAREA I (UKHO Admiralty, 30m)
@@ -39,6 +39,11 @@ Helm.Warning.Backend/
 │   ├── navarea-iv-sync.yml        # NAVAREA IV (NGA US East Coast, 6h)
 │   ├── navarea-8-sync.yml         # NAVAREA VIII (NHO India, 4h)
 │   ├── navarea-xi-sync.yml        # NAVAREA XI (JCG Japan Kaiho, 30m)
+│   ├── navarea-iii-sync.yml      # NAVAREA III (IHM Spain XML snapshot, daily 06:30 UTC)
+│   ├── navarea-v-sync.yml        # NAVAREA V (CHM Brazil JSON via Cloudflare ladder, daily 07:30 UTC)
+│   ├── navarea-vii-sync.yml      # NAVAREA VII (SANHO static HTML, Mon-Fri 08:30 UTC)
+│   ├── navarea-ix-sync.yml       # NAVAREA IX (NHO Pakistan per-row docs, daily 04:30 UTC)
+│   ├── navarea-x-sync.yml        # NAVAREA X (AMSA + AUSCOAST A-H, daily 07:45 UTC)
 │   ├── navarea-xii-sync.yml       # NAVAREA XII (NGA US West Coast, 6h)
 │   ├── supabase-parsing-audit.yml # Manual dispatch: Audit, Propose, Apply (Production-Gated)
 │   └── tests.yml                  # Automated CI regression test suite
@@ -51,7 +56,8 @@ Helm.Warning.Backend/
 │   ├── 20261022_fix_upsert_rpc_feature_type.sql
 │   ├── 20261023_lifecycle_safety.sql      # Generation ledger, cancel guard, geometry preservation RPC
 │   ├── 20261023_manual_ingest_queue.sql
-│   └── 20261026_parsing_audit.sql         # Audit runs & correction proposals schema (Plain REFERENCES)
+│   ├── 20261026_parsing_audit.sql         # Audit runs & correction proposals schema (Plain REFERENCES)
+│   └── 20261030_navarea_label_backfill.sql  # One-time backfill: bare coordinator codes in navarea
 ├── scrapers/
 │   ├── navarea_8.py              # NAVAREA VIII PDF fast-path scraper
 │   ├── navarea_8_table.py        # NAVAREA VIII Playwright table scraper
@@ -69,10 +75,12 @@ Helm.Warning.Backend/
 │   ├── triage.py                 # H02 Triage Precedence Gate (Tiers A, B, C)
 │   ├── utils.py                  # Coordinate regexes, DMS/DDM parsers, repair rules (18, 19, 20, 93)
 │   ├── splitter.py               # Multi-bulletin boundary segmentation
+│   ├── geometry_classifier.py    # Geometry archetype classification (areas, tracklines, point lists, rig rules)
+│   ├── navarea_universal_text.py # Shared region headers/regexes for the universal parser (III, V, VII, IX, X)
 │   ├── circuit_breaker.py        # Fault-tolerance state machine for upstream authorities
 │   ├── gemini_navarea_parser.py  # Structured Gemini LLM coordinate grounding
 │   └── logging.py                # Machine-readable JSON logger
-└── tests/                        # 456 automated regression & property-based tests
+└── tests/                        # ~600 automated regression & property-based tests (count grows; suite must be fully green)
 ```
 
 ---
@@ -98,6 +106,15 @@ All coordinate parsing must flow through `shared/utils.py`. **Never write ad-hoc
 - **NEVER GUESS MISSING HEMISPHERES**: If a coordinate lacks a hemisphere (e.g., `58-10.2 011-13.3`), do not assume North or East based on region boundaries. Flag as ambiguous / needs review.
 
 ---
+
+### Geometry Classification & Lifecycle Safeguards (audit wave, 2026-10-28/30)
+- **Rig lists always plot as points**: enumerations of rigs / jack-ups / drillships / MODUs classify as MultiPoint — except a short list (<= 6 positions) inside a bounded area, which is flagged `RIG_AREA_CONFLICT` and classified normally.
+- **No invented buffers**: a point's `buffer_nm` comes only from a radius the source text states. Never default to 1 NM.
+- **Hazard classification is guarded against cancellation wording**: whole cancel/retraction sentences are stripped before keyword matching; space/rocket debris is military (launch-related), not drifting; GNSS/GPS jamming is electronic interference even near rigs.
+- **CANCEL cross-references are evidence-based**: the sync resolves "CANCEL <ref>" wording into a `cancelled` transition only with `SYNC_APPLY_CANCEL_REFS=1` (default: resolve + log only). Always a status transition; never a deletion.
+- **The `navarea` column holds the bare coordinator code** (e.g. `III`, `X`): prefixed labels are stripped on sync and AUSCOAST pseudo-regions file under `X`; one-time backfill in `migrations/20261030_navarea_label_backfill.sql`.
+- **Validity dates are extracted fail-closed**: `valid_from` / `valid_to` come only from explicit wording; "UNTIL FURTHER NOTICE" or unknown dates store NULL, never a guess.
+- **The universal parser is the one shared parse path** for regions III, V, VII, IX and X — never write per-region parsers for these; extend `scripts/navarea_universal_parser.py` and `shared/navarea_universal_text.py`.
 
 ## 4. The H02 Triage Precedence Gate
 
@@ -220,11 +237,13 @@ SUPABASE_KEY=your-service-role-key-here
 ALLOW_DRY_RUN=1                          # Set to 1 for safe local testing without DB writes
 GEMINI_API_KEY=your-gemini-api-key       # Optional; for AI escalation and proposal generation
 GEMINI_MODEL_NAME=gemini-3.8-flash  # Verified fail-closed at runtime; never silently substituted
+SYNC_APPLY_CANCEL_REFS=1             # Optional: apply CANCEL cross-refs as evidence-based
+                                     # cancellations (default: resolve + log only)
 ```
 
 ### Running the Test Suite
 ```bash
-# Run complete test suite (456 tests)
+# Run complete test suite (~600 tests)
 python3 -m unittest discover tests
 
 # Run specific audit & safety tests
@@ -234,8 +253,8 @@ python3 -m unittest tests.test_repairs_and_triage -v
 python3 -m unittest tests.test_validation -v
 ```
 
-> **Note on Test Suite Baseline (updated PRs #36-#37, 2026-10-27)**:
-> The suite is **fully green: 456 tests, 0 errors, 0 failures**. The previously known `KeyError: 'parse_provenance'` in `tests/test_gemini_fallback.py::test_unknown_region_rule_only` was fixed (the unknown-region fallback now stamps `parse_provenance='rule'`), and the 15 universal-parser fixture files under `tests/fixtures/` were restored byte-exact. Treat ANY failure as a regression. Do not alter core parsers or reformat `tests/fixtures/` without explicit user instruction.
+> **Note on Test Suite Baseline (updated PRs #63-#73, 2026-10-30)**:
+> The suite is fully green at ~600 tests, 0 errors, 0 failures. (First fully green run: 456 tests on 2026-10-27 after PRs #36-#37 fixed the `parse_provenance` stamp and restored the 15 universal-parser fixture files byte-exact; grown since by the geometry-correctness A1-A7, coverage-gap, and DB-audit fix waves.) Treat ANY failure as a regression. Do not alter core parsers or reformat `tests/fixtures/` without explicit user instruction.
 
 ### Running Safe Local Scrapes
 ```bash
@@ -245,7 +264,7 @@ ALLOW_DRY_RUN=1 PYTHONPATH=. python3 scripts/run_baltic.py
 # Dry run NAVAREA I
 ALLOW_DRY_RUN=1 PYTHONPATH=. python3 scripts/run_navarea_1.py
 
-# Dry run all 7 regions
+# Dry run all regions
 ALLOW_DRY_RUN=1 PYTHONPATH=. python3 scripts/run_all.py
 ```
 

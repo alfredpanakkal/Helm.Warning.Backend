@@ -1,11 +1,11 @@
 # Helm.Warning.Backend — NAVAREA Maritime Safety Information Pipeline
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Tests: 456 Passed](https://img.shields.io/badge/Tests-456_Passed-brightgreen.svg)](#-quick-start-guide)
+[![Tests: ~600 CI-Green](https://img.shields.io/badge/Tests-~600_CI_Green-brightgreen.svg)](#-running-tests)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![Database: PostGIS 3.x](https://img.shields.io/badge/Database-PostGIS_3.x-336791.svg?logo=postgresql&logoColor=white)](https://postgis.net/)
 [![Architecture: Master--Child RPC](https://img.shields.io/badge/Architecture-Master--Child_RPC-orange.svg)](#-data-safety-and-synchronization)
-[![CI Workflows: 11 Active](https://img.shields.io/badge/Workflows-11_Active-brightgreen.svg)](#-supported-navarea-sources)
+[![CI Workflows: 16 Active](https://img.shields.io/badge/Workflows-16_Active-brightgreen.svg)](#-supported-navarea-sources)
 [![Agent Guide: agent.md](https://img.shields.io/badge/Agent_Docs-agent.md-purple.svg)](agent.md)
 
 > **Official Maritime Safety Notice**: Automated extraction, parsing, and classification provided by this system are designed to assist watchstanders and operations personnel. They **do not replace official navigational safety broadcasts, statutory nautical publications, or the professional judgment of a certified Officer of the Watch (OOW)**. Always consult official Navigational Area (NAVAREA) coordinators and national hydrographic offices for navigational decisions.
@@ -116,7 +116,13 @@ Your maritime app journey began with vessel trackers, culminating in the first N
 
 ---
 
-**In one sentence:** One idea (Jun) → one scraper (Sep 18) → standalone repos (Oct 9) → unified backend (Oct 16) → 7 regions + safety layer (Oct 22) → Enterprise Parsing Audit & AI Correction (Oct 26) → safety-hardened audit engine & first fully green CI (Oct 27).
+### Phase 7 · Five New Coordinators + Geometry & Data-Quality Audit Wave (Oct 27–30)
+**Oct 27–28** — Five new ingestion pipelines built and merged: **NAVAREA III** (IHM Spain XML snapshot), **NAVAREA V** (CHM Brazil JSON behind a Cloudflare wall, fetched via a curl_cffi → StealthyFetcher → Fetcher → requests ladder), **NAVAREA VII** (SANHO static HTML), **NAVAREA IX** (NHO Pakistan per-row documents, with a per-run request cap, loud skips and pre-2025 archiving), and **NAVAREA X** (AMSA Australia, including **AUSCOAST areas A–H** ingested as area-scoped pseudo-regions filed under NAVAREA X).
+**Oct 28–30** — A read-only DB audit drove a merged fix wave: geometry-correctness gaps A1–A7 and coverage-gap coordinate syntaxes (PRs #63–#64); fail-closed validity-date extraction (F1, PR #66); evidence-based CANCEL cross-reference resolution gated behind `SYNC_APPLY_CANCEL_REFS` (F2, PR #67); hazard-classifier negative guards for cancel/retraction wording (F4, PR #68); `navarea` column normalization to bare coordinator codes plus a one-time backfill migration (F3, PRs #69/#72); title sentence cut, source-letter zone labels and NAVAREA IX UTF-8 decode (F5/F7/F9, PR #70). Rig lists now always plot as points and no buffer radius is ever invented. Suite grew to ~600 tests, CI green.
+
+---
+
+**In one sentence:** One idea (Jun) → one scraper (Sep 18) → standalone repos (Oct 9) → unified backend (Oct 16) → 7 regions + safety layer (Oct 22) → Enterprise Parsing Audit & AI Correction (Oct 26) → safety-hardened audit engine & first fully green CI (Oct 27) → 12 sources + geometry & data-quality audit wave (Oct 30).
 
 ---
 
@@ -132,8 +138,13 @@ flowchart TD
         S_Baltic["Baltic Subarea (SMA Sweden)"]
         S_Nav1["NAVAREA I (UKHO Admiralty)"]
         S_Nav2["NAVAREA II (SHOM France S-124)"]
+        S_Nav3["NAVAREA III (IHM Spain XML)"]
         S_Nav4["NAVAREA IV (NGA US East Coast)"]
+        S_Nav5["NAVAREA V (CHM Brazil JSON)"]
+        S_Nav7["NAVAREA VII (SANHO South Africa)"]
         S_Nav8["NAVAREA VIII (NHO India)"]
+        S_Nav9["NAVAREA IX (NHO Pakistan)"]
+        S_Nav10["NAVAREA X (AMSA Australia + AUSCOAST A-H)"]
         S_Nav11["NAVAREA XI (JCG Japan)"]
         S_Nav12["NAVAREA XII (NGA US West Coast)"]
     end
@@ -213,15 +224,20 @@ flowchart TD
 
 ## 🌐 Supported NAVAREA Sources
 
-The following seven international maritime warning feeds are implemented, tested, and actively scheduled:
+The following twelve international maritime warning feeds are implemented, tested, and actively scheduled:
 
 | NAVAREA / Region | Publishing Authority | Official Source / Feed | Implementation Files | Automation Workflow | Operational Status |
 | :--- | :--- | :--- | :--- | :--- | :---: |
 | **Baltic Subarea** | Swedish Maritime Administration (*Sjöfartsverket*) | [Sjöfartsverket Warnings](https://www.sjofartsverket.se) | [`scripts/baltic_scraper.py`](scripts/baltic_scraper.py)<br/>[`scripts/baltic_parser.py`](scripts/baltic_parser.py)<br/>[`scripts/run_baltic.py`](scripts/run_baltic.py) | [`.github/workflows/baltic-sync.yml`](.github/workflows/baltic-sync.yml) *(Every 15 mins)* | ✅ **Active & Verified** |
 | **NAVAREA I** | UK Hydrographic Office (*UKHO Admiralty*) | [UKHO Admiralty MSI Portal](https://www.admiralty.co.uk) | [`scripts/navarea_1_scraper.py`](scripts/navarea_1_scraper.py)<br/>[`scripts/navarea_1_parser.py`](scripts/navarea_1_parser.py)<br/>[`scripts/run_navarea_1.py`](scripts/run_navarea_1.py) | [`.github/workflows/navarea-1-sync.yml`](.github/workflows/navarea-1-sync.yml) *(Every 30 mins)* | ✅ **Active & Verified** |
 | **NAVAREA II** | French Hydrographic Service (*SHOM*) | [SHOM SECOM S-124 Service](https://services.ping-info-nautique.fr) | [`scrapers/navarea_ii.py`](scrapers/navarea_ii.py) | [`.github/workflows/navarea_ii.yml`](.github/workflows/navarea_ii.yml) *(Every 30 mins)* | ✅ **Active & Verified** |
+| **NAVAREA III** | Spanish Institute of Hydrography (*IHM*) | [IHM NAVAREAS XML Snapshot](https://armada.defensa.gob.es/ihm/XML/navareas_crudo.xml) | [`scripts/navarea_iii_scraper.py`](scripts/navarea_iii_scraper.py)<br/>[`scripts/run_navarea_iii.py`](scripts/run_navarea_iii.py) | [`.github/workflows/navarea-iii-sync.yml`](.github/workflows/navarea-iii-sync.yml) *(Daily 06:30 UTC)* | ✅ **Active & Verified** |
 | **NAVAREA IV** | US National Geospatial-Intelligence Agency (*NGA*) | [NGA MSI Daily Memo IV](https://msi.nga.mil/apology_objects/DailyMemIV.txt) | [`scripts/navarea_iv_scraper.py`](scripts/navarea_iv_scraper.py)<br/>[`scripts/navarea_iv_parser.py`](scripts/navarea_iv_parser.py)<br/>[`scripts/run_navarea_iv.py`](scripts/run_navarea_iv.py) | [`.github/workflows/navarea-iv-sync.yml`](.github/workflows/navarea-iv-sync.yml) *(Every 6 hours)* | ✅ **Active & Verified** |
+| **NAVAREA V** | Brazilian Navy Hydrographic Centre (*CHM*) | [CHM Avisos-Rádio Náuticos JSON](https://www.marinha.mil.br/chm/dados-do-segnav-aviso-radio-nautico-tela/avisos-radio-nauticos-e-sar) | [`scripts/navarea_v_scraper.py`](scripts/navarea_v_scraper.py)<br/>[`scripts/run_navarea_v.py`](scripts/run_navarea_v.py) | [`.github/workflows/navarea-v-sync.yml`](.github/workflows/navarea-v-sync.yml) *(Daily 07:30 UTC)* | ✅ **Active & Verified** |
+| **NAVAREA VII** | South African Navy Hydrographic Office (*SANHO*) | [SANHO NAVAREA VII Messages](https://www.sanho.co.za/notices_mariners/navarea_v11_messages.htm) | [`scripts/navarea_vii_scraper.py`](scripts/navarea_vii_scraper.py)<br/>[`scripts/run_navarea_vii.py`](scripts/run_navarea_vii.py) | [`.github/workflows/navarea-vii-sync.yml`](.github/workflows/navarea-vii-sync.yml) *(Mon–Fri 08:30 UTC)* | ✅ **Active & Verified** |
 | **NAVAREA VIII** | Indian National Hydrographic Office (*NHO India*) | [NHO India In-Force Portal](https://hydrobharat.gov.in) *(Mirror: SeaLagom)* | [`scripts/navarea_8_scraper.py`](scripts/navarea_8_scraper.py)<br/>[`scripts/navarea_8_parser.py`](scripts/navarea_8_parser.py)<br/>[`scripts/run_navarea_8.py`](scripts/run_navarea_8.py) | [`.github/workflows/navarea-8-sync.yml`](.github/workflows/navarea-8-sync.yml) *(Every 4 hours)* | ✅ **Active & Verified** |
+| **NAVAREA IX** | Pakistan Navy Hydrographic Dept (*NHO Pakistan*) | [NHO Pakistan NAVAREA IX Warnings](https://hydrography.paknavy.gov.pk/navarea-ix-warnings/) | [`scripts/navarea_ix_scraper.py`](scripts/navarea_ix_scraper.py)<br/>[`scripts/run_navarea_ix.py`](scripts/run_navarea_ix.py) | [`.github/workflows/navarea-ix-sync.yml`](.github/workflows/navarea-ix-sync.yml) *(Daily 04:30 UTC)* | ✅ **Active & Verified** |
+| **NAVAREA X** | Australian Maritime Safety Authority (*AMSA*) | [AMSA NAVAREA X Notice to Mariners](https://www.amsa.gov.au) *(incl. AUSCOAST areas A–H, filed under NAVAREA X)* | [`scripts/navarea_x_scraper.py`](scripts/navarea_x_scraper.py)<br/>[`scripts/run_navarea_x.py`](scripts/run_navarea_x.py) | [`.github/workflows/navarea-x-sync.yml`](.github/workflows/navarea-x-sync.yml) *(Daily 07:45 UTC)* | ✅ **Active & Verified** |
 | **NAVAREA XI** | Japan Coast Guard (*JCG Kaiho*) | [JCG Kaiho Warning Service](https://www1.kaiho.mlit.go.jp) | [`scripts/navarea_xi_scraper.py`](scripts/navarea_xi_scraper.py)<br/>[`scripts/navarea_xi_parser.py`](scripts/navarea_xi_parser.py)<br/>[`scripts/run_navarea_xi.py`](scripts/run_navarea_xi.py) | [`.github/workflows/navarea-xi-sync.yml`](.github/workflows/navarea-xi-sync.yml) *(Every 30 mins)* | ✅ **Active & Verified** |
 | **NAVAREA XII** | US National Geospatial-Intelligence Agency (*NGA*) | [NGA MSI Daily Memo XII](https://msi.nga.mil/apology_objects/DailyMemXII.txt) | [`scripts/navarea_xii_scraper.py`](scripts/navarea_xii_scraper.py)<br/>[`scripts/navarea_xii_parser.py`](scripts/navarea_xii_parser.py)<br/>[`scripts/run_navarea_xii.py`](scripts/run_navarea_xii.py) | [`.github/workflows/navarea-xii-sync.yml`](.github/workflows/navarea-xii-sync.yml) *(Every 6 hours)* | ✅ **Active & Verified** |
 | **All Regions** | Master Orchestrator | *All above coordinators* | [`scripts/run_all.py`](scripts/run_all.py)<br/>[`scripts/run_all_async.py`](scripts/run_all_async.py) | [`.github/workflows/all-sync.yml`](.github/workflows/all-sync.yml) *(Every 6 hours)* | ✅ **Active & Verified** |
@@ -235,19 +251,20 @@ The following seven international maritime warning feeds are implemented, tested
 ```text
 .
 ├── .github/workflows/       # Automated sync schedules & parsing audit workflows
-│   ├── all-sync.yml         # Master orchestrator workflow (all 7 regions)
+│   ├── all-sync.yml         # Master orchestrator workflow (all regions, every 6 hours)
 │   ├── supabase-parsing-audit.yml # Manual dispatch: Audit, Propose, Apply (Production-Gated)
 │   └── navarea-*-sync.yml   # Regional sync automation workflows
 ├── migrations/              # Versioned PostgreSQL & PostGIS database migrations
 │   ├── 20261023_lifecycle_safety.sql # Run ledger, cancel guard & geometry preservation RPC
-│   └── 20261026_parsing_audit.sql    # Audit runs & correction proposals (plain REFERENCES)
+│   ├── 20261026_parsing_audit.sql    # Audit runs & correction proposals (plain REFERENCES)
+│   └── 20261030_navarea_label_backfill.sql # One-time backfill: bare coordinator codes in navarea
 ├── scrapers/                # Specialized regional scrapers (e.g., S-124 SECOM XML, table scrapers)
 │   ├── navarea_8.py         # NAVAREA VIII PDF fast-path scraper
 │   ├── navarea_8_table.py   # NAVAREA VIII Playwright table scraper
 │   └── navarea_ii.py        # NAVAREA II S-124 SECOM XML client
 ├── scripts/                 # Scraper wrappers, parsers, and regional sync runners
 │   ├── audit_supabase_parsing.py # Keyset-paginated audit, proposal & atomic apply engine
-│   ├── run_all.py           # Master synchronous runner across all 7 regions
+│   ├── run_all.py           # Master synchronous runner across all regions
 │   ├── run_all_async.py     # Concurrent asyncio master pipeline runner
 │   ├── async_scraper.py     # Base async HTTP client with rate-limiting semaphores
 │   ├── ai_parser.py         # Gemini 3.1 Flash-Lite AI coordinate fallback extractor
@@ -257,6 +274,7 @@ The following seven international maritime warning feeds are implemented, tested
 │   ├── models.py            # Dataclasses (TriageRecord, CoordinateProvenance) & payload builders
 │   ├── triage.py            # H02 Triage Precedence gate & audit logger
 │   ├── utils.py             # Coordinate normalization, centroid math & repair rules (18/19/20/93)
+│   ├── geometry_classifier.py # Geometry archetype classification (areas, tracklines, point lists, rig rules)
 │   ├── splitter.py          # Boundary splitter for multi-bulletin raw feeds
 │   ├── config.py            # Centralized typed configuration & pre-flight validation
 │   ├── circuit_breaker.py   # CLOSED -> OPEN -> HALF_OPEN fault-tolerance state machine
@@ -268,7 +286,7 @@ The following seven international maritime warning feeds are implemented, tested
 ├── src/                     # React 19 / TypeScript Maritime Operations Console & Leaflet Portal
 ├── tests/                   # Python regression, property-based fuzzing, and unit test suites
 │   ├── test_supabase_parsing_audit.py # Comprehensive tests for audit pagination, safety & apply
-│   └── ...                  # 456 automated unit and regression tests
+│   └── ...                  # ~600 automated unit and regression tests
 ├── agent.md                 # System prompt, invariants & technical reference for AI coding agents
 ├── requirements.txt         # Pinned Python backend dependencies
 └── package.json             # Frontend dependencies and scripts
@@ -278,6 +296,7 @@ The following seven international maritime warning feeds are implemented, tested
 To maintain consistency and data integrity, all regional scrapers rely on the shared modules in [`shared/`](shared/):
 - **[`shared/sync_engine.py`](shared/sync_engine.py)**: The single point of entry for database synchronization. It handles differential calculations, canonical ID mapping, evidence-based cancellation guards, and calls the `upsert_nav_warning` RPC.
 - **[`shared/utils.py`](shared/utils.py)**: Contains all coordinate extraction logic, DMS/DDM/DD parsers, and repair rules. Never write custom coordinate regexes in individual scrapers.
+- **[`shared/geometry_classifier.py`](shared/geometry_classifier.py)**: Classifies extracted coordinates into geometry archetypes (bounded areas, tracklines, point lists, rig lists) for every region — one shared rule set, no per-scraper geometry code.
 - **[`shared/triage.py`](shared/triage.py)**: Enforces the H02 safety gate. Ensures consistent assignment of Tiers A, B, and C across all regions.
 - **[`shared/models.py`](shared/models.py)**: Defines shared data structures, canonical ID formatting, and builds JSON payloads for the database.
 - **[`shared/circuit_breaker.py`](shared/circuit_breaker.py)**: Protects remote upstream authority servers from aggressive retry storms during outages.
@@ -322,7 +341,7 @@ Follow these steps to set up and run the backend locally in a safe, non-destruct
 ### Running Tests
 Execute the automated test suite to ensure your environment is functioning correctly:
 ```bash
-# Run the complete test suite (456 tests)
+# Run the complete test suite (~600 tests)
 python3 -m unittest discover tests
 
 # Or run specific test modules
@@ -342,7 +361,7 @@ ALLOW_DRY_RUN=1 PYTHONPATH=. python3 scripts/run_baltic.py
 # Safely run NAVAREA I in dry-run mode
 ALLOW_DRY_RUN=1 PYTHONPATH=. python3 scripts/run_navarea_1.py
 
-# Safely run the master pipeline across all 7 regions
+# Safely run the master pipeline across all regions
 ALLOW_DRY_RUN=1 PYTHONPATH=. python3 scripts/run_all.py
 ```
 
@@ -365,6 +384,7 @@ All settings are managed centrally via [`shared/config.py`](shared/config.py) an
 | `ALLOW_DRY_RUN` | No | `""` | Local / CI | Set to `1` or `true` to allow pipelines to harvest and parse without live database credentials. |
 | `SYNC_CANCEL_MIN_FEED_COUNT` | No | `10` | All | Minimum number of scraped warnings required before absence can be treated as cancellation. |
 | `SYNC_CANCEL_MIN_FEED_FRACTION` | No | `0.5` | All | Minimum fraction (e.g. 50%) of active DB records that a scrape must cover to be considered a credible snapshot. |
+| `SYNC_APPLY_CANCEL_REFS` | No | *(off)* | All | Set to `1` to let the sync resolve CANCEL cross-references into evidence-based `cancelled` transitions. Without it the pass only resolves and logs (audit-only). Never deletes; always a guarded status transition. |
 | `NAVWARN_FEED_MODE` | No | `escalate_and_continue` | All | Operational policy: `escalate_and_continue` (quarantines malformed notices) or `strict_abort`. |
 | `MIN_FEED_SIZE_FOR_CANCEL` | No | `5` | All | Global safety floor for feed size before mass cancellation is evaluated. |
 | `MAX_WARNING_AGE_DAYS` | No | `30` | All | Maximum age (in days) before historical active records are pruned or expired. |
@@ -423,6 +443,7 @@ The synchronization engine in [`shared/sync_engine.py`](shared/sync_engine.py) a
   1. $\text{Scraped Items} \ge \text{SYNC\_CANCEL\_MIN\_FEED\_COUNT}$ *(default: 10)*
   2. $\text{Scraped Items} \ge \text{SYNC\_CANCEL\_MIN\_FEED\_FRACTION} \times \text{Active DB Records}$ *(default: 50%)*
 - **`unobserved` (Retained Active)**: If a scrape is partial (e.g., only 2 items retrieved while the database has 20 active), missing records are marked as `unobserved` and **remain active on the map**.
+- **CANCEL cross-references**: Warning text that cancels another warning (e.g. `CANCEL NAVAREA III 0336/26`) resolves into a `cancelled` transition only when the referenced warning is present in the feed, and only with `SYNC_APPLY_CANCEL_REFS=1` (by default the resolution is logged for audit). Cancellation is always a status transition — never a deletion.
 
 Every transition updates `status_changed_at` and `status_basis` to maintain full auditability.
 
@@ -670,9 +691,10 @@ Contributions are welcome! Please adhere to the following conventions:
 
 ## ✅ Documentation Verification
 
-- **Last Inspected & Verified**: October 27, 2026
-- **Verified Working Scrapers**: 7 Regions (Baltic, NAVAREA I, NAVAREA II S-124, NAVAREA IV, NAVAREA VIII, NAVAREA XI, NAVAREA XII)
-- **Active Automation Workflows**: 11 GitHub Actions workflows in `.github/workflows/` (including `supabase-parsing-audit.yml` and `all-sync.yml`)
+- **Last Inspected & Verified**: October 30, 2026
+- **Verified Working Scrapers**: 12 sources (Baltic, NAVAREA I, II, III, IV, V, VII, VIII, IX, X incl. AUSCOAST A–H, XI, XII)
+- **Active Automation Workflows**: 16 GitHub Actions workflows in `.github/workflows/` (12 regional/master syncs, manual-ingest, parsing audit, tests)
+- **Pending Operational Step**: apply `migrations/20261030_navarea_label_backfill.sql` to live Supabase (one-time `navarea` label backfill)
 - **Database Model**: Master-Child PostGIS with `public.upsert_nav_warning` RPC, `ingestion_generations` run ledger, and plain-reference `parsing_audit_runs` & `parsing_correction_proposals` audit schema
 - **Agent Technical Reference**: Authoritative guidelines maintained in [`agent.md`](agent.md) and [`AGENTS.md`](AGENTS.md)
 
