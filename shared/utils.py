@@ -338,36 +338,13 @@ def _bbox_from_axis_tokens(raw_text: str):
 
     if not RE_BBOX.search(raw_text.upper()):
         # 'AREA BOUNDED BY' range boxes (AUSCOAST): ONLY the explicit
-        # two-axis TO-range wording may build a rectangle — anything
-        # else fails closed (no fabricated area).
-        lm = RE_AXIS_LAT_RANGE.search(raw_text)
-        om = RE_AXIS_LON_RANGE.search(raw_text)
-        if not lm or not om:
+        # two-axis TO-range wording may enter at all — anything else
+        # fails closed immediately (no fabricated area). The shared
+        # whole-text axis collection below then decides: exactly two
+        # distinct latitudes and two longitudes build the rectangle.
+        if (not RE_AXIS_LAT_RANGE.search(raw_text)
+                or not RE_AXIS_LON_RANGE.search(raw_text)):
             return None, None, None
-        lats = set()
-        for deg, mins, hem in ((lm.group(1), lm.group(2), lm.group(3)),
-                               (lm.group(4), lm.group(5), lm.group(6))):
-            val = convert_to_decimal(deg, mins, hem)
-            if val is None or math.isnan(val):
-                return None, None, None
-            lats.add(val)
-        lons = set()
-        for deg, mins, hem in ((om.group(1), om.group(2), om.group(3)),
-                               (om.group(4), om.group(5), om.group(6))):
-            val = convert_to_decimal(deg, mins, hem)
-            if val is None or math.isnan(val):
-                return None, None, None
-            lons.add(val)
-        if len(lats) != 2 or len(lons) != 2:
-            return None, None, None
-        lat_s, lat_n = sorted(lats)
-        lon_w, lon_e = sorted(lons)
-        ring = [
-            [lon_w, lat_s], [lon_e, lat_s], [lon_e, lat_n], [lon_w, lat_n],
-            [lon_w, lat_s],
-        ]
-        spatial = {"type": "Polygon", "coordinates": [ring]}
-        return spatial, round((lat_s + lat_n) / 2, 6), round((lon_w + lon_e) / 2, 6)
 
     lats = set()
     for m in RE_AXIS_LAT.finditer(raw_text):

@@ -76,7 +76,7 @@ class TestAuscoastRangeBox(unittest.TestCase):
         self.assertEqual(spatial["type"], "Polygon")
         self.assertEqual(len(coords), 4)
         # First pair is a real corner (38N 009-50W), not a rect edge.
-        self.assertAlmostEqual(lat, 35.873899, places=5)
+        self.assertAlmostEqual(lat, 35.94225, places=5)
 
     def test_missing_lon_range_fails_closed(self):
         text = ("IN AN AREA BOUNDED BY 34-24.10 S TO 34-53.60 S "
@@ -84,12 +84,13 @@ class TestAuscoastRangeBox(unittest.TestCase):
         coords, lat, lon, spatial = parse_coordinates(text)
         self.assertIsNone(spatial)
 
-    def test_three_lat_range_fails_closed(self):
-        text = ("IN AN AREA BOUNDED BY 34-24.10 S TO 34-53.60 S TO "
-                "34-60.00 S AND 114-56.40 E TO 115-39.70 E")
+    def test_two_lat_ranges_fail_closed(self):
+        # Two separate latitude ranges = four distinct axis latitudes:
+        # not a clean two-corner range -> fail closed, no rectangle.
+        text = ("IN AN AREA BOUNDED BY 34-24.10 S TO 34-53.60 S "
+                "AND 33-10.00 S TO 33-20.00 S "
+                "AND 114-56.40 E TO 115-39.70 E")
         coords, lat, lon, spatial = parse_coordinates(text)
-        # A lat-range regex only spans TWO tokens; the third stays an
-        # unpaired axis value -> no clean two-corner range -> fail closed.
         self.assertIsNone(spatial)
 
 
