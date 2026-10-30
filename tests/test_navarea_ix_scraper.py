@@ -619,6 +619,68 @@ class TestRequestCapAndRateLimitStop(unittest.TestCase):
         self.assertEqual(stats["stop_reason"], "http_429")
 
 
+class TestPartialHarvestSalvage(unittest.TestCase):
+    """Alfred (2026-10-30, live full-sweep dispatch run #83): when the
+    scrape stops partway — wholesale block (circuit breaker), wrong-
+    header advertised link — every row already scraped must still reach
+    the parser/sync instead of being thrown away. Only a stop with ZERO
+    rows harvested stays a loud refusal."""
+
+    @staticmethod
+    def _stats():
+        return {"requests": 0, "rows_stored": 0, "rows_skipped": 0,
+                "rows_remaining": 0, "http_429": 0, "stop_reason": None}
+
+    def test_circuit_breaker_keeps_rows_already_harvested(self):
+        rows = [("412", "26", _BASE + "20261027SEC%20412.txt",
+                 "271500 UTC OCT 2026"),
+                ("410", "26", None, "271500 UTC OCT 2026"),
+                ("394", "26", None, "211500 UTC OCT 2026"),
+                ("411", "26", None, "271500 UTC OCT 2026")]
+        def _fetch(href):
+            if href.endswith("412.txt"):
+                return _DOC_412
+            return None  # 410, 394, 411 unreachable in a row -> breaker
+        stats = self._stats()
+        bulletin = assemble_bulletin(rows, _fetch, stats)
+        self.assertIsNotNone(bulletin)
+        self.assertIn("NAVAREA IX 412/26", bulletin)
+        self.assertNotIn("NAVAREA IX 410/26", bulletin)
+        self.assertEqual(stats["stop_reason"], "circuit_breaker")
+        self.assertEqual(stats["rows_stored"], 1)
+        self.assertEqual(stats["rows_remaining"], 1)
+        # The salvaged harvest must still parse like any bulletin.
+        parsed = parse_bulletin_text(bulletin, "ix")
+        self.assertEqual([w["warning_id"] for w in parsed["nav_warnings"]],
+                         ["NAVAREA IX 412/26"])
+
+    def test_wrong_header_stops_and_keeps_rows_already_harvested(self):
+        rows = [("412", "26", _BASE + "20261027SEC%20412.txt",
+                 "271500 UTC OCT 2026"),
+                ("999", "26", _BASE + "20261027SEC%20999.txt",
+                 "271500 UTC OCT 2026")]
+        def _fetch(href):
+            if href.endswith("412.txt"):
+                return _DOC_412
+            return _DOC_410  # advertised link carrying the WRONG header
+        stats = self._stats()
+        bulletin = assemble_bulletin(rows, _fetch, stats)
+        self.assertIsNotNone(bulletin)
+        self.assertIn("NAVAREA IX 412/26", bulletin)
+        self.assertNotIn("NAVAREA IX 999/26", bulletin)
+        self.assertEqual(stats["stop_reason"], "wrong_header")
+        self.assertEqual(stats["rows_stored"], 1)
+        self.assertEqual(stats["rows_remaining"], 1)
+
+    def test_zero_harvested_circuit_breaker_still_refuses(self):
+        rows = [("410", "26", None, "271500 UTC OCT 2026"),
+                ("394", "26", None, "211500 UTC OCT 2026"),
+                ("411", "26", None, "271500 UTC OCT 2026")]
+        stats = self._stats()
+        self.assertIsNone(assemble_bulletin(rows, lambda href: None, stats))
+        self.assertEqual(stats["stop_reason"], "circuit_breaker")
+
+
 class TestArchiveOldWarnings(unittest.TestCase):
     """Pre-2025 warnings are stored as archive (status 'expired'),
     never published on the active-only portal (Alfred 2026-10-28)."""
