@@ -125,6 +125,25 @@ migrations as records of intent, not commands to re-execute.
 shift constantly. Read-comparison tools (audits) belong in the ~09:00–11:30 UTC weekday
 window, and the concurrency group stops a scheduled run overlapping a manual one.
 
+### Range boxes require explicit two-axis TO-range wording (AUSCOAST, Oct 2026)
+**Why:** 'IN AN AREA BOUNDED BY <lat> TO <lat> AND <lon> TO <lon>' (live AMSA Part 3) produced
+no geometry at all — the pair extractor refuses word-separated axis listings. The bbox helper
+now accepts the 'BOUNDED BY' form, but ONLY gated on the explicit TO-joined two-axis ranges
+plus exactly two distinct latitudes and longitudes; every other 'BOUNDED BY' wording (corner
+enumerations reach the helper only when their pairs failed to extract) fails closed. Lives in
+`shared/utils.py` (`_bbox_from_axis_tokens`, `RE_AXIS_*_RANGE`, `RE_BBOX_PHRASE`).
+
+### Sweep sectors need radius + bearings + exactly one position (NAVAREA II 358/26)
+**Why:** 'WITHIN 20 MILES OF: <pos> BETWEEN 270 AND 360 DEGREES' plotted a bare centre Point —
+the actual danger area (a 20 NM sector from west through north) was invisible. The parser now
+builds a sector fan Polygon when ALL THREE elements (radius phrase, bearing range, exactly one
+extracted position) are present; marine 'MILES' are nautical miles by coordinator convention,
+metres/kilometres convert, and anything ambiguous keeps the Point. The source-stated radius and
+bearings ride the report -> Feature properties -> geometry payload so the `sweep_*` columns
+can be populated. Lives in `shared/utils.py` (`_sector_from_sweep_wording`),
+`scripts/navarea_universal_parser.py` (property propagation),
+`shared/models.py` (`build_geometry_payloads`).
+
 ---
 
 ## 3. Adding a new decision to this log

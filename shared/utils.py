@@ -318,6 +318,92 @@ RE_AXIS_LON_RANGE = re.compile(
 # ONLY with the explicit TO-range wording above).
 RE_BBOX_PHRASE = re.compile(r"AREAS?\s+BOUNDED\s+(?:WITHIN|BY)")
 
+# --- sweep sector wording (NAVAREA II 358/26 firing exercise, live Oct 26) --
+#
+# 'WITHIN 20 MILES OF: CHARLIE 26-50.00N 014-00.00W BETWEEN 270 AND 360
+# DEGREES': one centre position, a radius, and a bearing arc. Marine
+# 'MILES' are nautical miles (coordinator convention); metres/kilometres
+# are converted. Detection requires ALL THREE elements around exactly
+# ONE extracted position — anything less keeps the plain Point geometry
+# (fail-closed: no invented radius, no invented arc).
+RE_SWEEP_RADIUS = re.compile(
+    r"WITHIN\s+(\d+(?:\.\d+)?)\s+"
+    r"(N\.?\s*M\.?|NM|NAUTICAL\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM)\s+OF\b",
+    re.IGNORECASE)
+RE_SWEEP_BEARINGS = re.compile(
+    r"BETWEEN\s+(\d{1,3}(?:\.\d+)?)\s+AND\s+(\d{1,3}(?:\.\d+)?)\s+DEG(?:REES?)?\b",
+    re.IGNORECASE)
+_SWEEP_UNIT_TO_NM = {
+    "NM": 1.0, "N M": 1.0, "N.M": 1.0,
+    "NAUTICAL MILE": 1.0, "NAUTICAL MILES": 1.0,
+    "MILE": 1.0, "MILES": 1.0,
+    "METRE": 1.0 / 1852.0, "METRES": 1.0 / 1852.0,
+    "METER": 1.0 / 1852.0, "METERS": 1.0 / 1852.0,
+    "KM": 1.0 / 1.852,
+}
+
+
+def _sector_from_sweep_wording(raw_text: str, center) -> Optional[dict]:
+    """
+    Builds a sector (sweep-arc) polygon fan for 'WITHIN <radius> OF ...
+    BETWEEN <a> AND <b> DEGREES' wording around ONE centre position
+    (NAVAREA II 358/26 firing-exercise shape). The fan is a drawable
+    Polygon; the source-stated radius/bearings ride on the returned dict
+    so nav_warning_geometries' sweep_* columns can be populated.
+    Returns {"spatial", "sweep_radius_nm", "sweep_start_azimuth",
+    "sweep_end_azimuth"} or None (fail-closed: any missing or invalid
+    element keeps the plain Point geometry).
+    """
+    if not raw_text or not center:
+        return None
+    rm = RE_SWEEP_RADIUS.search(raw_text)
+    bm = RE_SWEEP_BEARINGS.search(raw_text)
+    if not rm or not bm:
+        return None
+    try:
+        radius = float(rm.group(1))
+        start = float(bm.group(1))
+        end = float(bm.group(2))
+    except ValueError:
+        return None
+    if radius <= 0:
+        return None
+    unit_key = re.sub(r"[.\s]+", " ", rm.group(2)).strip().upper()
+    factor = _SWEEP_UNIT_TO_NM.get(unit_key)
+    if factor is None:
+        return None
+    radius_nm = round(radius * factor, 3)
+    if not (0 <= start < 360 and 0 <= end <= 360):
+        return None
+    arc_end = end
+    if arc_end <= start:
+        arc_end += 360.0  # wraps north ('BETWEEN 350 AND 10 DEGREES')
+    span = arc_end - start
+    if span <= 0 or span > 360:
+        return None
+
+    lat_c = math.radians(center[1])
+    lon_c = math.radians(center[0])
+    d = radius_nm / 3437.75  # nautical miles per radian (180*60/pi)
+    steps = max(2, math.ceil(span / 10.0))
+    ring = [[round(center[0], 6), round(center[1], 6)]]
+    for i in range(steps + 1):
+        b = math.radians(start + span * i / steps)
+        lat_p = math.asin(math.sin(lat_c) * math.cos(d)
+                          + math.cos(lat_c) * math.sin(d) * math.cos(b))
+        lon_p = lon_c + math.atan2(
+            math.sin(b) * math.sin(d) * math.cos(lat_c),
+            math.cos(d) - math.sin(lat_c) * math.sin(lat_p))
+        ring.append([round(math.degrees(lon_p), 6),
+                     round(math.degrees(lat_p), 6)])
+    ring.append([round(center[0], 6), round(center[1], 6)])
+    return {
+        "spatial": {"type": "Polygon", "coordinates": [ring]},
+        "sweep_radius_nm": radius_nm,
+        "sweep_start_azimuth": round(start, 3),
+        "sweep_end_azimuth": round(end, 3),
+    }
+
 
 def _bbox_from_axis_tokens(raw_text: str):
     """
@@ -656,6 +742,7 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
     primary_lon = None
     basis = None
     quality = None
+    sweep_meta = None
 
     if points:
         # Completeness check: a loose count of hemisphere-bearing
@@ -670,8 +757,22 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
         if len(points) == 1:
             primary_lat = points[0][1]
             primary_lon = points[0][0]
-            spatial = {"type": "Point", "coordinates": points[0]}
-            basis = "explicit:single_position"
+            sector = _sector_from_sweep_wording(text, points[0])
+            if sector is not None:
+                # 'WITHIN <radius> OF <pos> BETWEEN <a> AND <b> DEGREES':
+                # a sector fan around the stated centre; the source-stated
+                # radius/bearings ride on the report so the geometry child
+                # rows can populate the sweep_* columns.
+                spatial = sector["spatial"]
+                basis = "keyword:sweep_sector"
+                sweep_meta = {
+                    "sweep_radius_nm": sector["sweep_radius_nm"],
+                    "sweep_start_azimuth": sector["sweep_start_azimuth"],
+                    "sweep_end_azimuth": sector["sweep_end_azimuth"],
+                }
+            else:
+                spatial = {"type": "Point", "coordinates": points[0]}
+                basis = "explicit:single_position"
         else:
             # Centroid calculation for multi-point, polygon, and linestring
             primary_lat = round(sum(p[1] for p in points) / len(points), 6)
@@ -792,6 +893,10 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
         "accepted": accepted,
         "rejected": rejected,
     }
+    if sweep_meta:
+        # Sweep-arc metadata for the geometry child rows (see
+        # _sector_from_sweep_wording); None keys never appear.
+        report.update(sweep_meta)
     return parsed_coords, primary_lat, primary_lon, spatial, report
 
 
