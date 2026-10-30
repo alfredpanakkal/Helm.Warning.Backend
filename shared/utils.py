@@ -839,19 +839,52 @@ def parse_block_geometries(raw_text: str):
     return geoms, coords_text, qa_flags, data_quality
 
 
+# --- hazard classification negative guards (audit finding F4, 2026-10-30) --
+#
+# Sentences that announce a CANCELLATION (or state that a reported
+# hazard is NO LONGER present) describe the CANCELLED warning, not this
+# one: a pure cancel notice repeats the dead warning's vocabulary and
+# substring matching tagged the NOTICE with the dead warning's hazard
+# (NAVAREA XI 0479/26 tagged 'drifting'). Such sentences are stripped
+# before keyword matching; a notice whose text is only cancellations
+# classifies as 'general'.
+RE_CANCEL_SENTENCE = re.compile(r"\bCANCEL(?:L?ATION|L?ED|L?ING|S?)\b[^.!?\n]*[.!?\n]?", re.IGNORECASE)
+RE_NO_LONGER_SENTENCE = re.compile(r"\bNO LONGER\b[^.!?\n]*[.!?\n]?", re.IGNORECASE)
+
+
 def classify_hazard_categories(raw_text: str) -> list[str]:
-    """Classifies all matching maritime hazard categories based on terminology."""
+    """Classifies all matching maritime hazard categories based on terminology.
+
+    Priority + negative guards (audit finding F4, 2026-10-30):
+      - electronic interference is checked FIRST, so GNSS/GPS jamming
+        warnings that mention nearby platforms/rigs never file as
+        'offshore' as their primary category;
+      - cancellation/retraction sentences are stripped before keyword
+        matching (see the guards above);
+      - space/rocket-debris re-entry areas are launch-related
+        (military), never 'drifting' objects.
+    """
     if not raw_text or not isinstance(raw_text, str):
         return ["general"]
 
-    text = raw_text.upper()
+    text = RE_NO_LONGER_SENTENCE.sub(
+        " ", RE_CANCEL_SENTENCE.sub(" ", raw_text.upper()))
+    if not re.search(r"[A-Z]{3}", text):
+        # Only cancellation/retraction sentences remained: a pure
+        # cancel notice carries no hazard of its own.
+        return ["general"]
+
     categories: list[str] = []
 
-    if any(k in text for k in ["GNSS", "DGPS", "AIS INTERFERENCE", "RADAR INTERFERENCE",
-            "INTERFERENCE OBSERVED", "JAMMING", "SPOOFING"]):
+    if any(k in text for k in ["GNSS", "DGPS", "GPS", "GLONASS", "GALILEO",
+            "BEIDOU", "AIS INTERFERENCE", "RADAR INTERFERENCE",
+            "INTERFERENCE", "JAMMING", "SPOOFING"]):
         categories.append("electronic")
 
-    military_pattern = r'\b(DETONATION|DETONATIONS|FIRING|FIRINGS|GUNNERY|MISSILE|WEAPONS?|ARMED FORCES|NAVAL EXERCISE|NAVAL EXERCISES|MILITARY EXERCISE)\b'
+    military_pattern = (r"\b(DETONATION|DETONATIONS|FIRING|FIRINGS|GUNNERY|"
+                        r"MISSILE|WEAPONS?|ARMED FORCES|NAVAL EXERCISE|"
+                        r"NAVAL EXERCISES|MILITARY EXERCISE|SPACE DEBRIS|"
+                        r"ROCKET DEBRIS|ROCKET LAUNCH)\b")
     if re.search(military_pattern, text):
         categories.append("military")
 
@@ -864,13 +897,14 @@ def classify_hazard_categories(raw_text: str) -> list[str]:
         categories.append("subsea")
 
     if any(k in text for k in ["DRIFTING", "DERELICT", "MINE", "CONTAINER",
-            "ADRIFT", "SPACE DEBRIS"]):
+            "ADRIFT"]):
         categories.append("drifting")
 
     if any(k in text for k in ["RIG", "PLATFORM", "JACK-UP"]):
         categories.append("offshore")
 
     return categories if categories else ["general"]
+
 
 
 def classify_hazard(raw_text: str) -> str:
