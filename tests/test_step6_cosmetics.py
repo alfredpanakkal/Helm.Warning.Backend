@@ -24,12 +24,12 @@ from scripts import navarea_ix_scraper as ix_mod
 
 class TestTitleExtraction(unittest.TestCase):
     def _parse(self, text):
-        data = parse_bulletin_text(text, "xi")
+        data = parse_bulletin_text(text, "vii")
         self.assertEqual(len(data["nav_warnings"]), 1)
         return data["nav_warnings"][0]
 
     def test_short_opener_keeps_operation_sentence(self):
-        text = ("NAVAREA XI 001/26" + chr(10)
+        text = ("NAVAREA VII 001/26" + chr(10)
                 + "EAST CHINA SEA." + chr(10)
                 + "HAZARD AREA DUE TO SPACE DEBRIS RE-ENTRY." + chr(10)
                 + " 1. AREA BOUNDED BY 30-00N 140-00E" + chr(10))
@@ -39,7 +39,7 @@ class TestTitleExtraction(unittest.TestCase):
             "EAST CHINA SEA. HAZARD AREA DUE TO SPACE DEBRIS RE-ENTRY.")
 
     def test_long_first_sentence_ends_title(self):
-        text = ("NAVAREA XI 005/26" + chr(10)
+        text = ("NAVAREA VII 005/26" + chr(10)
                 + "FIRING PRACTICE IN THE AREA BOUNDED BY THE COAST." + chr(10)
                 + "FURTHER DETAILS AVAILABLE ON REQUEST." + chr(10)
                 + " 1. 30-00N 140-00E" + chr(10))
@@ -48,7 +48,7 @@ class TestTitleExtraction(unittest.TestCase):
                           "FIRING PRACTICE IN THE AREA BOUNDED BY THE COAST.")
 
     def test_no_sentence_boundary_keeps_whole_head(self):
-        text = ("NAVAREA XI 006/26" + chr(10)
+        text = ("NAVAREA VII 006/26" + chr(10)
                 + "SPECIAL PURPOSE VESSEL CONDUCTING CABLE RECOVERY" + chr(10)
                 + "ALONG THE FOLLOWING LINE 30-00.0N 140-00.0E" + chr(10))
         w = self._parse(text)
@@ -56,10 +56,10 @@ class TestTitleExtraction(unittest.TestCase):
         self.assertIn("140-00.0E", w["title"])
 
     def test_empty_head_falls_back_to_region_title(self):
-        text = ("NAVAREA XI 007/26" + chr(10)
+        text = ("NAVAREA VII 007/26" + chr(10)
                 + " 1. FIRING AREA 30-00N 140-00E" + chr(10))
         w = self._parse(text)
-        self.assertEqual(w["title"], "NAVAREA XI Warning")
+        self.assertEqual(w["title"], "NAVAREA VII Warning")
 
 
 class TestZoneLabels(unittest.TestCase):
@@ -74,25 +74,25 @@ class TestZoneLabels(unittest.TestCase):
         self.assertEqual(_zone_label(["A", "MIXED PROSE"]), "Areas")
 
     def test_lettered_polygons_get_lettered_zone_labels(self):
-        text = ("NAVAREA XI 002/26" + chr(10)
+        text = ("NAVAREA VII 002/26" + chr(10)
                 + "EAST CHINA SEA." + chr(10)
                 + " 1. AREA BOUNDED BY" + chr(10)
                 + "A. 30-00N 140-00E, 30-00N 141-00E, 31-00N 141-00E" + chr(10)
                 + "B. 32-00N 140-00E, 32-00N 141-00E, 33-00N 141-00E" + chr(10)
                 + "C. 34-00N 140-00E, 34-00N 141-00E, 35-00N 141-00E" + chr(10))
-        data = parse_bulletin_text(text, "xi")
+        data = parse_bulletin_text(text, "vii")
         w = data["nav_warnings"][0]
         labels = [f["properties"]["zone_label"]
                   for f in w["spatial"]["features"]]
         self.assertEqual(labels, ["Area A", "Area B", "Area C"])
 
     def test_numbered_points_get_single_range_label(self):
-        text = ("NAVAREA XI 003/26" + chr(10)
+        text = ("NAVAREA VII 003/26" + chr(10)
                 + "GULF." + chr(10)
                 + " 1. 16-00.0N 082-00.0E" + chr(10)
                 + " 2. 16-00.0N 083-00.0E" + chr(10)
                 + " 3. 17-00.0N 083-00.0E" + chr(10))
-        data = parse_bulletin_text(text, "xi")
+        data = parse_bulletin_text(text, "vii")
         w = data["nav_warnings"][0]
         feats = w["spatial"]["features"]
         self.assertEqual(len(feats), 1)
@@ -100,10 +100,10 @@ class TestZoneLabels(unittest.TestCase):
         self.assertEqual(feats[0]["properties"]["zone_label"], "Areas 1-3")
 
     def test_single_preamble_clause_keeps_area_label(self):
-        text = ("NAVAREA XI 004/26" + chr(10)
+        text = ("NAVAREA VII 004/26" + chr(10)
                 + "GULF OF OMAN." + chr(10)
                 + "DRILLING IN 16-00.0N 082-00.0E" + chr(10))
-        data = parse_bulletin_text(text, "xi")
+        data = parse_bulletin_text(text, "vii")
         w = data["nav_warnings"][0]
         feats = w["spatial"]["features"]
         self.assertEqual(len(feats), 1)
