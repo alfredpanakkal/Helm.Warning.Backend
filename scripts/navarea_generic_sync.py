@@ -8,8 +8,9 @@ One wrapper serves all universal regions: the universal parser stamps
 and this sync passes them to the shared engine, which is fully
 region-agnostic (keyed on source_id). Template: scripts/baltic_sync.py.
 
-Cross-ref CANCEL supersede transitions are NOT applied here (Phase 1
-stores cross-refs on the warning payload only).
+Cross-ref CANCEL supersede transitions are resolved by the shared
+sync engine (resolve_cancel_cross_refs — audit-first, gated by the
+SYNC_APPLY_CANCEL_REFS environment variable).
 """
 import os
 import json
