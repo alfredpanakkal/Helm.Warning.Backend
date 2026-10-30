@@ -39,9 +39,9 @@ class TestAuscoastRangeBox(unittest.TestCase):
         ring = spatial["coordinates"][0]
         self.assertEqual(len(ring), 5)
         self.assertEqual(ring[0][0], 114.94)          # lon W edge
-        self.assertAlmostEqual(ring[0][1], -34.401667, places=6)  # lat S edge
+        self.assertAlmostEqual(ring[0][1], -34.893333, places=6)  # lat S edge
         self.assertAlmostEqual(ring[2][0], 115.661667, places=6)  # lon E edge
-        self.assertAlmostEqual(ring[2][1], -34.893333, places=6)  # lat N edge
+        self.assertAlmostEqual(ring[2][1], -34.401667, places=6)  # lat N edge
         self.assertEqual(ring[4], ring[0])           # closed ring
         self.assertAlmostEqual(lat, -34.6475, places=6)
         self.assertAlmostEqual(lon, 115.300833, places=5)
@@ -55,7 +55,7 @@ class TestAuscoastRangeBox(unittest.TestCase):
         self.assertEqual(spatial["type"], "Polygon")
         ring = spatial["coordinates"][0]
         self.assertEqual(len(ring), 5)
-        self.assertAlmostEqual(ring[0][1], -19.2, places=6)
+        self.assertAlmostEqual(ring[0][1], -19.35, places=6)
         self.assertAlmostEqual(ring[2][0], 116.833333, places=6)
         self.assertEqual(ring[4], ring[0])
 

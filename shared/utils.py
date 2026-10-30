@@ -765,6 +765,7 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
                 # rows can populate the sweep_* columns.
                 spatial = sector["spatial"]
                 basis = "keyword:sweep_sector"
+                quality = "EXPLICIT"
                 sweep_meta = {
                     "sweep_radius_nm": sector["sweep_radius_nm"],
                     "sweep_start_azimuth": sector["sweep_start_azimuth"],
