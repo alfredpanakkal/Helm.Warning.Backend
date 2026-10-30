@@ -290,23 +290,84 @@ def _is_valid_latlon(lat_deg: Any, lat_min: Any, lon_deg: Any, lon_min: Any) -> 
 # Standalone axis tokens for 'AREA BOUNDED WITHIN <lat> TO <lat> AND <lon> TO
 # <lon>' bulletins (NAVAREA VIII 1102/26): latitudes and longitudes are
 # listed SEPARATELY, so the pair-based pattern extracts nothing.
-RE_AXIS_LAT = re.compile(r"(?<![\d.])(\d{1,2})-(\d{2}(?:\.\d+)?)([NS])(?![\d.])")
-RE_AXIS_LON = re.compile(r"(?<![\d.])(\d{1,3})-(\d{2}(?:\.\d+)?)([EW])(?![\d.])")
+# Hemisphere letter may be glued to the minutes (VIII '14-47.2N') or
+# separated by whitespace (AUSCOAST '34-24.10 S', live AMSA Part 3
+# wording, Oct 2026). These tokens are only consulted inside the bbox
+# helper below, which is itself gated on the bounded-area phrase.
+RE_AXIS_LAT = re.compile(
+    r"(?<![\d.])(\d{1,2})-(\d{2}(?:\.\d+)?)\s*([NS])(?![\d.])", re.IGNORECASE)
+RE_AXIS_LON = re.compile(
+    r"(?<![\d.])(\d{1,3})-(\d{2}(?:\.\d+)?)\s*([EW])(?![\d.])", re.IGNORECASE)
+
+# Explicit two-axis range wording: '<lat> TO <lat> AND <lon> TO <lon>'
+# (AUSCOAST 'IN AN AREA BOUNDED BY 34-24.10 S TO 34-53.60 S AND
+# 114-56.40 E TO 115-39.70 E'). This is the fail-closed gate for
+# 'BOUNDED BY' texts: corner enumerations never reach the bbox helper
+# (their coordinate PAIRS are extracted upstream), and any other axis
+# listing under 'BOUNDED BY' stays geometry-less.
+RE_AXIS_LAT_RANGE = re.compile(
+    r"(?<![\d.])(\d{1,2})-(\d{2}(?:\.\d+)?)\s*([NS])(?![\d.])"
+    r"\s+TO\s+(?<![\d.])(\d{1,2})-(\d{2}(?:\.\d+)?)\s*([NS])(?![\d.])",
+    re.IGNORECASE)
+RE_AXIS_LON_RANGE = re.compile(
+    r"(?<![\d.])(\d{1,3})-(\d{2}(?:\.\d+)?)\s*([EW])(?![\d.])"
+    r"\s+TO\s+(?<![\d.])(\d{1,3})-(\d{2}(?:\.\d+)?)\s*([EW])(?![\d.])",
+    re.IGNORECASE)
+# Bounded-area phrase gate for the bbox helper: VIII's 'AREA BOUNDED
+# WITHIN' plus AUSCOAST's 'AREA BOUNDED BY' (the BY form is trusted
+# ONLY with the explicit TO-range wording above).
+RE_BBOX_PHRASE = re.compile(r"AREAS?\s+BOUNDED\s+(?:WITHIN|BY)")
 
 
 def _bbox_from_axis_tokens(raw_text: str):
     """
     Builds a closed rectangle ring for 'AREA BOUNDED WITHIN' bulletins
     whose latitudes and longitudes are listed as separate axis ranges
-    (e.g. 14-47.2N TO 14-50.9N AND 074-02.8E TO 074-08.15E).
+    (e.g. 14-47.2N TO 14-50.9N AND 074-02.8E TO 074-08.15E) and the
+    AUSCOAST range-box form 'IN AN AREA BOUNDED BY <lat> TO <lat> AND
+    <lon> TO <lon>' (live AMSA Part 3, Oct 2026 — explicit TO-joined
+    ranges only, fail-closed for every other 'BOUNDED BY' wording).
     Returns (spatial, centroid_lat, centroid_lon) or (None, None, None).
     Gated on the bbox phrase so unrelated lat/lon mentions never
     fabricate an area (fail-closed outside the known format).
     """
     from shared.geometry_classifier import RE_BBOX
 
-    if not raw_text or not RE_BBOX.search(raw_text.upper()):
+    if not raw_text or not RE_BBOX_PHRASE.search(raw_text.upper()):
         return None, None, None
+
+    if not RE_BBOX.search(raw_text.upper()):
+        # 'AREA BOUNDED BY' range boxes (AUSCOAST): ONLY the explicit
+        # two-axis TO-range wording may build a rectangle — anything
+        # else fails closed (no fabricated area).
+        lm = RE_AXIS_LAT_RANGE.search(raw_text)
+        om = RE_AXIS_LON_RANGE.search(raw_text)
+        if not lm or not om:
+            return None, None, None
+        lats = set()
+        for deg, mins, hem in ((lm.group(1), lm.group(2), lm.group(3)),
+                               (lm.group(4), lm.group(5), lm.group(6))):
+            val = convert_to_decimal(deg, mins, hem)
+            if val is None or math.isnan(val):
+                return None, None, None
+            lats.add(val)
+        lons = set()
+        for deg, mins, hem in ((om.group(1), om.group(2), om.group(3)),
+                               (om.group(4), om.group(5), om.group(6))):
+            val = convert_to_decimal(deg, mins, hem)
+            if val is None or math.isnan(val):
+                return None, None, None
+            lons.add(val)
+        if len(lats) != 2 or len(lons) != 2:
+            return None, None, None
+        lat_s, lat_n = sorted(lats)
+        lon_w, lon_e = sorted(lons)
+        ring = [
+            [lon_w, lat_s], [lon_e, lat_s], [lon_e, lat_n], [lon_w, lat_n],
+            [lon_w, lat_s],
+        ]
+        spatial = {"type": "Polygon", "coordinates": [ring]}
+        return spatial, round((lat_s + lat_n) / 2, 6), round((lon_w + lon_e) / 2, 6)
 
     lats = set()
     for m in RE_AXIS_LAT.finditer(raw_text):
