@@ -37,6 +37,9 @@ shared.utils.parse_coordinates (no-second-parser rule).
 
 import re
 
+from shared.utils import rejoin_wrapped_coords as _shared_rejoin_wrapped_coords
+from shared.utils import _REJOIN_WRAP_SPECS as _SHARED_WRAP_SPECS
+
 
 def ring_to_trackline(spatial):
     """Convert a closed Polygon ring into an open LineString.
@@ -71,24 +74,12 @@ class NgaMemoPreprocessor:
     RE_HEADER_PAREN_CONT = re.compile(r"^\(([^)]*)\)\.?$")
     RE_TRACKLINE_CLAUSE = re.compile(r"\bTRACKLINES?\s+JOINING\b", re.IGNORECASE)
 
-    # Coordinate tokens split across line wraps. Each spec is
-    # (compiled_pattern, merge_fn) — a merge only applies when the merged
-    # fragment forms a valid coordinate token.
-    _WRAP_SPECS = (
-        # "34-27.\n00N" (XII 148/26) / "58-10.\n50N" (IV 1170/25)
-        (re.compile(r"(\d{1,3}-\d{1,2}(?:\.\d{0,4})?)\n(\d{1,2}(?:\.\d{1,4})?)([NSEW])"),
-         lambda g: g[0] + g[1] + g[2]),
-        # "57\n-00N" (IV 206/26) — degrees at line end, minutes next line
-        (re.compile(r"(\d{1,3})\n(-\d{1,2}(?:\.\d{1,4})?)([NSEW])"),
-         lambda g: g[0] + g[1] + g[2]),
-        # "27-09\n.1N" (IV 204/26) — wrap inside the decimal minutes
-        (re.compile(r"(\d{1,3}-\d{1,2}(?:\.\d{1,4})?)\n(\.\d{1,4})([NSEW])"),
-         lambda g: g[0] + g[1] + g[2]),
-        # "12-\n28.85N" (IV 466/25) — degrees-hyphen at line end; note the
-        # hyphen is consumed by the pattern and must be re-inserted
-        (re.compile(r"(\d{1,3})-\n(\d{1,2}(?:\.\d{1,4})?)([NSEW])"),
-         lambda g: g[0] + "-" + g[1] + g[2]),
-    )
+    # Dedup (2026-10-30): the memo-local wrap specs were a byte-identical
+    # copy of shared/utils.py, minus its CRLF-tolerant _WRAP. The class now
+    # delegates rejoining to the canonical shared implementation;
+    # _WRAP_SPECS aliases the shared specs for backward compatibility
+    # (navarea_xii_text re-exports RE_SPLIT_TOKEN = _impl._WRAP_SPECS[0][0]).
+    _WRAP_SPECS = _SHARED_WRAP_SPECS
 
     def __init__(self, navarea_id, ref_zfill=None, max_subarea_label_len=1,
                  require_coords_in_subarea=False):
@@ -112,38 +103,16 @@ class NgaMemoPreprocessor:
         )
 
     # --- rejoin_wrapped_coords ----------------------------------------------
-    def _is_valid_merged_token(self, token: str) -> bool:
-        m = self.RE_COORD_TOKEN.match(token)
-        if not m:
-            return False
-        deg = int(m.group(1))
-        minutes = float(m.group(2))
-        if minutes >= 60.0:
-            return False
-        if m.group(3) in ("N", "S"):
-            return deg <= 90
-        return deg <= 180
-
     def rejoin_wrapped_coords(self, text: str) -> str:
-        """Join DDM coordinate tokens split across line wraps (idempotent).
+        """Delegates to the canonical shared.utils implementation.
 
-        Only merges when the merged fragment forms a valid coordinate token;
-        prose word-wraps ("IN AREA BO\nUND BY") are left untouched.
+        One rejoin implementation for every parse path (no-second-parser
+        rule): parse_coordinates() and the IV/XII memo pipeline share the
+        same wrap specs, including the CRLF-tolerant wrap handling the
+        old memo-local copy lacked. Idempotent; only merges fragments
+        that form a valid coordinate token; prose word-wraps untouched.
         """
-        if not text:
-            return text
-
-        previous = None
-        while previous != text:
-            previous = text
-            for pattern, merge in self._WRAP_SPECS:
-                def _merge(m, merge=merge):
-                    merged = merge(m.groups())
-                    if self._is_valid_merged_token(merged):
-                        return merged
-                    return m.group(0)
-                text = pattern.sub(_merge, text)
-        return text
+        return _shared_rejoin_wrapped_coords(text)
 
     # --- segmentation --------------------------------------------------------
     def get_in_force_dtg(self, memo_text: str):
