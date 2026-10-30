@@ -440,7 +440,7 @@ export const PublicPortal: React.FC<PublicPortalProps> = ({
             <span style="font-weight:700;color:var(--surface-dark)">${warning.warning_id}</span>
             <span style="font-size:11px;font-weight:600;padding:1px 6px;border-radius:4px;background:#f1f5f9;color:#475569">${warning.navarea}</span>
           </div>
-          <div style="font-weight:600;font-size:12px;margin-bottom:4px;color:var(--text)">${warning.title}</div>
+          <div style="font-weight:600;font-size:12px;margin-bottom:4px;color:var(--text);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">${warning.title}</div>
           <div style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:6px;margin-bottom:6px">
             <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${color}"></span>
             <span style="font-weight:600;text-transform:uppercase">${plotName}</span>
@@ -1249,7 +1249,7 @@ export const PublicPortal: React.FC<PublicPortalProps> = ({
                             <div className="warning-id">
                               {w.warning_id} · {w.navarea}
                             </div>
-                            <div className="warning-meta">{w.title}</div>
+                            <div className="warning-meta title-clamp" title={w.title}>{w.title}</div>
                             <div className="warning-meta" style={{ display: 'flex', gap: '4px', marginTop: '3px' }}>
                               {types.map((t) => (
                                 <span
@@ -1624,7 +1624,7 @@ export const PublicPortal: React.FC<PublicPortalProps> = ({
                         </svg>
                       </td>
                       <td>{w.navarea}</td>
-                      <td>{w.title}</td>
+                      <td><div className="title-clamp" title={w.title}>{w.title}</div></td>
                       <td>{getSeverityBadge(w.severity)}</td>
                       <td>{formatDate(w)}</td>
                       <td>{w.coordinates || 'N/A'}</td>
@@ -1715,7 +1715,7 @@ export const PublicPortal: React.FC<PublicPortalProps> = ({
                   </span>
                   {getSeverityBadge(w.severity)}
                 </div>
-                <div className="warning-card-title">{w.title}</div>
+                <div className="warning-card-title title-clamp" title={w.title}>{w.title}</div>
                 <div className="warning-card-meta">
                   <span>📍 {w.navarea}</span>
                   <span>📅 {formatDate(w)}</span>
