@@ -23,6 +23,20 @@ on:
     branches:
       - main
   workflow_dispatch:
+    # Backfill controls (IX 050/26 mojibake sweep, 2026-10-30): a
+    # plain UI dispatch cannot set IX_FULL_SNAPSHOT (an env var read
+    # by scripts/navarea_ix_scraper.py), so expose it as an input.
+    inputs:
+      full_snapshot:
+        description: 'Full harvest - ignore stored-row skipping (IX_FULL_SNAPSHOT=1)'
+        required: false
+        type: boolean
+        default: false
+      max_requests:
+        description: 'Request cap for this run (IX_MAX_REQUESTS_PER_RUN; a full sweep needs > 60)'
+        required: false
+        type: string
+        default: '60'
 
 concurrency:
   # '-bounded' suffix (NAVAREA V lesson, 2026-10-28): a run wedged in
@@ -67,6 +81,10 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           ALLOW_DRY_RUN: ${{ github.event_name == 'pull_request' && '1' || '' }}
+          # workflow_dispatch backfill controls (see inputs above);
+          # empty on schedule/push/PR runs (inputs context is empty).
+          IX_FULL_SNAPSHOT: ${{ inputs.full_snapshot && '1' || '' }}
+          IX_MAX_REQUESTS_PER_RUN: ${{ inputs.max_requests || '60' }}
         run: |
           set -o pipefail
           # GNU timeout bounds a wedged harvest (site/WAF stall): the
