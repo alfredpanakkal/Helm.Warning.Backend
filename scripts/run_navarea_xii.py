@@ -26,7 +26,7 @@ def main(raw_txt="navareas/navarea_xii/navarea_xii_warnings.txt",
     print("\n[STAGE 1] Scraping...")
     from scripts.navarea_xii_scraper import scrape_xii_warnings
     harvest = scrape_xii_warnings(raw_txt)
-    if HARVEST is None:
+    if harvest is None:
         print("\n⛔ [STAGE 1] Scrape FAILED — NGA NAVAREA XII source unreachable; aborting before parse/sync (existing DB rows untouched).")
         return False
 
