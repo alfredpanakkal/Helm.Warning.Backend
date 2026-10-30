@@ -172,6 +172,10 @@ def _clean_warning(raw: str) -> str:
     the source's escaped dots ('1\\. ARBEIDE') normalized so the
     universal parser's numbered-item segmentation can see the items."""
     text = raw.replace("\r\n", "\n").replace("\r", "\n").replace("\xa0", " ")
+    # UppERCASE entity variants survive the HTML pre-pass when the page
+    # double-escapes them ('&amp;NBSP;' decodes to a literal '&NBSP;');
+    # stdlib HTMLParser only converts the lowercase forms.
+    text = re.sub(r"&nbsp;", " ", text, flags=re.IGNORECASE)
     text = text.replace("\\.", ".")
     lines = [re.sub(r"\s+", " ", line).strip(" |").strip()
              for line in text.split("\n")]
