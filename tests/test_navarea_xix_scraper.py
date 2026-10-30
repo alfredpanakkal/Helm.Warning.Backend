@@ -112,7 +112,7 @@ class TestUniversalParserIngestion(unittest.TestCase):
         geom = rigs["spatial"]["features"][0]["geometry"]
         self.assertEqual(geom["type"], "MultiPoint")
         self.assertIn([20.3575, 72.541], geom["coordinates"])
-        self.assertIn([5.3055, 67.027167], geom["coordinates"])
+        self.assertIn([5.302833, 67.027167], geom["coordinates"])
 
     def test_inforce_summary_block_fails_closed_tier_c(self):
         summary = self.parsed["nav_warnings"][0]
