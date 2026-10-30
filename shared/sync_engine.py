@@ -188,6 +188,116 @@ def _apply_status_transition(supabase_client, canonical_id: str, patch: Dict[str
         return False
 
 
+# ---------------------------------------------------------------------------
+# Cross-reference cancel resolution (audit finding F2, 2026-10-30).
+#
+# The parsers extract CANCEL cross-references onto the warning payload
+# ('cross_refs'), but the sync layer never resolved them — 0/594 live
+# rows transitioned on a published cancellation. A CANCEL reference is
+# explicit, positive withdrawal evidence for its target (unlike
+# scrape-absence), so it is valid even for partial harvests.
+#
+# Audit-first: without SYNC_APPLY_CANCEL_REFS the pass only resolves and
+# LOGS (zero writes). With it, resolved ACTIVE targets transition
+# status -> 'cancelled' (status_basis 'cancelled_by_cross_reference') —
+# a status change, never a deletion (safeguard: never erase history).
+# ---------------------------------------------------------------------------
+def _cancel_ref_target_ids(scraped_warnings, navarea_name, scraped_ids):
+    """Pure mapping: CANCEL cross-refs -> {target canonical_id: carrier id}.
+
+    Excludes self-references and targets still present in the current
+    feed (the feed listing a warning in force is fresher evidence than
+    a cross-reference). Deduplicates across warnings.
+    """
+    targets = {}
+    for warn in scraped_warnings or []:
+        if not isinstance(warn, dict):
+            continue
+        carrier = str(warn.get("canonical_id") or warn.get("warning_id") or "")
+        for ref in warn.get("cross_refs") or []:
+            if not isinstance(ref, dict):
+                continue
+            number = str(ref.get("number") or "").strip()
+            year = str(ref.get("year") or "").strip()
+            if not number or not year:
+                continue
+            target = (navarea_name + " " + number + "/" + year).strip()
+            if not target or target == carrier or target in (scraped_ids or set()):
+                continue
+            targets.setdefault(target, carrier)
+    return targets
+
+
+def resolve_cancel_cross_refs(supabase_client, scraped_warnings, navarea_name,
+                              scraped_ids=None, apply_changes=None):
+    """Resolves CANCEL cross-references into lifecycle evidence.
+
+    Returns a counts dict: referenced / resolved / applied / unresolved
+    (plus 'errors' when a transition fails, 'lookup_failed' when the DB
+    lookup fails — the pass then aborts WITHOUT any transition).
+    """
+    counts = {"referenced": 0, "resolved": 0, "applied": 0, "unresolved": 0}
+    if supabase_client is None:
+        return counts
+    if apply_changes is None:
+        apply_changes = os.environ.get(
+            "SYNC_APPLY_CANCEL_REFS", "").lower() in ("1", "true", "yes")
+    targets = _cancel_ref_target_ids(
+        scraped_warnings, navarea_name, scraped_ids)
+    counts["referenced"] = len(targets)
+    if not targets:
+        return counts
+
+    ids = sorted(targets)
+    statuses = {}
+    for i in range(0, len(ids), 100):
+        chunk = ids[i:i + 100]
+        try:
+            res = (supabase_client.table("nav_warnings")
+                   .select("canonical_id, status")
+                   .in_("canonical_id", chunk).execute())
+            for r in (res.data or []):
+                if isinstance(r, dict) and r.get("canonical_id"):
+                    statuses[r["canonical_id"]] = r.get("status")
+        except Exception as e:
+            print("  ❌ Cancel cross-ref lookup failed (" + str(e) + "); "
+                  "pass aborted WITHOUT any transition — re-run the sync.")
+            counts["lookup_failed"] = True
+            return counts
+
+    now_stamp = datetime.now(timezone.utc).isoformat()
+    for tid in ids:
+        carrier = targets[tid]
+        status = statuses.get(tid)
+        if status is None:
+            counts["unresolved"] += 1
+            print("  ⚠️ Unresolved CANCEL ref: " + tid + " (referenced by "
+                  + carrier + ") not found — verify warning id / zero-padding.")
+            continue
+        if status != "active":
+            print("  ✔ " + tid + " already '" + str(status) + "' — CANCEL "
+                  "ref from " + carrier + " is a no-op.")
+            continue
+        counts["resolved"] += 1
+        if not apply_changes:
+            print("  🔎 [audit-only] would mark " + tid + " cancelled "
+                  "(CANCEL ref in " + carrier + "). "
+                  "Set SYNC_APPLY_CANCEL_REFS=1 to apply.")
+            continue
+        patch = {
+            "status": "cancelled",
+            "status_basis": "cancelled_by_cross_reference",
+            "status_changed_at": now_stamp,
+        }
+        if _apply_status_transition(supabase_client, tid, patch):
+            counts["applied"] += 1
+            print("  🗄️ Cancelled via cross-reference: " + tid
+                  + " (CANCEL ref in " + carrier + ")")
+        else:
+            counts["errors"] = counts.get("errors", 0) + 1
+    return counts
+
+
 def run_differential_sync(
     source_id: str,
     navarea_name: str,
@@ -410,6 +520,23 @@ def run_differential_sync(
                 print(f"  ❌ Failed to upsert: {cid}")
                 has_errors = True
 
+    # 3b. Cross-reference cancel resolution (audit finding F2): CANCEL
+    #     cross-refs carried on scraped warnings are explicit withdrawal
+    #     evidence for their targets. Audit-first: without
+    #     SYNC_APPLY_CANCEL_REFS this pass resolves + logs only.
+    cancel_ref_counts = resolve_cancel_cross_refs(
+        supabase_client, scraped_warnings, navarea_name,
+        scraped_ids=scraped_ids,
+    )
+    if cancel_ref_counts.get("referenced"):
+        print("[3b] Cross-ref cancels: "
+              + str(cancel_ref_counts["referenced"]) + " referenced, "
+              + str(cancel_ref_counts["resolved"]) + " resolved, "
+              + str(cancel_ref_counts["applied"]) + " applied, "
+              + str(cancel_ref_counts["unresolved"]) + " unresolved")
+        if cancel_ref_counts.get("errors"):
+            has_errors = True
+
     # 4. Evidence-based lifecycle transitions for warnings missing from the
     #    scrape. Archiving is a status change, never a deletion:
     #      - 'expired'   : the warning's own valid_to date has passed
@@ -492,6 +619,7 @@ def run_differential_sync(
         "expired": len(expired_ids),
         "unobserved": len(unobserved_ids),
         "missing": len(missing),
+        "cancel_refs": cancel_ref_counts,
         "cancel_guard": {
             "min_feed_count": CANCEL_MIN_FEED_COUNT,
             "min_feed_fraction": CANCEL_MIN_FEED_FRACTION,
