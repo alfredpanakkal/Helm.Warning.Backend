@@ -121,7 +121,7 @@ FEEDS = {
                 "bulletin. NOT url_text: the generic scraper must not "
                 "feed the table HTML into the text pipeline.",
     },
- The page is a metadata
+    # Pakistan — NHO 'NAVAREA IX Warnings' page. The page is a metadata
     # table; each row links a plain-text document that is already the
     # exact region 'ix' bulletin block format (verified 2026-10-27).
     # A dedicated scraper resolves the row documents (follows the row
