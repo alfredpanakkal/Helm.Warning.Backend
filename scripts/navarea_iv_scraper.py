@@ -101,11 +101,10 @@ def scrape_iv_warnings(output_filename="navareas/navarea_iv/navarea_iv_warnings.
     memo_text = fetch_daily_memo()
 
     if not memo_text:
-        print("ℹ️ No memo harvested from NGA MSI; writing valid empty harvest.")
-        os.makedirs(os.path.dirname(output_filename), exist_ok=True)
-        with open(output_filename, "w", encoding="utf-8") as f:
-            f.write("")
-        return {}
+        # Loud failure: the pipeline runner aborts on None; the previous
+        # harvest file is left untouched (never clobbered by an outage).
+        print("⛔ Could not fetch the NAVAREA IV daily memo; aborting (harvest untouched).")
+        return None
 
     from shared.navarea_iv_text import get_in_force_dtg, split_into_warnings
     in_force = get_in_force_dtg(memo_text)

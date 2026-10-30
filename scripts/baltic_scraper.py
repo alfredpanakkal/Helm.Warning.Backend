@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
 baltic_scraper.py — Sjöfartsverket VHF Navigational Warnings Scraper
-Hardened scraper with defensive DOM parsing, fallback strategies, and non-fatal empty harvests.
+Hardened scraper with defensive DOM parsing and fallback strategies.
+
+Failure contract: a fetch failure (network error, non-200, missing HTTP
+libraries) returns None — the pipeline runner aborts loudly before
+parse/sync. A valid empty harvest ({}) is only returned when the page was
+fetched successfully and genuinely carries no warnings.
 """
 
 import sys
@@ -103,7 +108,8 @@ def scrape_baltic_warnings(output_filename="navareas/baltic/navarea_baltic_warni
 
     page_text = ""
     if cffi_requests is None or BeautifulSoup is None:
-        print("ℹ️ HTTP/HTML libraries not present in environment; emitting valid empty harvest.")
+        print("⛔ HTTP/HTML libraries not present in environment; aborting.")
+        return None
     else:
         try:
             if HAS_CURL_CFFI:
@@ -115,13 +121,15 @@ def scrape_baltic_warnings(output_filename="navareas/baltic/navarea_baltic_warni
                 response = cffi_requests.get(URL, headers=headers, timeout=30, verify=True)
 
             if response.status_code != 200:
-                print(f"⚠️ Warning: Non-200 status code received ({response.status_code}).")
+                print(f"⛔ Non-200 status code received ({response.status_code}); aborting.")
+                return None
             else:
                 page_text = response.content.decode("utf-8", errors="replace")
         except Exception as e:
-            # Site unavailable or network timeout: do not crash the pipeline
-            print(f"⚠️ Network error accessing {URL}: {e}")
-            print("ℹ️ Continuing with empty warning output to preserve pipeline execution.")
+            # Site unavailable or network timeout: loud failure, never a
+            # silent outage-shaped empty harvest.
+            print(f"⛔ Network error accessing {URL}: {e}")
+            return None
 
     if page_text and BeautifulSoup is not None:
         soup = BeautifulSoup(page_text, "html.parser")
@@ -157,8 +165,9 @@ def scrape_baltic_warnings(output_filename="navareas/baltic/navarea_baltic_warni
                 _harvest_paragraph(p, "Baltic", collected_warnings)
 
     if not collected_warnings:
-        # An empty harvest is a valid state (no active warnings or site empty).
-        # We write an empty file so the parser and sync engines can run and cancel obsolete warnings.
+        # The page was fetched successfully and genuinely carries no warnings.
+        # Write an empty file so the parser and sync engines can run and
+        # cancel obsolete warnings.
         print("ℹ️ No active warnings found (valid empty harvest state).")
     else:
         print(f"✅ Harvested {len(collected_warnings)} warnings from feed.")

@@ -299,11 +299,13 @@ def scrape_xi_warnings(output_filename="navareas/navarea_xi/navarea_xi_warnings.
     if year is None:
         year = datetime.now().year
     collected = {}
+    fetch_succeeded = False
 
     # 1. Try humanized browser automation if Playwright is installed
     if HAS_PLAYWRIGHT:
         try:
             collected = asyncio.run(fetch_via_browser(year=year))
+            fetch_succeeded = True
             if collected:
                 print(f"✅ Successfully harvested {len(collected)} bulletins via browser automation.")
         except Exception as e:
@@ -313,13 +315,19 @@ def scrape_xi_warnings(output_filename="navareas/navarea_xi/navarea_xi_warnings.
     if not collected:
         try:
             collected = fetch_direct_disp(year=year)
+            fetch_succeeded = True
             if collected:
                 print(f"✅ Successfully harvested {len(collected)} bulletins directly via HTTP fallback.")
         except Exception as e:
             print(f"⚠️ Direct JCG Kaiho HTTP fetch failed: {e}")
 
     if not collected:
-        print("ℹ️ No active warnings harvested from JCG Kaiho or site unavailable; writing valid empty harvest.")
+        if not fetch_succeeded:
+            # Both acquisition paths failed: loud failure, runner aborts,
+            # previous harvest left untouched.
+            print("⛔ JCG Kaiho unreachable (browser and HTTP fetch both failed); aborting (harvest untouched).")
+            return None
+        print("ℹ️ No active warnings in force at JCG Kaiho; writing valid empty harvest.")
         _write_output({}, output_filename)
         return {}
 
