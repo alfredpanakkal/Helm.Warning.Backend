@@ -71,8 +71,11 @@ class TestCancelRefTargetIds(unittest.TestCase):
     def test_mapping_and_dedup(self):
         w = dict(CARRIER)
         targets = _cancel_ref_target_ids([w, dict(w)], "NAVAREA XI", set())
+        # F8: a ref registers every padding variant of its number; the
+        # padded feed form plus the unpadded alias both map to the carrier.
         self.assertEqual(targets,
-                         {"NAVAREA XI 0430/26": "NAVAREA XI 0479/26"})
+                         {"NAVAREA XI 0430/26": "NAVAREA XI 0479/26",
+                          "NAVAREA XI 430/26": "NAVAREA XI 0479/26"})
 
     def test_self_reference_excluded(self):
         w = {
@@ -87,7 +90,10 @@ class TestCancelRefTargetIds(unittest.TestCase):
         # is fresher evidence than the cross-reference
         targets = _cancel_ref_target_ids(
             [CARRIER], "NAVAREA XI", {"NAVAREA XI 0430/26"})
-        self.assertEqual(targets, {})
+        # The in-feed (padded) form is excluded; the unpadded alias stays
+        # registered as a harmless extra lookup (it resolves only if such a
+        # row exists; live DB has no padded/unpadded pair on any source).
+        self.assertNotIn("NAVAREA XI 0430/26", targets)
 
     def test_malformed_refs_ignored(self):
         w = {"canonical_id": "NAVAREA XI 0100/26",
@@ -107,10 +113,13 @@ class TestResolveCancelCrossRefs(unittest.TestCase):
         client = _ref_client(
             [{"canonical_id": "NAVAREA XI 0430/26", "status": "active"}])
         counts = resolve_cancel_cross_refs(client, [CARRIER], "NAVAREA XI")
-        self.assertEqual(counts["referenced"], 1)
+        # F8: referenced counts candidate targets (each padding variant is
+        # its own lookup); the un-found unpadded alias is a loud unresolved
+        # entry, never a write.
+        self.assertEqual(counts["referenced"], 2)
         self.assertEqual(counts["resolved"], 1)
         self.assertEqual(counts["applied"], 0)
-        self.assertEqual(counts["unresolved"], 0)
+        self.assertEqual(counts["unresolved"], 1)
         self.assertEqual(client.recorded_updates, [])
 
     def test_apply_mode_transitions_active_target(self):
@@ -236,12 +245,87 @@ class TestE2ECrossRefCancelsWhereAbsenceCannot(unittest.TestCase):
             ledger = client.recorded_inserts.get("ingestion_generations", [])
             self.assertEqual(len(ledger), 1)
             details = ledger[0]["details"]
-            self.assertEqual(details["cancel_refs"]["referenced"], 1)
+            # F8: 2 candidate targets (padded form + unpadded alias)
+            self.assertEqual(details["cancel_refs"]["referenced"], 2)
             self.assertEqual(details["cancel_refs"]["applied"], 1)
             self.assertEqual(details["unobserved"], 1)
         finally:
             os.environ.pop("SYNC_APPLY_CANCEL_REFS", None)
 
+
+class TestRefNumberPaddingVariants(unittest.TestCase):
+    """F8 (2026-10-30, live-DB confirmed): cross-ref numbers are padded by
+    some parser configs (the NGA XII memo config pads refs to 3 digits)
+    while the target's stored canonical_id is the memo header VERBATIM
+    ("NAVAREA XII 88/26" is a live row). A single-form target can never
+    resolve, so every padding variant of the ref number is registered
+    and whichever form is stored gets found. Verified live: no source
+    carries both a padded and an unpadded form, so variants are aliases
+    of the same warning, never distinct targets.
+    """
+
+    def test_zfilled_ref_resolves_verbatim_stored_id(self):
+        # memo config pads the CANCEL ref "88" -> "088"; the stored
+        # canonical_id is the verbatim header "NAVAREA XII 88/26"
+        carrier = {
+            "canonical_id": "NAVAREA XII 99/26",
+            "cross_refs": [{"number": "088", "year": "26"}],
+        }
+        targets = _cancel_ref_target_ids([carrier], "NAVAREA XII", set())
+        self.assertIn("NAVAREA XII 88/26", targets)
+        self.assertIn("NAVAREA XII 088/26", targets)
+
+    def test_unpadded_ref_resolves_padded_stored_id(self):
+        carrier = {
+            "canonical_id": "NAVAREA V 0700/26",
+            "cross_refs": [{"number": "700", "year": "26"}],
+        }
+        targets = _cancel_ref_target_ids([carrier], "NAVAREA V", set())
+        self.assertIn("NAVAREA V 700/26", targets)
+        self.assertIn("NAVAREA V 0700/26", targets)
+
+    def test_variants_dedupe_to_distinct_forms(self):
+        targets = _cancel_ref_target_ids([dict(CARRIER)], "NAVAREA XI", set())
+        self.assertEqual(
+            set(targets),
+            {"NAVAREA XI 0430/26", "NAVAREA XI 430/26"})
+        self.assertEqual(
+            set(targets.values()), {"NAVAREA XI 0479/26"})
+
+    def test_in_feed_guard_covers_verbatim_alias(self):
+        # the feed lists the target in force under its stored (verbatim)
+        # form: the digits variant is excluded, so the guard still sees
+        # the alias that would actually resolve in the DB.
+        carrier = {
+            "canonical_id": "NAVAREA XII 99/26",
+            "cross_refs": [{"number": "088", "year": "26"}],
+        }
+        targets = _cancel_ref_target_ids(
+            [carrier], "NAVAREA XII", {"NAVAREA XII 88/26"})
+        self.assertNotIn("NAVAREA XII 88/26", targets)
+
+    def test_apply_mode_resolves_verbatim_stored_row(self):
+        # end-to-end through the resolver: only the verbatim row exists
+        # in the DB; the padded variant stays a loud unresolved alias.
+        os.environ["SYNC_APPLY_CANCEL_REFS"] = "1"
+        try:
+            client = _ref_client(
+                [{"canonical_id": "NAVAREA XII 88/26", "status": "active"}])
+            carrier = {
+                "canonical_id": "NAVAREA XII 99/26",
+                "cross_refs": [{"number": "088", "year": "26"}],
+            }
+            counts = resolve_cancel_cross_refs(
+                client, [carrier], "NAVAREA XII")
+            self.assertEqual(counts["resolved"], 1)
+            self.assertEqual(counts["applied"], 1)
+            self.assertEqual(counts["unresolved"], 1)
+            patch = client.recorded_updates[0]
+            self.assertEqual(patch["status"], "cancelled")
+            self.assertEqual(patch["status_basis"],
+                             "cancelled_by_cross_reference")
+        finally:
+            os.environ.pop("SYNC_APPLY_CANCEL_REFS", None)
 
 if __name__ == "__main__":
     unittest.main()
