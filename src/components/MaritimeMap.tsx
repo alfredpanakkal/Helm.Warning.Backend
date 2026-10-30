@@ -131,7 +131,7 @@ export const MaritimeMap: React.FC<MaritimeMapProps> = ({
             <span style="font-weight:700;color:var(--surface-dark)">${warning.warning_id}</span>
             <span style="font-size:10px;background:#f1f5f9;color:#475569;padding:2px 6px;border-radius:4px;font-weight:600">NAVAREA ${warning.navarea}</span>
           </div>
-          <div style="font-weight:600;margin-bottom:6px;color:var(--text)">${warning.title}</div>
+          <div style="font-weight:600;margin-bottom:6px;color:var(--text);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">${warning.title}</div>
           <div style="display:flex;flex-wrap:wrap;margin-bottom:4px">
             ${badgesHtml}
           </div>
