@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 shared/translation.py — Fail-closed title translation for non-English
-NAVAREA bulletins (Chile XV / Peru XVI publish Spanish titles).
+NAVAREA bulletins (Chile XV / Peru XVI publish Spanish titles;
+the Norway XIX series is published in English but individual items
+may carry Norwegian text).
 
 Safety contract (mirrors shared/ai_escalation.py / gemini_navarea_parser):
   * GEMINI_API_KEY is read from the environment ONLY, sent in the
@@ -38,12 +40,22 @@ RE_SPANISH_HINT = re.compile(
     re.IGNORECASE,
 )
 
-_PROMPT = (
-    "Translate the following maritime navigational warning title from "
-    "Spanish to English. Keep place names and vessel names unchanged. "
-    "Output ONLY the English translation, with no quotes, no commentary "
-    "and no explanations.\n\n"
-)
+_PROMPTS = {
+    "es": (
+        "Translate the following maritime navigational warning title from "
+        "Spanish to English. Keep place names and vessel names unchanged. "
+        "Output ONLY the English translation, with no quotes, no "
+        "commentary and no explanations.\n\n"
+    ),
+    # NAVAREA XIX (Kystverket): the series is published in English, but
+    # individual items occasionally carry Norwegian titles.
+    "no": (
+        "Translate the following maritime navigational warning title from "
+        "Norwegian to English. Keep place names and vessel names "
+        "unchanged. Output ONLY the English translation, with no quotes, "
+        "no commentary and no explanations.\n\n"
+    ),
+}
 
 
 def looks_spanish(text: str) -> bool:
@@ -51,6 +63,49 @@ def looks_spanish(text: str) -> bool:
     if not text:
         return False
     return bool(RE_SPANISH_HINT.search(text))
+
+
+# Conservative Norwegian indicator (NAVAREA XIX): the 'ae o-slash a-ring'
+# letters never occur in English warning titles, and the listed words are
+# high-signal Norwegian maritime vocabulary. Pure English titles never
+# trigger a translation call.
+RE_NORWEGIAN_HINT = re.compile(
+    r"[\u00e6\u00f8\u00e5\u00c6\u00d8\u00c5]"
+    r"|\b(?:VARSEL|VARSLER|FYRING|FYR|OMR\u00c5DE|OMR\u00c5DET"
+    r"|\u00d8VELSE|\u00d8VELSER|GRUNN|GRUNNE|SKJERMING|SPERRING"
+    r"|SPERRES|SPERRET|RAKETT|FART\u00d8Y|FART\u00d8YER|MISTET"
+    r"|SEISMISK|SKYT\u00d8V|AVSTAND|HOLDE)\b",
+    re.IGNORECASE,
+)
+
+
+def looks_norwegian(text: str) -> bool:
+    """True if the title shows clear Norwegian markers worth translating."""
+    if not text:
+        return False
+    return bool(RE_NORWEGIAN_HINT.search(text))
+
+
+def detect_source_lang(text: str) -> str | None:
+    """'es' for clearly Spanish, 'no' for clearly Norwegian, else None."""
+    if looks_spanish(text):
+        return "es"
+    if looks_norwegian(text):
+        return "no"
+    return None
+
+
+def maybe_translate_title(title: str) -> str | None:
+    """Language-dispatching title translation (parser entry point).
+
+    Translates only when the title clearly looks Spanish or Norwegian;
+    returns None otherwise — and on ANY failure the caller keeps the
+    original title. Fail-closed in every path, exactly like
+    translate_title."""
+    source_lang = detect_source_lang(title)
+    if not source_lang:
+        return None
+    return translate_title(title, source_lang=source_lang)
 
 
 def _extract_translation_text(response_body: str) -> str | None:
@@ -85,7 +140,8 @@ def translate_title(title: str, source_lang: str = "es",
 
     request_body = json.dumps({
         "contents": [{
-            "parts": [{"text": _PROMPT + title}],
+            "parts": [{"text": _PROMPTS.get(source_lang, _PROMPTS["es"])
+                       + title}],
         }],
     }).encode("utf-8")
 

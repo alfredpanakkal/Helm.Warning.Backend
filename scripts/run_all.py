@@ -237,6 +237,23 @@ def main() -> int:
         print(f"❌ NAVAREA IX failed: {e}")
         all_success = False
 
+    print("\n" + "=" * 70)
+    print("🚀 NAVAREA XIX (NORWAY KYSTVERKET HTML TABLE)")
+    print("=" * 70)
+    try:
+        from scripts.run_navarea_xix import main as run_xix
+        res = run_xix()
+        if res is False:
+            all_success = False
+            region_status["NAVAREA XIX"] = "failed"
+        else:
+            region_status["NAVAREA XIX"] = "ok"
+    except Exception as e:
+        logger.error(f"NAVAREA XIX pipeline failed: {e}", exc_info=True)
+        region_status["NAVAREA XIX"] = "failed"
+        print(f"❌ NAVAREA XIX failed: {e}")
+        all_success = False
+
     total_duration = time.time() - start_total
 
     # Fail-closed observability: a blocked region must be VISIBLE in the

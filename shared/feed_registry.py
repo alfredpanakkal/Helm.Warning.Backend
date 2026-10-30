@@ -94,9 +94,13 @@ FEEDS = {
         "url": "https://kyvreports.kystverket.no/NavcoReport/navareaxixvarsler.aspx",
         "type": "html_table",
         "status": "reference_only",
-        "note": "Renders the same 'Number:n/yy' corpus the universal "
-                "parser ingests; needs an HTML-to-text extractor before "
-                "it can be a url_text feed.",
+        "note": "One in-force warning per table row ('Number:', 'Date:' "
+                "and 'Warning' cells; verified 2026-10-30). Scraped by "
+                "scripts/navarea_xix_scraper.py, which extracts the "
+                "Warning cell of each row (label cross-checked against "
+                "the row's Number, fail-closed) and feeds the universal "
+                "parser. NOT url_text: the generic scraper must not feed "
+                "the table HTML into the text pipeline.",
     },
     # Pakistan — NHO 'NAVAREA IX Warnings' page. The page is a metadata
     # table; each row links a plain-text document that is already the

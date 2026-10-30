@@ -562,11 +562,12 @@ def parse_warning(block, cfg):
 
     title = _extract_title(body, cfg) or warning_id
 
-    # Spanish bulletins (XV/XVI): fail-closed title translation. The raw
-    # text stays the original Spanish; on ANY translation problem the
-    # original title is kept and the ingest still succeeds.
-    if cfg.get("translate_titles") and translation.looks_spanish(title):
-        translated = translation.translate_title(title)
+    # Non-English bulletins (XV/XVI Spanish; XIX may carry Norwegian
+    # items): fail-closed title translation via language detection. The
+    # raw text stays the original language; on ANY translation problem
+    # the original title is kept and the ingest still succeeds.
+    if cfg.get("translate_titles"):
+        translated = translation.maybe_translate_title(title)
         if translated:
             title = translated[:255]
 
