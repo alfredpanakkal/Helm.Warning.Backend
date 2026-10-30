@@ -187,21 +187,27 @@ def extract_bulletin_text(html: str) -> str:
     blocks = []
     seen = set()
     for row in parser.rows:
-        cells = [_clean_cell(c) for c in row]
-        cells = [c for c in cells if c]
+        # Raw cell texts keep the <br>/source line breaks; the CLEANED
+        # cells are only for header/label search — _clean_warning must
+        # run on the RAW cell or the line structure is lost.
+        raw_cells = list(row)
+        cleaned = [_clean_cell(c) for c in raw_cells]
+        cells = [c for c in cleaned if c]
         if not cells:
             continue
         joined = " ".join(cells)
 
         header = None
         warning_text = None
-        for cell in cells:
+        for raw_cell, cell in zip(raw_cells, cleaned):
+            if not cell:
+                continue
             for m in _HEADER_RE.finditer(cell):
                 prefix = cell[max(0, m.start() - 8):m.start()].upper()
                 if "CANCEL" in prefix:
                     continue
                 header = m
-                warning_text = _clean_warning(cell)
+                warning_text = _clean_warning(raw_cell)
                 break
             if header is not None:
                 break
