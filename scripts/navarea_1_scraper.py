@@ -36,10 +36,8 @@ def scrape_navarea_warnings(output_filename="navareas/navarea_1/navarea_1_warnin
     os.makedirs(os.path.dirname(output_filename), exist_ok=True)
 
     if requests is None or BeautifulSoup is None:
-        print("ℹ️ HTTP/HTML libraries not present in environment; emitting valid empty harvest.")
-        with open(output_filename, "w", encoding="utf-8") as f:
-            pass
-        return True
+        print("⛔ HTTP/HTML libraries not present in environment; aborting.")
+        return False
 
     session = requests.Session()
     session.headers.update({"User-Agent": "Mozilla/5.0"})
@@ -48,21 +46,17 @@ def scrape_navarea_warnings(output_filename="navareas/navarea_1/navarea_1_warnin
     try:
         response = session.get(url, timeout=30)
         if response.status_code != 200:
-            print(f"Error: {response.status_code}")
-            with open(output_filename, "w", encoding="utf-8") as f:
-                pass
+            print(f"⛔ UKHO returned HTTP {response.status_code}; aborting (harvest untouched).")
             return False
     except Exception as e:
-        print(f"Network error: {e}")
-        with open(output_filename, "w", encoding="utf-8") as f:
-            pass
+        print(f"⛔ Network error: {e}; aborting (harvest untouched).")
         return False
 
     soup = BeautifulSoup(response.text, 'html.parser')
     token_input = soup.find('input', {'name': '__RequestVerificationToken'})
     token = token_input.get('value') if token_input else None
     if not token:
-        print("Error: No verification token")
+        print("⛔ No verification token on UKHO page; aborting (harvest untouched).")
         return False
     checkboxes = soup.find_all(lambda tag: tag.has_attr('warning-id') and 'NAVAREA I' in tag.get('aria-label', ''))
     warning_ids = []
@@ -82,10 +76,10 @@ def scrape_navarea_warnings(output_filename="navareas/navarea_1/navarea_1_warnin
     try:
         post_response = session.post(post_url, data=payload, timeout=30)
         if post_response.status_code != 200:
-            print(f"POST error: {post_response.status_code}")
+            print(f"⛔ POST error: {post_response.status_code}; aborting (harvest untouched).")
             return False
     except Exception as e:
-        print(f"POST error: {e}")
+        print(f"⛔ POST error: {e}; aborting (harvest untouched).")
         return False
     result_soup = BeautifulSoup(post_response.text, 'html.parser')
     warnings = []

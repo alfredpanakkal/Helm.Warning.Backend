@@ -25,7 +25,9 @@ def main(raw_txt="navareas/navarea_1/navarea_1_warnings.txt",
 
     print("\n[STAGE 1] Scraping...")
     from scripts.navarea_1_scraper import scrape_navarea_warnings
-    scrape_navarea_warnings(raw_txt)
+    if not scrape_navarea_warnings(raw_txt):
+        print("\n⛔ [STAGE 1] Scrape FAILED — UKHO NAVAREA I source unreachable; aborting before parse/sync (existing DB rows untouched).")
+        return False
 
     print("\n[STAGE 2] Parsing...")
     from scripts.navarea_1_parser import main as parse_main

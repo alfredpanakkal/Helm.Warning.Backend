@@ -182,10 +182,24 @@ def _wait_for_page_advance(page, prev_start):
 # Pagination loop
 # ---------------------------------------------------------------------------
 
-def scrape_all_pages(page):
+def _table_warning_id(entry):
+    """Canonical id for one normalized table row ('NAVAREA VIII 123/26')."""
+    return f"NAVAREA VIII {entry['warning_number']}/{entry['year']}"
+
+
+def scrape_all_pages(page, known_ids=None):
     """
     Scrapes every page of the NAVAREA VIII table, pressing 'Next' after each
-    page until the complete set is collected. Returns (rows, pages, total).
+    page until the complete set is collected. Returns
+    (rows, pages, total, stop_reason) where stop_reason is:
+      'completed'  — footer count reached / Next disabled / single page
+      'all_known'  — steady-state skip: page 1 carries only warnings
+                      already stored in the DB (the table is newest-first,
+                      so nothing newer exists further in); pagination stops
+                      after page 1 and nothing is re-scraped
+      'early_stop' — pagination broke mid-sweep (WAF block, dead 'Next',
+                      timeout); the rows collected so far are SALVAGED and
+                      returned instead of being discarded
     """
     all_rows = []
     seen_keys = set()
@@ -195,6 +209,11 @@ def scrape_all_pages(page):
     while True:
         pages += 1
         if pages > MAX_PAGES:
+            if all_rows:
+                logger.warning(
+                    f"Exceeded MAX_PAGES ({MAX_PAGES}); salvaging "
+                    f"{len(all_rows)} row(s) collected so far.")
+                return all_rows, pages, total_expected, "early_stop"
             raise RuntimeError(
                 f"Exceeded MAX_PAGES ({MAX_PAGES}); pagination appears broken.")
 
@@ -214,6 +233,20 @@ def scrape_all_pages(page):
         state = page.evaluate(JS_PAGINATION_STATE)
         showing = (state or {}).get("showing")
         nxt = (state or {}).get("next") or {}
+
+        # Stored-row skipping (steady state): when every warning on page 1
+        # is already in the database, newer warnings (if any) would be on
+        # page 1 — the table lists warnings newest-first. Stop here instead
+        # of re-scraping every page.
+        if pages == 1 and known_ids:
+            page_ids = {_table_warning_id(w)
+                        for w in normalize_rows(extracted["rows"])}
+            if page_ids and page_ids.issubset(known_ids):
+                logger.info(
+                    "Page 1 carries only already-stored warning(s) "
+                    f"({len(page_ids)}); steady-state skip — not paginating "
+                    "further.")
+                return all_rows, pages, total_expected, "all_known"
 
         if showing:
             start, upto, total = showing
@@ -238,8 +271,19 @@ def scrape_all_pages(page):
 
         prev_start = showing[0] if showing else len(all_rows)
         if not page.evaluate(JS_CLICK_NEXT):
+            if all_rows:
+                logger.warning(
+                    "No enabled 'Next' control mid-sweep; salvaging "
+                    f"{len(all_rows)} row(s) collected so far.")
+                return all_rows, pages, total_expected, "early_stop"
             raise RuntimeError("Could not find an enabled 'Next' control to click.")
         if not _wait_for_page_advance(page, prev_start):
+            if all_rows:
+                logger.warning(
+                    f"Table did not advance after clicking 'Next' (start "
+                    f"offset stayed at {prev_start}); salvaging "
+                    f"{len(all_rows)} row(s) collected so far.")
+                return all_rows, pages, total_expected, "early_stop"
             raise RuntimeError(
                 f"Table did not advance after clicking 'Next' (start offset "
                 f"stayed at {prev_start}); pagination may be broken.")
@@ -250,7 +294,7 @@ def scrape_all_pages(page):
             f"{total_expected} entries (duplicates on the portal explain a "
             f"small shortfall).")
 
-    return all_rows, pages, total_expected
+    return all_rows, pages, total_expected, "completed"
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +364,8 @@ def synthesize_bulletin_text(warnings):
 
 def run_navarea_8_table_scraper(output_dir: str = OUTPUT_DIR,
                                dry_run: bool = False,
-                               raw_txt: str = None) -> dict:
+                               raw_txt: str = None,
+                               known_ids=None) -> dict:
     if not HAS_PLAYWRIGHT:
         raise RuntimeError(
             "playwright is required for this JS-rendered table. Install with: "
@@ -333,7 +378,7 @@ def run_navarea_8_table_scraper(output_dir: str = OUTPUT_DIR,
     logger.info(f"Source page: {NAVAREA_PAGE_URL}")
 
     summary = {"warnings": 0, "pages": 0, "total_entries": None,
-               "skipped": [], "dry_run": dry_run}
+               "skipped": [], "dry_run": dry_run, "stop_reason": "completed"}
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -345,10 +390,13 @@ def run_navarea_8_table_scraper(output_dir: str = OUTPUT_DIR,
             logger.info("Waiting for the warnings table to render...")
             _wait_for_table(page)
 
-            rows, pages, total = scrape_all_pages(page)
+            rows, pages, total, stop_reason = scrape_all_pages(
+                page, known_ids=known_ids)
             summary["pages"] = pages
             summary["total_entries"] = total
-            logger.info(f"Scraped {pages} page(s); {len(rows)} unique row(s) total.")
+            summary["stop_reason"] = stop_reason
+            logger.info(f"Scraped {pages} page(s); {len(rows)} unique row(s) "
+                        f"total (stop_reason={stop_reason}).")
         finally:
             browser.close()
 

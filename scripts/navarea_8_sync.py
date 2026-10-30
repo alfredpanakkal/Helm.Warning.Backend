@@ -65,7 +65,12 @@ def _supersede_cross_refs(supabase_client, nav_warnings) -> bool:
     return not has_errors
 
 
-def sync_to_supabase(json_file="navareas/navarea_8/parsed_navarea_8_warnings.json") -> bool:
+def sync_to_supabase(json_file="navareas/navarea_8/parsed_navarea_8_warnings.json",
+                     full_snapshot: bool = True) -> bool:
+    """full_snapshot=False (a salvaged partial harvest: Tier 1 pagination
+    stopped early and both fallback tiers were unavailable) disables the
+    evidence-based cancel pass in the sync engine — the feed is partial,
+    so absence is not withdrawal evidence."""
     if not os.path.isabs(json_file):
         json_file = os.path.join(ROOT_DIR, json_file)
 
@@ -88,6 +93,7 @@ def sync_to_supabase(json_file="navareas/navarea_8/parsed_navarea_8_warnings.jso
         navarea_name="NAVAREA VIII",
         scraped_warnings=scraped_warnings,
         scraped_messages=scraped_messages,
+        full_snapshot=full_snapshot,
     )
 
     client = get_supabase_client()
