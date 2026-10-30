@@ -69,12 +69,31 @@ class TestAiParser(unittest.TestCase):
         text = "DRIFTING TIMBER REPORTED IN VICINITY 52-45.1N 002-12.4E."
         result = fallback_parse_warning(text)
         self.assertEqual(result["triage_tier"], 2)
-        self.assertEqual(result["category"], "Drifting Hazard")
+        # categories now come from the canonical classifier
+        self.assertEqual(result["category"], "drifting")
+        self.assertEqual(result["categories"], ["drifting"])
 
     def test_fallback_parse_warning_advisory(self):
         text = "GENERAL ADVISORY FOR NAVIGATORS IN AREA 20-00.0N 060-00.0E."
         result = fallback_parse_warning(text)
         self.assertEqual(result["triage_tier"], 3)
+
+    def test_fallback_categories_non_drifting_hazard(self):
+        # a subsea survey used to be hardcoded ["drifting"] by the
+        # fallback; the canonical classifier tags it correctly now.
+        text = "SEISMIC SURVEY IN AREA 54-10.0N 010-20.0E. CABLE OPERATIONS."
+        result = fallback_parse_warning(text)
+        self.assertEqual(result["categories"], ["subsea"])
+        self.assertEqual(result["category"], "subsea")
+
+    def test_fallback_cancel_notice_classifies_general(self):
+        # audit F4 negative guard through the fallback: a pure cancel
+        # notice carries no hazard of its own - never the dead
+        # warning's categories.
+        text = "CANCEL NAVAREA XI 0430/26. IN VICINITY 54-10.0N 010-20.0E."
+        result = fallback_parse_warning(text)
+        self.assertEqual(result["categories"], ["general"])
+        self.assertEqual(result["category"], "general")
 
     def test_fallback_parse_no_coordinates_raises(self):
         with self.assertRaises(ValueError):
@@ -90,7 +109,8 @@ class TestAiParser(unittest.TestCase):
         result = process_warning_with_ai(sample)
         self.assertIsNotNone(result)
         self.assertEqual(result["triage_tier"], 2)
-        self.assertEqual(result["category"], "Drifting Hazard")
+        self.assertEqual(result["category"], "drifting")
+        self.assertEqual(result["categories"], ["drifting"])
         self.assertEqual(len(result["coordinates"]), 1)
         self.assertAlmostEqual(result["coordinates"][0]["repaired_lat"], 52.751667, places=5)
         self.assertAlmostEqual(result["coordinates"][0]["repaired_lon"], 2.206667, places=5)

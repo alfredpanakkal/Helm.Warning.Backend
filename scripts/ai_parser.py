@@ -181,7 +181,6 @@ def fallback_parse_warning(raw_warning: str) -> dict:
 
     lat, lon = lat_lon
 
-    category = "Drifting Hazard"
     triage_tier = 2  # default NAVAREA hazard category
 
     # Look for "immediate" or "danger" language if present
@@ -191,10 +190,16 @@ def fallback_parse_warning(raw_warning: str) -> dict:
     elif "advisory" in lowered or "general" in lowered:
         triage_tier = 3
 
+    # Delegate hazard categories to the canonical keyword classifier
+    # (shared.utils.classify_hazard_categories - the same vocabulary and
+    # audit-F4 negative guards every pipeline parser uses) instead of
+    # hardcoding ["drifting"] for every fallback-parsed warning.
+    from shared.utils import classify_hazard, classify_hazard_categories
+    categories = classify_hazard_categories(text)
     return {
         "triage_tier": triage_tier,
-        "category": category,
-        "categories": ["drifting"],
+        "category": classify_hazard(text),
+        "categories": categories,
         "coordinates": [
             {
                 "original_text": pair,
