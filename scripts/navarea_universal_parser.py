@@ -85,6 +85,31 @@ MONTHS = {
     "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
 }
 
+# Validity-date extraction (audit finding F1, 2026-10-29): the universal
+# pipeline never emitted valid_from/valid_to — 301 live rows were 100%
+# NULL on both, so the expiry lifecycle could never fire. Fail-closed:
+# any unparseable token yields None, never a guess (hemisphere-safeguard
+# philosophy). Patterns validated against the live corpus:
+#   ranges:      "14 MAY 26 TO 14 NOV 26" / "270300 UTC OCT 26 TO ...
+#                090259 UTC NOV 26" / "FROM 08 OCT TO 10 NOV 26"
+#   self-cancel: "CANCEL THIS WARNING 142100 UTC NOV 26" /
+#                "CANCEL THIS MSG 301000Z NOV" (authoritative end date)
+#   until:       "UNTIL 31 DEC 2026" (never "UNTIL FURTHER NOTICE")
+RE_VALIDITY_RANGE = re.compile(
+    r"(?:FROM\s+)?(\d{1,2})(\d{2})?(\d{2})?(?:\s*(?:Z|UTC))?"
+    r"\s+([A-Za-z]{3,9})\.?(?:\s+(\d{2,4}))?\s+TO\s+"
+    r"(\d{1,2})(\d{2})?(\d{2})?(?:\s*(?:Z|UTC))?"
+    r"\s+([A-Za-z]{3,9})\.?(?:\s+(\d{2,4}))?",
+    re.IGNORECASE)
+RE_CANCEL_SELF = re.compile(
+    r"CANCEL\s+THIS\s+(?:WARNING|MSG|MESSAGE)\s+"
+    r"(\d{1,2})(\d{2})?(\d{2})?(?:\s*(?:Z|UTC))?"
+    r"\s+([A-Za-z]{3,9})\.?(?:[/\s]+(\d{2,4}))?",
+    re.IGNORECASE)
+RE_UNTIL = re.compile(
+    r"\bUNTIL\s+(\d{1,2})\s+([A-Za-z]{3,9})\.?(?:\s+(\d{2,4}))?",
+    re.IGNORECASE)
+
 # NAVAREA I (UK / North Atlantic) is a tolerated COMPANION region: its
 # warning headers never make a paste mixed-region, and its blocks are
 # excluded from segmentation. Pure-NAVAREA-I pastes are still rejected by
@@ -151,6 +176,95 @@ def _parse_year_hint(text: str):
         return None
     year = m.group(2) or m.group(3)  # 'YEAR 2026' alt / 'DATE: ...2026' alt
     return normalize_year(year)
+
+
+
+def _extract_validity_dates(raw_text, year):
+    """Extracts (valid_from, valid_to) ISO stamps from one warning block.
+
+    Audit finding F1 (2026-10-29): the universal pipeline never emitted
+    validity dates, so the shared expiry lifecycle could never fire and
+    every universal row lived until manually cancelled. Extraction is
+    conservative and fail-closed:
+      - an explicit date range sets both ends;
+      - a self-cancel dateline ("CANCEL THIS WARNING ...") is the
+        authoritative end and wins over a range end;
+      - "UNTIL <date>" sets valid_to when nothing else did;
+      - a token with no year falls back to the warning year (from the
+        header id / bulletin hint); a year-less END month earlier than
+        the START month rolls over to the next year;
+      - anything unparseable ("UNTIL FURTHER NOTICE", day-only ranges
+        like "FROM 20 TO 31 OCT 26", impossible dates, unknown months)
+        yields None — never a guess.
+    """
+    default_year = None
+    if year is not None:
+        try:
+            y = int(str(year))
+            default_year = y + 2000 if y < 100 else y
+        except ValueError:
+            default_year = None
+
+    def parse_token(day, hh, mm, mon, ytok):
+        month = MONTHS.get((mon or "")[:3].lower())
+        if month is None:
+            return None
+        try:
+            day_i = int(day)
+        except (TypeError, ValueError):
+            return None
+        if not 1 <= day_i <= 31:
+            return None
+        if ytok:
+            try:
+                y = int(ytok)
+            except ValueError:
+                return None
+            if y < 100:
+                y += 2000
+        else:
+            y = default_year
+        if y is None:
+            return None
+        try:
+            datetime(y, month, day_i)
+        except ValueError:
+            return None
+        stamp = "%04d-%02d-%02d" % (y, month, day_i)
+        if hh:
+            try:
+                h_i, m_i = int(hh), int(mm or 0)
+            except ValueError:
+                return None
+            if not (0 <= h_i <= 23 and 0 <= m_i <= 59):
+                return None
+            stamp += "T%02d:%02d:00Z" % (h_i, m_i)
+        return stamp
+
+    text = raw_text or ""
+    valid_from = valid_to = None
+    m = RE_VALIDITY_RANGE.search(text)
+    if m:
+        valid_from = parse_token(m.group(1), m.group(2), m.group(3),
+                                 m.group(4), m.group(5))
+        valid_to = parse_token(m.group(6), m.group(7), m.group(8),
+                               m.group(9), m.group(10))
+        if valid_from and valid_to and not m.group(10):
+            # Year-less ranges roll over: "16 OCT TO 14 JAN" -> Jan +1.
+            if int(valid_to[5:7]) < int(valid_from[5:7]):
+                valid_to = "%04d" % (int(valid_to[:4]) + 1) + valid_to[4:]
+    m = RE_CANCEL_SELF.search(text)
+    if m:
+        cancel_to = parse_token(m.group(1), m.group(2), m.group(3),
+                                m.group(4), m.group(5))
+        if cancel_to:
+            valid_to = cancel_to  # self-cancel dateline is authoritative
+    if valid_to is None:
+        m = RE_UNTIL.search(text)
+        if m:
+            valid_to = parse_token(m.group(1), None, None,
+                                   m.group(2), m.group(3))
+    return valid_from, valid_to
 
 
 def _clean_line(line: str) -> str:
@@ -413,6 +527,12 @@ def parse_warning(block, cfg):
         if translated:
             title = translated[:255]
 
+    # Audit finding F1 (2026-10-29): emit validity dates so the shared
+    # expiry lifecycle can fire. Downstream (build_master_payload and the
+    # upsert RPC) already consumed these keys — the parser just never
+    # produced them. Fail-closed: None means "no date evidence".
+    valid_from, valid_to = _extract_validity_dates(raw_text, year)
+
     nav_warning = {
         "warning_id": warning_id,
         "canonical_id": canonical_id,
@@ -433,6 +553,8 @@ def parse_warning(block, cfg):
         "cross_refs": _extract_cross_refs(raw_text, cfg),
         "qa_flags": qa_flags,
         "data_quality": data_quality or "EXPLICIT",
+        "valid_from": valid_from,
+        "valid_to": valid_to,
     }
     return raw_message, nav_warning
 
