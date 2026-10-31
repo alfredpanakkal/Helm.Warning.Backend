@@ -239,9 +239,11 @@ def region_cancel_patterns(region_key: str, roman: str):
 # (NAVAREA XV): 'YEAR 2026:' or 'DATE: OCT/16/2026'.
 RE_YEAR_HINT = re.compile(r"\bYEAR\s+(\d{4})\b|DATE:.*?(\d{4})\b", re.IGNORECASE)
 
-# Regions whose bulletins are published in Spanish and whose titles may
-# be machine-translated (fail-closed) for display: Chile, Peru.
-TITLE_TRANSLATION_REGIONS = {"xv", "xvi"}
+# Regions whose bulletins may carry non-English titles that may be
+# machine-translated (fail-closed) for display: Chile / Peru (Spanish
+# titles) and Norway XIX (English series, individual items occasionally
+# Norwegian — detection decides per title, shared/translation.py).
+TITLE_TRANSLATION_REGIONS = {"xv", "xvi", "xix"}
 
 
 def regions_in_text(text: str) -> set:

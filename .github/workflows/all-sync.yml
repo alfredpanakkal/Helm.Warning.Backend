@@ -75,5 +75,8 @@ jobs:
             navareas/ix/latest_raw.html
             navareas/ix/latest_raw.txt
             navareas/ix/parsed.json
+            navareas/navarea_xix/latest_raw.html
+            navareas/navarea_xix/latest_raw.txt
+            navareas/navarea_xix/parsed.json
           retention-days: 7
           if-no-files-found: ignore
