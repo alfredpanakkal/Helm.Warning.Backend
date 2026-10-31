@@ -164,7 +164,8 @@ def main() -> int:
 # (2026-10-31, maintainer decision): the CHM portal is Cloudflare-walled
 # from GitHub runner IPs, so the scrape is designed to fail here. Region V
 # is manual-import-only (paste avradio_NN.json via the manual ingest
-# queue) or run its own pipeline via workflow_dispatch.    print("\n" + "=" * 70)
+# queue) or run its own pipeline via workflow_dispatch.
+    print("\n" + "=" * 70)
     print("🚀 NAVAREA VII (SOUTH AFRICA SANHO HTML)")
     print("=" * 70)
     try:
