@@ -176,7 +176,7 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     geometries: List[Dict[str, Any]] = []
 
-    def _append_geometry(geojson_obj: Dict[str, Any], label: str, buffer_val: Any = 0.0) -> None:
+    def _append_geometry(geojson_obj: Dict[str, Any], label: str, buffer_val: Any = 0.0, props: Optional[Dict[str, Any]] = None) -> None:
         if not isinstance(geojson_obj, dict):
             return
         geom_type = geojson_obj.get("type")
@@ -207,12 +207,22 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "geojson": {"type": "Point", "coordinates": [lon_v, lat_v]},
                 })
             return
-        geometries.append({
+        payload = {
             "zone_label": label,
             "feature_type": geojson_type_to_feature_type(geom_type),
             "buffer_nm": buffer_nm,
             "geojson": geojson_obj,
-        })
+        }
+        # Sweep-arc metadata (NAVAREA II 358/26 firing-exercise sectors):
+        # the fan polygon is the drawable geometry; the source-stated
+        # radius/bearings ride along so nav_warning_geometries' sweep_*
+        # columns can be populated by the upsert RPC (unknown payload
+        # keys are simply ignored when the RPC does not read them).
+        props = props if isinstance(props, dict) else {}
+        for key in ("sweep_radius_nm", "sweep_start_azimuth", "sweep_end_azimuth"):
+            if props.get(key) is not None:
+                payload[key] = props[key]
+        geometries.append(payload)
 
     spatial = record.get("spatial")
     if isinstance(spatial, dict):
@@ -224,6 +234,7 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
                 geom,
                 props.get("zone_label") or record.get("title") or "Spatial Feature",
                 props.get("buffer_nm", 0.0),
+                props,
             )
             return geometries
         if sp_type == "FeatureCollection":
@@ -238,6 +249,7 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
                     geom,
                     props.get("zone_label") or label,
                     props.get("buffer_nm", 0.0),
+                    props,
                 )
             if geometries:
                 return geometries
