@@ -1,24 +1,12 @@
 name: NAVAREA V Ingestion Pipeline
 
+# 2026-10-31: automatic triggers (schedule + push) removed by maintainer
+# decision. The CHM portal is Cloudflare-walled from GitHub runner IPs, so
+# automated runs are designed to fail. NAVAREA V is manual-import-only
+# (paste avradio_NN.json via the manual ingest queue) or via a manual
+# workflow_dispatch run. Also excluded from the sync-all orchestrator
+# (scripts/run_all.py). PR dry-runs kept for CI signal.
 on:
-  schedule:
-    # CHM refreshes the JSON snapshot daily (atualizado observed at
-    # 04:00 local / 07:00 UTC).
-    - cron: '30 7 * * *'
-  push:
-    branches:
-      - main
-    paths:
-      - 'scripts/navarea_v_scraper.py'
-      - 'scripts/run_navarea_v.py'
-      - 'scripts/navarea_universal_parser.py'
-      - 'scripts/navarea_generic_sync.py'
-      - 'shared/navarea_universal_text.py'
-      - 'shared/sync_engine.py'
-      - 'shared/models.py'
-      - 'shared/utils.py'
-      - 'requirements.txt'
-      - '.github/workflows/navarea-v-sync.yml'
   pull_request:
     branches:
       - main

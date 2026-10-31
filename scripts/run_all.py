@@ -160,24 +160,11 @@ def main() -> int:
         print(f"❌ NAVAREA III failed: {e}")
         all_success = False
 
-    print("\n" + "=" * 70)
-    print("🚀 NAVAREA V (BRAZIL CHM JSON)")
-    print("=" * 70)
-    try:
-        from scripts.run_navarea_v import main as run_v
-        res = run_v()
-        if res is False:
-            all_success = False
-            region_status["NAVAREA V"] = "failed"
-        else:
-            region_status["NAVAREA V"] = "ok"
-    except Exception as e:
-        logger.error(f"NAVAREA V pipeline failed: {e}", exc_info=True)
-        region_status["NAVAREA V"] = "failed"
-        print(f"❌ NAVAREA V failed: {e}")
-        all_success = False
-
-    print("\n" + "=" * 70)
+    # NAVAREA V (Brazil CHM) is intentionally EXCLUDED from sync-all
+# (2026-10-31, maintainer decision): the CHM portal is Cloudflare-walled
+# from GitHub runner IPs, so the scrape is designed to fail here. Region V
+# is manual-import-only (paste avradio_NN.json via the manual ingest
+# queue) or run its own pipeline via workflow_dispatch.    print("\n" + "=" * 70)
     print("🚀 NAVAREA VII (SOUTH AFRICA SANHO HTML)")
     print("=" * 70)
     try:
@@ -265,11 +252,6 @@ def main() -> int:
     for region, status in region_status.items():
         if status == "ok":
             print(f"✅ {region} OK")
-        elif region == "NAVAREA V":
-            print(f"🚫 {region} BLOCKED — manual import needed: open the "
-                  f"CHM page in a browser, copy the avradio_NN.json "
-                  f"contents and paste via the manual ingest queue "
-                  f"(same filter/parser/validation as the scrape)")
         else:
             print(f"🚫 {region} BLOCKED — manual import needed")
     print("=" * 70)
