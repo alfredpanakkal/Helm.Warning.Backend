@@ -254,6 +254,24 @@ def main() -> int:
         print(f"❌ NAVAREA XIX failed: {e}")
         all_success = False
 
+
+    print("\n" + "=" * 70)
+    print("🚀 NORWEGIAN COASTAL WARNINGS (KYSTVERKET HTML TABLE)")
+    print("=" * 70)
+    try:
+        from scripts.run_kystverket_coastal import main as run_coastal_no
+        res = run_coastal_no()
+        if res is False:
+            all_success = False
+            region_status["Coastal NO"] = "failed"
+        else:
+            region_status["Coastal NO"] = "ok"
+    except Exception as e:
+        logger.error(f"Coastal NO pipeline failed: {e}", exc_info=True)
+        region_status["Coastal NO"] = "failed"
+        print(f"❌ Coastal NO failed: {e}")
+        all_success = False
+
     total_duration = time.time() - start_total
 
     # Fail-closed observability: a blocked region must be VISIBLE in the
