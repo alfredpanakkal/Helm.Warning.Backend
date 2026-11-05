@@ -704,4 +704,6 @@ Contributions are welcome! Please adhere to the following conventions:
 - **Database Model**: Master-Child PostGIS with `public.upsert_nav_warning` RPC, `ingestion_generations` run ledger, and plain-reference `parsing_audit_runs` & `parsing_correction_proposals` audit schema
 - **Agent Technical Reference**: Authoritative guidelines maintained in [`agent.md`](agent.md) and [`AGENTS.md`](AGENTS.md)
 
+---
 
+**Portfolio:** [https://alfredpanakkal.web.app](https://alfredpanakkal.web.app)
