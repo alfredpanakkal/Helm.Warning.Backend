@@ -39,6 +39,8 @@ UNPLOTTED_REASONS = {
 def parse_safe_iso_timestamp(date_val: Any) -> Optional[str]:
     """Tolerantly parses timestamp or date string into ISO-8601 string.
     Returns None if date is free-text (e.g., '2026 HOURS 19 OCT') or invalid.
+    Also parses NAVAREA DTG issue-date headers ('030020Z JUL 26' -> the
+    warning's issue UTC; Z suffix guarantees UTC, never a hemisphere guess).
     """
     if not date_val:
         return None
@@ -61,6 +63,8 @@ def parse_safe_iso_timestamp(date_val: Any) -> Optional[str]:
         "%Y-%m-%d",
         "%d%H%M UTC %b %y",
         "%d%H%M UTC %b %Y",
+        "%d%H%MZ %b %y",
+        "%d%H%MZ %b %Y",
     ):
         try:
             dt = datetime.strptime(s, fmt)
