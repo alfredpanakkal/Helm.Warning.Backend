@@ -216,6 +216,11 @@ def parse_safe_iso_timestamp(date_val: Any) -> Optional[str]:
     ):
         try:
             dt = datetime.strptime(s, fmt)
+            if "%y" in fmt and dt.year < 2000:
+                # 2-digit years 69-99 parse as 19xx under %y - that is a
+                # century guess. Fail closed like the DTG-token path
+                # (69-99 -> None), never resurrect a rejected year.
+                continue
             return dt.isoformat()
         except Exception:
             continue
