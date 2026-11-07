@@ -28,7 +28,7 @@ import os
 import re
 import json
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT_DIR not in sys.path:
@@ -38,7 +38,7 @@ if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 
 from shared.utils import parse_coordinates, classify_hazard_categories
-from shared.models import extract_issue_dtg
+from shared.models import (extract_issue_dtg, issue_dtg_is_future, issue_dtg_has_conflict)
 
 SOURCE_ID = "nho-navarea-viii"
 NAVAREA_ID = "VIII"
@@ -151,7 +151,7 @@ def split_into_warnings(text: str):
     return blocks
 
 
-def parse_warning(block):
+def parse_warning(block, now_utc=None):
     """Parses one segmented bulletin block into (raw_message, nav_warning)."""
     warning_id = block["warning_id"]
     raw_text = block["raw_text"]
@@ -205,13 +205,28 @@ def parse_warning(block):
 
     categories = classify_hazard_categories(raw_text)
 
+    # Issue-DTG guard (shared, pure helpers; now_utc injected by the
+    # caller so tests never read the real clock): a DTG later than
+    # now_utc + 2 days is rejected (never clamped) and flagged; a
+    # both-ends match-and-disagree is flagged as a conflict. Only the
+    # issued_text branch is affected - validity ranges, publication_time
+    # and cancel/expiry dates are untouched.
+    issued_dtg = extract_issue_dtg(raw_text)
+    if issued_dtg is not None and issue_dtg_is_future(issued_dtg, now_utc):
+        issued_dtg = None
+        dtg_flags = ["issue_dtg_future"]
+    elif issued_dtg is None and issue_dtg_has_conflict(raw_text):
+        dtg_flags = ["issue_dtg_conflict"]
+    else:
+        dtg_flags = []
+
     nav_warning = {
         "warning_id": warning_id,
         "canonical_id": canonical_id,
         "source_id": SOURCE_ID,
         "navarea": NAVAREA_ID,
         "title": _extract_title(body) or warning_id,
-        "issued_text": extract_issue_dtg(raw_text),
+        "issued_text": issued_dtg,
         "coordinates": None,  # master no longer carries flat coords (20261020 schema)
         "latitude": lat,
         "longitude": lon,
@@ -223,11 +238,12 @@ def parse_warning(block):
         "sub_areas": [c["label"] for c in clauses],
         "geometry_sub_areas": geom_labels,
         "cross_refs": _extract_cross_refs(raw_text),
+        "qa_flags": dtg_flags,
     }
     return raw_message, nav_warning
 
 
-def parse_bulletin_text(bulletin_text: str) -> dict:
+def parse_bulletin_text(bulletin_text: str, now_utc=None) -> dict:
     """Full deterministic parse of the in-force bulletin into pipeline JSON shape."""
     parsed_data = {"raw_messages": [], "nav_warnings": [], "spatial_features": [],
                    "memo": {"in_force_as_on": None}}
@@ -236,9 +252,11 @@ def parse_bulletin_text(bulletin_text: str) -> dict:
 
     as_on = _parse_as_on(bulletin_text)
     parsed_data["memo"]["in_force_as_on"] = as_on.isoformat() if as_on else None
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
 
     for block in split_into_warnings(bulletin_text):
-        raw_msg, nav_warn = parse_warning(block)
+        raw_msg, nav_warn = parse_warning(block, now_utc)
         parsed_data["raw_messages"].append(raw_msg)
         parsed_data["nav_warnings"].append(nav_warn)
         if nav_warn["spatial"]:
@@ -266,7 +284,8 @@ def main(input_filename="navareas/navarea_8/navarea_8_warnings.txt",
     else:
         print(f"Input file {input_filename} not found; initializing empty harvest.")
 
-    parsed_data = parse_bulletin_text(content)
+    run_now = datetime.now(timezone.utc)  # run-start clock, captured once
+    parsed_data = parse_bulletin_text(content, now_utc=run_now)
     n = len(parsed_data["nav_warnings"])
     n_geom = len([w for w in parsed_data["nav_warnings"] if w["spatial"]])
     print(f"Parsed {n} warning(s); {n_geom} with resolvable geometry "
