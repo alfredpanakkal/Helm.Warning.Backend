@@ -6,7 +6,7 @@ Aligned with 20261019/20261020 PostgreSQL/Supabase schema.
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 import re
 from typing import Optional, Any, Dict, List
@@ -139,6 +139,44 @@ def extract_issue_dtg(raw_text):
         return None
     return first if first is not None else last
 
+
+
+def issue_dtg_is_future(token, now_utc, max_days=2):
+    """Pure future guard for a verbatim issue-DTG token (no clock reads).
+
+    True only when the parsed issue datetime is LATER than
+    now_utc + max_days days. Boundary inclusive: exactly
+    now_utc + max_days is accepted. Every datetime is normalized to
+    aware UTC before comparing (naive values are assumed UTC), so a
+    naive utcnow() value never raises TypeError against an aware
+    one. None / unparseable token or now_utc -> False (the wiring
+    nulls the token separately; this helper only answers the
+    comparison).
+    """
+    if not token or now_utc is None:
+        return False
+    iso = _parse_issue_dtg_token(token)
+    if iso is None:
+        return False
+    dt = datetime.fromisoformat(iso).replace(tzinfo=timezone.utc)
+    now = now_utc
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return dt > now + timedelta(days=max_days)
+
+
+def issue_dtg_has_conflict(raw_text):
+    """True when the first AND last non-empty line of the block each
+    match a whole-line time group and DISAGREE - the condition under
+    which extract_issue_dtg() returns None without picking either.
+    Pure: no clock, no mutation; the caller appends the qa flag.
+    """
+    lines = [l for l in (raw_text or "").split("\n") if l and l.strip()]
+    if len(lines) < 2:
+        return False
+    first = _match_issue_dtg_line(lines[0])
+    last = _match_issue_dtg_line(lines[-1])
+    return first is not None and last is not None and first != last
 
 def parse_safe_iso_timestamp(date_val: Any) -> Optional[str]:
     """Tolerantly parses timestamp or date string into ISO-8601 string.
