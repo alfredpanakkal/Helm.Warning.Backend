@@ -1543,10 +1543,16 @@ def main() -> int:
         "--max-ai-records",
         type=int,
         default=50,
-        help="Hard cap on Gemini-assessed records in propose_corrections mode (default: 50).",
+        help="Hard cap on Gemini-assessed records in propose_corrections mode "
+             "(default: 50; 0 disables AI assessment).",
     )
 
     args = parser.parse_args()
+
+    if args.max_ai_records < 0:
+        parser.error(
+            "--max-ai-records must be >= 0 (0 disables AI assessment entirely)."
+        )
 
     proposal_ids = []
     if args.proposal_ids:

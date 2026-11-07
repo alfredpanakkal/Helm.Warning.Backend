@@ -1313,6 +1313,49 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         mock_urlopen.assert_not_called()
 
 
+    # 40. --max-ai-records is rejected when negative (argparse exits 2).
+    def test_negative_max_ai_records_rejected(self):
+        with patch.object(
+            sys, "argv",
+            ["audit_supabase_parsing.py", "--mode", "audit_only",
+             "--max-ai-records", "-1"],
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                audit_supabase_parsing.main()
+        self.assertEqual(ctx.exception.code, 2)
+
+    # 41. --max-ai-records 0 is valid and means NO AI calls: the propose run
+    # completes with zero Gemini assessments, a cap limitation line, all
+    # deterministic issues kept, and status succeeded.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    @patch("urllib.request.urlopen")
+    def test_max_ai_records_zero_disables_ai_calls(self, mock_urlopen):
+        mock_urlopen.return_value = self._verify_model_response()
+        rows = [self._rate_record(i) for i in range(3)]
+        client = MockSupabaseClient({
+            "nav_warnings": rows,
+            "nav_warning_geometries": [],
+            "parsing_audit_runs": [],
+            "parsing_correction_proposals": [],
+        })
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch(
+                "scripts.audit_supabase_parsing.assess_warning_with_gemini",
+            ) as mock_assess:
+                report = run_audit(
+                    mode="propose_corrections", client=client,
+                    report_dir=tmp_dir, max_ai_records=0,
+                )
+        mock_assess.assert_not_called()
+        self.assertEqual(report["proposal_count"], 0)
+        cap_lines = [l for l in report["limitations"] if "AI cap reached" in l]
+        self.assertEqual(len(cap_lines), 1)
+        self.assertIn("0 records assessed", cap_lines[0])
+        self.assertEqual(report["examined_count"], 3)
+        self.assertEqual(report["issue_count"], 9)
+        self.assertEqual(report["status"], "succeeded")
+
+
 if __name__ == "__main__":
     unittest.main()
 
