@@ -39,6 +39,7 @@ from shared.navarea_xii_text import (
     ring_to_trackline,
 )
 from shared.utils import parse_coordinates, classify_hazard_categories
+from shared.models import extract_issue_dtg
 
 SOURCE_ID = "nga-navarea-xii"
 NAVAREA_ID = "XII"
@@ -153,7 +154,7 @@ def parse_warning(block):
         "source_id": SOURCE_ID,
         "navarea": NAVAREA_ID,
         "title": _extract_title(block) or warning_id,
-        "issued_text": block.get("dtg"),
+        "issued_text": extract_issue_dtg(raw_text),
         "coordinates": None,  # master no longer carries flat coords (20261020 schema)
         "latitude": lat,
         "longitude": lon,
