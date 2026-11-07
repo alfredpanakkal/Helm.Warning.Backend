@@ -66,6 +66,17 @@ class GeometrySchemaError(RuntimeError):
     None, and the report comes back green but geometry-blind). The run must
     abort instead.
     """
+class GeometryFetchError(RuntimeError):
+    """Raised when a geometry batch fetch fails.
+
+    Audit 2026-11-07: PostgREST rejected select=st_asgeojson(geom_postgis)
+    with PGRST200 for every batch (Supabase keeps PostGIS in the 'extensions'
+    schema), and the old per-batch except swallowed it — every warning was
+    silently reported as TIER_A_ZERO_GEOMETRIES (700+ false errors). A failed
+    geometry fetch must abort the run, never produce a geometry-blind report.
+    """
+
+
 API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
 
 EXIT_MODEL_UNAVAILABLE = 3  # fail-closed: the Gemini model could not be verified
@@ -225,8 +236,25 @@ def fetch_geometries_for_warnings(
                     geoms_by_wid[wid].append(g)
         except GeometrySchemaError:
             raise
+        except GeometryFetchError:
+            raise
         except Exception as exc:
-            print(f"[warning] Failed to fetch geometries for batch {i}: {exc}", file=sys.stderr)
+            # Loud failure (audit 2026-11-07): a failed geometry batch fetch
+            # previously degraded to 'zero geometries' and produced 700+
+            # false TIER_A_ZERO_GEOMETRIES errors. Abort the run instead of
+            # issuing a geometry-blind report.
+            if "PGRST200" in str(exc):
+                raise GeometryFetchError(
+                    "PostgREST cannot resolve the st_asgeojson computed column "
+                    "(PGRST200): Supabase keeps PostGIS in the 'extensions' schema, "
+                    "so select=st_asgeojson(geom_postgis) finds no public function. "
+                    "Apply migrations/20261107_st_asgeojson_public_wrapper.sql to "
+                    f"expose public.st_asgeojson(geometry). Original error: {exc}"
+                ) from exc
+            raise GeometryFetchError(
+                f"Geometry batch fetch failed at offset {i}: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
 
     return geoms_by_wid
 
@@ -566,6 +594,58 @@ def verify_model_fail_closed(model: str) -> None:
     print(f"[audit] Gemini model verified: {model}")
 
 
+# Gemini failure log: identical reasons are printed at most 3 times but
+# always counted. The 2026-11-07 audit printed 809 bare 'ClientError' lines
+# (type name only, no message) with no way to diagnose the actual cause.
+_GEMINI_FAILURE_LOG: Dict[str, int] = {}
+
+
+def reset_gemini_failure_log() -> None:
+    _GEMINI_FAILURE_LOG.clear()
+
+
+def gemini_failure_summary() -> Dict[str, int]:
+    return dict(_GEMINI_FAILURE_LOG)
+
+
+def _note_gemini_failure(canonical_id: str, reason: str) -> None:
+    """Log the FULL Gemini failure reason (type + message), deduplicated."""
+    _GEMINI_FAILURE_LOG[reason] = _GEMINI_FAILURE_LOG.get(reason, 0) + 1
+    if _GEMINI_FAILURE_LOG[reason] <= 3:
+        print(
+            f"[warning] Gemini API assessment failed for {canonical_id}: {reason}",
+            file=sys.stderr,
+        )
+
+
+def _gemini_rest_generate(model: str, prompt: str, api_key: str) -> str:
+    """Plain REST generateContent call — no SDK dependency, used as the
+    fallback when google-genai is missing OR when the SDK call itself
+    fails (version drift, config-object changes, ClientError)."""
+    import urllib.request
+    url = f"{API_ROOT}/{model}:generateContent"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"responseMimeType": "application/json"}
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
+        },
+        method="POST"
+    )
+    with urllib.request.urlopen(req, timeout=30) as http_resp:
+        res_data = json.loads(http_resp.read().decode("utf-8"))
+        candidates = res_data.get("candidates") or []
+        if candidates:
+            parts = candidates[0].get("content", {}).get("parts", [])
+            return parts[0].get("text", "") if parts else ""
+    return ""
+
+
 def assess_warning_with_gemini(
     record: Dict[str, Any],
     model_name: Optional[str] = None,
@@ -630,41 +710,36 @@ def assess_warning_with_gemini(
 
     response_text = ""
     try:
-        # Prefer google-genai SDK if available, else urllib REST call
+        # Prefer google-genai SDK; fall back to the plain REST call when the
+        # SDK is missing OR when the SDK call itself fails (version drift,
+        # config-object changes, ClientError). Audit 2026-11-07: the SDK
+        # failed for all 809 records and there was no fallback, so the
+        # semantic audit silently produced zero proposals.
         try:
             from google import genai
-            client = genai.Client(api_key=api_key)
-            # Gemini 3.x removed temperature/top_p/top_k sampling controls.
-            resp = client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config={"response_mime_type": "application/json"}
-            )
-            response_text = resp.text or ""
         except ImportError:
-            import urllib.request
-            url = f"{API_ROOT}/{model}:generateContent"
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"responseMimeType": "application/json"}
-            }
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "x-goog-api-key": api_key,
-                },
-                method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=30) as http_resp:
-                res_data = json.loads(http_resp.read().decode("utf-8"))
-                candidates = res_data.get("candidates") or []
-                if candidates:
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    response_text = parts[0].get("text", "") if parts else ""
+            genai = None
+        if genai is not None:
+            try:
+                client = genai.Client(api_key=api_key)
+                # Gemini 3.x removed temperature/top_p/top_k sampling controls.
+                resp = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config={"response_mime_type": "application/json"}
+                )
+                response_text = resp.text or ""
+            except Exception as sdk_exc:
+                _note_gemini_failure(
+                    canonical_id,
+                    "google-genai SDK call failed, falling back to REST: "
+                    + type(sdk_exc).__name__ + ": " + str(sdk_exc),
+                )
+                response_text = ""
+        if not response_text:
+            response_text = _gemini_rest_generate(model, prompt, api_key)
     except Exception as exc:
-        print(f"[warning] Gemini API assessment failed for {canonical_id}: {type(exc).__name__}", file=sys.stderr)
+        _note_gemini_failure(canonical_id, f"{type(exc).__name__}: {exc}")
         return []
 
     # Clean markdown fences if model returned them
@@ -1203,6 +1278,7 @@ def run_audit(
             # 4. Gemini Propose Corrections (if mode is propose_corrections)
             all_proposals: List[Dict[str, Any]] = []
             if mode == "propose_corrections":
+                reset_gemini_failure_log()
                 for rec, rec_issues in records_with_issues:
                     proposals = assess_warning_with_gemini(
                         record=rec,
@@ -1210,6 +1286,23 @@ def run_audit(
                         issues=rec_issues
                     )
                     all_proposals.extend(proposals)
+
+                failures = gemini_failure_summary()
+                if failures:
+                    total_failures = sum(failures.values())
+                    report["ai_failures"] = failures
+                    print(
+                        f"[audit] Gemini assessment failures: {total_failures} "
+                        f"record(s) across {len(failures)} distinct reason(s); "
+                        "first reasons: " + " | ".join(list(failures.keys())[:3]),
+                        file=sys.stderr,
+                    )
+                    if not all_proposals:
+                        report["limitations"].append(
+                            f"Gemini assessment failed for {total_failures} record(s) "
+                            "and no proposals could be generated; see ai_failures "
+                            "for the full reasons."
+                        )
 
                 if run_id and all_proposals:
                     inserted_proposals = create_correction_proposals(
