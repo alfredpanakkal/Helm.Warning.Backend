@@ -42,7 +42,7 @@ from shared.navarea_iv_text import (
     ring_to_trackline,
 )
 from shared.utils import parse_coordinates, classify_hazard_categories
-from shared.models import extract_issue_dtg
+from shared.models import (extract_issue_dtg, issue_dtg_is_future, issue_dtg_has_conflict)
 
 SOURCE_ID = "nga-navarea-iv"
 NAVAREA_ID = "IV"
@@ -129,7 +129,7 @@ def _build_spatial(clauses):
     return fc, primary_lat, primary_lon, [g[0] for g in geoms]
 
 
-def parse_warning(block):
+def parse_warning(block, now_utc=None):
     """Parses one segmented memo block into (raw_message, nav_warning)."""
     warning_id = block["warning_id"]
     raw_text = block["raw_text"]
@@ -149,13 +149,28 @@ def parse_warning(block):
     categories = classify_hazard_categories(raw_text)
     cross_refs = extract_cross_refs(block)
 
+    # Issue-DTG guard (shared, pure helpers; now_utc injected by the
+    # caller so tests never read the real clock): a DTG later than
+    # now_utc + 2 days is rejected (never clamped) and flagged; a
+    # both-ends match-and-disagree is flagged as a conflict. Only the
+    # issued_text branch is affected - validity ranges, publication_time
+    # and cancel/expiry dates are untouched.
+    issued_dtg = extract_issue_dtg(raw_text)
+    if issued_dtg is not None and issue_dtg_is_future(issued_dtg, now_utc):
+        issued_dtg = None
+        dtg_flags = ["issue_dtg_future"]
+    elif issued_dtg is None and issue_dtg_has_conflict(raw_text):
+        dtg_flags = ["issue_dtg_conflict"]
+    else:
+        dtg_flags = []
+
     nav_warning = {
         "warning_id": warning_id,
         "canonical_id": warning_id,
         "source_id": SOURCE_ID,
         "navarea": NAVAREA_ID,
         "title": _extract_title(block) or warning_id,
-        "issued_text": extract_issue_dtg(raw_text),
+        "issued_text": issued_dtg,
         "coordinates": None,  # master no longer carries flat coords (20261020 schema)
         "latitude": lat,
         "longitude": lon,
@@ -167,11 +182,12 @@ def parse_warning(block):
         "sub_areas": [c["label"] for c in clauses],
         "geometry_sub_areas": geom_labels,
         "cross_refs": cross_refs,
+        "qa_flags": dtg_flags,
     }
     return raw_message, nav_warning
 
 
-def parse_memo_text(memo_text: str) -> dict:
+def parse_memo_text(memo_text: str, now_utc=None) -> dict:
     """Full deterministic parse of a raw memo text into the pipeline JSON shape."""
     parsed_data = {"raw_messages": [], "nav_warnings": [], "spatial_features": [],
                    "memo": {"in_force_dtg": None}}
@@ -179,9 +195,11 @@ def parse_memo_text(memo_text: str) -> dict:
         return parsed_data
 
     parsed_data["memo"]["in_force_dtg"] = get_in_force_dtg(memo_text)
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
 
     for block in split_into_warnings(memo_text):
-        raw_msg, nav_warn = parse_warning(block)
+        raw_msg, nav_warn = parse_warning(block, now_utc)
         parsed_data["raw_messages"].append(raw_msg)
         parsed_data["nav_warnings"].append(nav_warn)
         if nav_warn["spatial"]:
@@ -209,7 +227,8 @@ def main(input_filename="navareas/navarea_iv/navarea_iv_warnings.txt",
     else:
         print(f"ℹ️ Input file {input_filename} not found; initializing empty harvest.")
 
-    parsed_data = parse_memo_text(content)
+    run_now = datetime.now(timezone.utc)  # run-start clock, captured once
+    parsed_data = parse_memo_text(content, now_utc=run_now)
     n = len(parsed_data["nav_warnings"])
 
     os.makedirs(os.path.dirname(output_filename), exist_ok=True)
