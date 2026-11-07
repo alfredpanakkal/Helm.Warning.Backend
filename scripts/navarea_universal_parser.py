@@ -60,6 +60,7 @@ from shared.navarea_universal_text import (
     AUSCOAST_AREAS, RE_AUSCOAST_HEADER, RE_AUSCOAST_CANCEL, RE_NEVER_MATCHES,
 )
 from shared import translation
+from shared.models import extract_issue_dtg
 
 # Numbered item line: '1. HAZARDOUS ...' / 'A. ...'-adjacent numbering.
 # Line-anchored: a sentence-ending date like '... UTC oct 26.\nTo report'
@@ -647,7 +648,7 @@ def parse_warning(block, cfg):
         "source_id": cfg["source_id"],
         "navarea": cfg["navarea_id"],
         "title": title,
-        "issued_text": _extract_issue_dtg(raw_text),
+        "issued_text": extract_issue_dtg(raw_text),
         "coordinates": None,
         "latitude": lat,
         "longitude": lon,
