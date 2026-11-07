@@ -94,6 +94,8 @@ def _match_issue_dtg_line(line):
         return None
     year = int(ytok)
     if year < 100:
+        if year > 68:
+            return None  # 69-99: no century guess, fail closed
         year += 2000
     try:
         datetime(year, month, int(dd))
@@ -111,6 +113,8 @@ def _parse_issue_dtg_token(s):
     month = ISSUE_DTG_MONTHS.get(mon.lower())
     year = int(ytok)
     if year < 100:
+        if year > 68:
+            return None  # parity with _match_issue_dtg_line (69-99 fail closed)
         year += 2000
     return datetime(year, month, int(dd), int(hh), int(mi)).isoformat()
 
