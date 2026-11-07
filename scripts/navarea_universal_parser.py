@@ -36,7 +36,7 @@ import os
 import re
 import json
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT_DIR not in sys.path:
@@ -60,7 +60,7 @@ from shared.navarea_universal_text import (
     AUSCOAST_AREAS, RE_AUSCOAST_HEADER, RE_AUSCOAST_CANCEL, RE_NEVER_MATCHES,
 )
 from shared import translation
-from shared.models import extract_issue_dtg
+from shared.models import (extract_issue_dtg, issue_dtg_is_future, issue_dtg_has_conflict)
 
 # Numbered item line: '1. HAZARDOUS ...' / 'A. ...'-adjacent numbering.
 # Line-anchored: a sentence-ending date like '... UTC oct 26.\nTo report'
@@ -511,7 +511,7 @@ def split_into_warnings(text: str, cfg):
     return blocks
 
 
-def parse_warning(block, cfg):
+def parse_warning(block, cfg, now_utc=None):
     """Parses one segmented bulletin block into (raw_message, nav_warning)."""
     number = block["number"]
     year = normalize_year(block["year"]) or block.get("year_hint")
@@ -642,13 +642,26 @@ def parse_warning(block, cfg):
     # produced them. Fail-closed: None means "no date evidence".
     valid_from, valid_to = _extract_validity_dates(raw_text, year)
 
+    # Issue-DTG guard (shared, pure helpers; now_utc injected by the
+    # caller so tests never read the real clock): a DTG later than
+    # now_utc + 2 days is rejected (never clamped) and flagged; a
+    # both-ends match-and-disagree is flagged as a conflict. Only the
+    # issued_text branch is affected - validity ranges, publication_time
+    # and cancel/expiry dates are untouched.
+    issued_dtg = extract_issue_dtg(raw_text)
+    if issued_dtg is not None and issue_dtg_is_future(issued_dtg, now_utc):
+        issued_dtg = None
+        qa_flags.append("issue_dtg_future")
+    elif issued_dtg is None and issue_dtg_has_conflict(raw_text):
+        qa_flags.append("issue_dtg_conflict")
+
     nav_warning = {
         "warning_id": warning_id,
         "canonical_id": canonical_id,
         "source_id": cfg["source_id"],
         "navarea": cfg["navarea_id"],
         "title": title,
-        "issued_text": extract_issue_dtg(raw_text),
+        "issued_text": issued_dtg,
         "coordinates": None,
         "latitude": lat,
         "longitude": lon,
@@ -668,7 +681,7 @@ def parse_warning(block, cfg):
     return raw_message, nav_warning
 
 
-def parse_bulletin_text(bulletin_text: str, region_key: str) -> dict:
+def parse_bulletin_text(bulletin_text: str, region_key: str, now_utc=None) -> dict:
     """Full deterministic parse of the bulletin into pipeline JSON shape."""
     cfg = _region_config(region_key)
     parsed_data = {"raw_messages": [], "nav_warnings": [], "spatial_features": [],
@@ -680,11 +693,13 @@ def parse_bulletin_text(bulletin_text: str, region_key: str) -> dict:
 
     as_on = _parse_as_on(bulletin_text)
     parsed_data["memo"]["in_force_as_on"] = as_on.isoformat() if as_on else None
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
 
     year_hint = _parse_year_hint(bulletin_text)
     for block in split_into_warnings(bulletin_text, cfg):
         block["year_hint"] = year_hint
-        raw_msg, nav_warn = parse_warning(block, cfg)
+        raw_msg, nav_warn = parse_warning(block, cfg, now_utc)
         parsed_data["raw_messages"].append(raw_msg)
         parsed_data["nav_warnings"].append(nav_warn)
         if nav_warn["spatial"]:
@@ -781,11 +796,14 @@ def main(input_filename="navareas/manual/navarea_ii/pasted_raw.txt",
     print("Region: NAVAREA " + cfg["roman"]
           + " (" + region_name + ") — source_id=" + cfg["source_id"])
 
+    run_now = datetime.now(timezone.utc)  # run-start clock, captured once
     if parse_bulletin_with_fallback is not None:
-        parsed_data = parse_bulletin_with_fallback(content, region_key, parse_bulletin_text)
+        parsed_data = parse_bulletin_with_fallback(
+            content, region_key,
+            lambda text, key: parse_bulletin_text(text, key, now_utc=run_now))
     else:
         print("Gemini layer not installed — using deterministic rule parser only.")
-        parsed_data = parse_bulletin_text(content, region_key)
+        parsed_data = parse_bulletin_text(content, region_key, now_utc=run_now)
     n = len(parsed_data["nav_warnings"])
     n_geom = len([w for w in parsed_data["nav_warnings"] if w.get("spatial")])
     print("Parsed " + str(n) + " warning(s); " + str(n_geom)
