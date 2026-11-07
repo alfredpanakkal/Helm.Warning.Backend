@@ -140,7 +140,6 @@ def extract_issue_dtg(raw_text):
     return first if first is not None else last
 
 
-
 def issue_dtg_is_future(token, now_utc, max_days=2):
     """Pure future guard for a verbatim issue-DTG token (no clock reads).
 
@@ -177,6 +176,7 @@ def issue_dtg_has_conflict(raw_text):
     first = _match_issue_dtg_line(lines[0])
     last = _match_issue_dtg_line(lines[-1])
     return first is not None and last is not None and first != last
+
 
 def parse_safe_iso_timestamp(date_val: Any) -> Optional[str]:
     """Tolerantly parses timestamp or date string into ISO-8601 string.
