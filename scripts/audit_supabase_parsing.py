@@ -676,7 +676,20 @@ def _gemini_rest_generate(model: str, prompt: str, api_key: str) -> str:
 # navarea-xix-sync). AUDIT_AI_MAX_RPM (default 10) is a conservative local
 # choice, NOT a Google-documented limit; read the real tier limits at
 # https://aistudio.google.com/rate-limit before tuning it.
-AI_MAX_RPM = int(os.getenv("AUDIT_AI_MAX_RPM", "10"))
+def _resolve_ai_max_rpm() -> int:
+    """AUDIT_AI_MAX_RPM as int with a floor of 1.
+
+    Empty or invalid values must never raise at import time (a bad env var
+    in CI would crash the whole script before argparse even runs): empty ->
+    default 10, unparseable -> default 10, < 1 -> 1.
+    """
+    try:
+        return max(1, int(os.getenv("AUDIT_AI_MAX_RPM") or "10"))
+    except ValueError:
+        return 10
+
+
+AI_MAX_RPM = _resolve_ai_max_rpm()
 
 _last_ai_call = 0.0
 

@@ -1222,6 +1222,27 @@ class TestSupabaseParsingAudit(unittest.TestCase):
                     issues=[{"code": "TEST_ISSUE"}],
                 )
 
+    # 37. AUDIT_AI_MAX_RPM="" (or invalid) must import cleanly and fall back
+    # to the default of 10, never raise ValueError at import time. A fresh
+    # interpreter is required: the value is read once, at module import.
+    def test_empty_or_invalid_rpm_env_imports_cleanly(self):
+        import subprocess
+        for env_value, expected in (("", 10), ("abc", 10), ("0", 1)):
+            env = dict(os.environ, AUDIT_AI_MAX_RPM=env_value)
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "from scripts import audit_supabase_parsing as m; "
+                 "assert m.AI_MAX_RPM == %d, m.AI_MAX_RPM" % expected],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                f"AUDIT_AI_MAX_RPM={env_value!r}: {result.stderr}",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
