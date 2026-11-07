@@ -37,6 +37,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from scripts.audit_supabase_parsing import (
+    GeometryFetchError,
     GeometrySchemaError,
     fetch_all_warnings,
     fetch_geometries_for_warnings,
@@ -948,6 +949,74 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertFalse(res["scan_complete"])
         self.assertEqual(res["coverage"]["scan_status"], "incomplete")
         self.assertIn("coverage_mismatch", str(res["coverage"]["incomplete_reason"]))
+
+    # 28. Loud abort on PGRST200 geometry fetch failure (audit 2026-11-07:
+    # the swallowed per-batch error silently produced 700+ false
+    # TIER_A_ZERO_GEOMETRIES).
+    def test_geometry_fetch_pgrst200_raises_loudly(self):
+        client = MagicMock()
+        query = MagicMock()
+        query.execute.side_effect = RuntimeError(
+            "{'code': 'PGRST200', 'message': \"Could not find a relationship "
+            "between 'nav_warning_geometries' and 'st_asgeojson'\"}"
+        )
+        client.table.return_value.select.return_value.in_.return_value = query
+        with self.assertRaises(GeometryFetchError) as ctx:
+            fetch_geometries_for_warnings(client, [self.sample_active_warning["id"]])
+        self.assertIn("st_asgeojson_public_wrapper", str(ctx.exception))
+
+    # 29. Any geometry batch failure aborts — never a geometry-blind report.
+    def test_geometry_fetch_any_batch_failure_raises(self):
+        client = MagicMock()
+        query = MagicMock()
+        query.execute.side_effect = RuntimeError("connection reset by peer")
+        client.table.return_value.select.return_value.in_.return_value = query
+        with self.assertRaises(GeometryFetchError):
+            fetch_geometries_for_warnings(client, [self.sample_active_warning["id"]])
+
+    # 30. SDK present but failing falls back to the plain REST call and the
+    # full SDK error is logged (2026-11-07: 809 bare 'ClientError' lines).
+    def test_gemini_sdk_failure_falls_back_to_rest(self):
+        import types
+        fake_google = types.ModuleType("google")
+        fake_genai = types.ModuleType("google.genai")
+
+        class _Boom:
+            def __init__(self, api_key):
+                raise RuntimeError("SDK ClientError: config rejected")
+
+        fake_genai.Client = _Boom
+        fake_google.genai = fake_genai
+
+        llm_output = json.dumps([{
+            "canonical_id": self.sample_active_warning["canonical_id"],
+            "field_name": "data_quality",
+            "original_value": "AMBIGUOUS",
+            "proposed_value": "EXPLICIT",
+            "raw_evidence": "GULF OF MEXICO",
+            "explanation": "Coordinates are explicitly stated in the bulletin",
+            "confidence": 0.9,
+            "requires_review": True
+        }])
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({
+            "candidates": [{"content": {"parts": [{"text": llm_output}]}}]
+        }).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"}), \
+             patch.dict(sys.modules, {"google": fake_google, "google.genai": fake_genai}), \
+             patch("urllib.request.urlopen", return_value=mock_resp):
+            proposals = assess_warning_with_gemini(
+                dict(self.sample_active_warning),
+                model_name="gemini-3.8-flash",
+                issues=[{"code": "TEST_ISSUE"}]
+            )
+        self.assertEqual(len(proposals), 1)
+        self.assertEqual(proposals[0]["field_name"], "data_quality")
+        self.assertEqual(proposals[0]["status"], "pending")
+        self.assertEqual(proposals[0]["raw_evidence"], "GULF OF MEXICO")
+
 
 if __name__ == "__main__":
     unittest.main()
