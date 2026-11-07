@@ -36,6 +36,106 @@ UNPLOTTED_REASONS = {
 }
 
 
+# --- shared issue-DTG extractor (Alfred, 2026-11-07) -----------------------
+#
+# One deterministic, fail-closed extractor for warning issue dates carried
+# as a bare time group at the START (NGA memo DTG line above the header,
+# IV/XII) or the END (NAVTEX-style trailing group, IX; NHO India slash
+# form, VIII) of a block. No AI step; nothing is guessed: Z/UTC is
+# REQUIRED (timezone must be stated), the year is REQUIRED, and the month
+# maps through the explicit dict below (no locale-dependent %b/%B).
+
+ISSUE_DTG_MONTHS = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+    "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+    "aug": 8, "august": 8, "sep": 9, "september": 9, "oct": 10, "october": 10,
+    "nov": 11, "november": 11, "dec": 12, "december": 12,
+}
+
+# Whole-line issue time group: DDHHMM + (Z | UTC) + ("/" | whitespace) +
+# MONTH (3-letter or full English name) + whitespace + YEAR (2 or 4
+# digits). "301639Z OCT 26", "051500 UTC NOV 2026", "021102Z/NOV 26".
+RE_ISSUE_DTG_LINE = re.compile(
+    r"^(\d{2})(\d{2})(\d{2})(?:Z|\s+UTC)(?:/|\s+)([A-Za-z]{3,9})\.?\s+(\d{2,4})$",
+    re.IGNORECASE)
+
+# Second guard behind the whole-line match: a candidate line carrying
+# dateline/range/bulletin vocabulary is never an issue date.
+RE_ISSUE_DTG_BLOCKWORDS = re.compile(
+    r"\b(?:CANCEL|UNTIL|TO|FROM|IN\s+FORCE|AS\s+ON|CORRECT\s+AT|ISSUED)\b",
+    re.IGNORECASE)
+
+
+def _match_issue_dtg_line(line):
+    """One candidate line -> verbatim time-group string, or None.
+
+    Strips a BOM and leading dashes/spaces, then requires the ENTIRE
+    line to be one time group. Month via the explicit dict (full
+    English names accepted). Day/hour/minute range checks plus a
+    calendar-existence check (Feb 30 rejected). Never clamps, never
+    guesses a timezone or a century ("00-"68 -> 2000s only).
+    """
+    if not line:
+        return None
+    candidate = line.replace("\ufeff", "").strip()
+    candidate = re.sub(r"^[\s\-\u2010-\u2015]+", "", candidate)
+    if not candidate or RE_ISSUE_DTG_BLOCKWORDS.search(candidate):
+        return None
+    m = RE_ISSUE_DTG_LINE.match(candidate)
+    if not m:
+        return None
+    dd, hh, mi, mon, ytok = m.groups()
+    month = ISSUE_DTG_MONTHS.get(mon.lower())
+    if month is None:
+        return None
+    if not (1 <= int(dd) <= 31 and 0 <= int(hh) <= 23 and 0 <= int(mi) <= 59):
+        return None
+    if len(ytok) not in (2, 4):
+        return None
+    year = int(ytok)
+    if year < 100:
+        year += 2000
+    try:
+        datetime(year, month, int(dd))
+    except ValueError:
+        return None
+    return m.group(0)
+
+
+def _parse_issue_dtg_token(s):
+    """ISO timestamp from a verbatim issue-DTG token, or None."""
+    token = _match_issue_dtg_line(s or "")
+    if token is None:
+        return None
+    dd, hh, mi, mon, ytok = RE_ISSUE_DTG_LINE.match(token).groups()
+    month = ISSUE_DTG_MONTHS.get(mon.lower())
+    year = int(ytok)
+    if year < 100:
+        year += 2000
+    return datetime(year, month, int(dd), int(hh), int(mi)).isoformat()
+
+
+def extract_issue_dtg(raw_text):
+    """Shared, deterministic, fail-closed issue-date extractor.
+
+    Only the FIRST and the LAST non-empty line of the block are
+    candidates, and the whole line must be one time group
+    ("301639Z OCT 26", "051500 UTC NOV 2026", "021102Z/NOV 26", or a
+    dashes-prefixed "------- 271002Z/SEP 26"). Returns the matched
+    text verbatim (stripped of BOM/dashes/spaces only) or None. If
+    BOTH candidate lines match and disagree, returns None - no
+    pick, no guess (callers may surface such blocks via qa_flags).
+    """
+    lines = [l for l in (raw_text or "").split("\n") if l and l.strip()]
+    if not lines:
+        return None
+    first = _match_issue_dtg_line(lines[0])
+    last = _match_issue_dtg_line(lines[-1])
+    if first is not None and last is not None and first != last:
+        return None
+    return first if first is not None else last
+
+
 def parse_safe_iso_timestamp(date_val: Any) -> Optional[str]:
     """Tolerantly parses timestamp or date string into ISO-8601 string.
     Returns None if date is free-text (e.g., '2026 HOURS 19 OCT') or invalid.
@@ -54,6 +154,12 @@ def parse_safe_iso_timestamp(date_val: Any) -> Optional[str]:
         return dt.isoformat()
     except Exception:
         pass
+
+    # Issue-DTG token ("301639Z OCT 26", "021102Z/NOV 26") - explicit
+    # month-dict parse, locale-independent (strptime %b/%B avoided).
+    iso = _parse_issue_dtg_token(s)
+    if iso is not None:
+        return iso
 
     # Try common standardized formats
     for fmt in (
