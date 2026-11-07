@@ -1243,6 +1243,75 @@ class TestSupabaseParsingAudit(unittest.TestCase):
                 f"AUDIT_AI_MAX_RPM={env_value!r}: {result.stderr}",
             )
 
+    # 38. A warning ID like "NAVAREA IV 429/26" inside an SDK error message
+    # is NOT a 429 status: the call must fall back to REST (urlopen called),
+    # never raise GeminiRateLimited and stop the AI pass. A bare substring
+    # "429" check would false-positive here.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    def test_warning_id_429_in_message_is_not_rate_limited(self):
+        import types
+        fake_google = types.ModuleType("google")
+        fake_genai = types.ModuleType("google.genai")
+
+        class _Models:
+            @staticmethod
+            def generate_content(**kwargs):
+                raise RuntimeError(
+                    "ClientError: could not assess NAVAREA IV 429/26 "
+                    "(GULF OF MEXICO) - context length exceeded"
+                )
+
+        class _ErrClient:
+            def __init__(self, api_key):
+                self.models = _Models()
+
+        fake_genai.Client = _ErrClient
+        fake_google.genai = fake_genai
+
+        with patch.dict(sys.modules, {"google": fake_google, "google.genai": fake_genai}), \
+             patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value = self._verify_model_response()
+            proposals = assess_warning_with_gemini(
+                dict(self.sample_active_warning),
+                model_name="gemini-3.8-flash",
+                issues=[{"code": "TEST_ISSUE"}],
+            )
+        mock_urlopen.assert_called_once()
+        self.assertEqual(proposals, [])
+
+    # 39. A status-code attribute (code == 429) on the SDK exception is
+    # honored even when the message text carries no 429 token at all.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    def test_sdk_status_code_attribute_429_raises_rate_limited(self):
+        import types
+        fake_google = types.ModuleType("google")
+        fake_genai = types.ModuleType("google.genai")
+
+        class _QuotaError(Exception):
+            code = 429
+
+        class _Models:
+            @staticmethod
+            def generate_content(**kwargs):
+                raise _QuotaError("Too Many Requests")
+
+        class _QuotaClient:
+            def __init__(self, api_key):
+                self.models = _Models()
+
+        fake_genai.Client = _QuotaClient
+        fake_google.genai = fake_genai
+
+        with patch.dict(sys.modules, {"google": fake_google, "google.genai": fake_genai}), \
+             patch("urllib.request.urlopen") as mock_urlopen:
+            with self.assertRaises(GeminiRateLimited):
+                assess_warning_with_gemini(
+                    dict(self.sample_active_warning),
+                    model_name="gemini-3.8-flash",
+                    issues=[{"code": "TEST_ISSUE"}],
+                )
+        mock_urlopen.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

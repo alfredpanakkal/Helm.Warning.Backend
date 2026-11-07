@@ -704,6 +704,27 @@ def _throttle() -> None:
     _last_ai_call = time.monotonic()
 
 
+# A real 429 is detected from a status-code attribute on the exception
+# (code / status_code / status == 429), the RESOURCE_EXHAUSTED reason string,
+# or a standalone "429" token in the exception text. A bare substring check
+# would false-positive on warning IDs like "NAVAREA IV 429/26" embedded in an
+# error message (hardening fix, audit 2026-11-07).
+_RATE_LIMIT_429_RE = re.compile(r"(?<![\w/])429(?![\w/])")
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """True if the Gemini exception represents a 429 / RESOURCE_EXHAUSTED."""
+    for attr in ("code", "status_code", "status"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, str):
+            if value.strip().upper() in ("429", "RESOURCE_EXHAUSTED"):
+                return True
+        elif value == 429:
+            return True
+    text = str(exc)
+    return "RESOURCE_EXHAUSTED" in text or bool(_RATE_LIMIT_429_RE.search(text))
+
+
 def assess_warning_with_gemini(
     record: Dict[str, Any],
     model_name: Optional[str] = None,
@@ -789,11 +810,10 @@ def assess_warning_with_gemini(
                 )
                 response_text = resp.text or ""
             except Exception as sdk_exc:
-                msg = str(sdk_exc)
-                if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                if _is_rate_limit_error(sdk_exc):
                     # Quota exhausted: never double the call count by
                     # retrying through REST against the same quota pool.
-                    raise GeminiRateLimited(msg) from sdk_exc
+                    raise GeminiRateLimited(str(sdk_exc)) from sdk_exc
                 _note_gemini_failure(
                     canonical_id,
                     "google-genai SDK call failed, falling back to REST: "
