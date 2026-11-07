@@ -174,6 +174,47 @@ class TestE2ESync(unittest.TestCase):
             self.assertEqual(cm.exception.code, 2)
 
 
+class TestDtgIssueDateParsing(unittest.TestCase):
+    """NAVAREA DTG issue-date header ("030020Z JUL 26" on the line above the
+    "NAVAREA XII n/yy" header) must resolve to an ISO timestamp, so
+    build_master_payload()'s valid_from stops being NULL for the NGA
+    memo regions (IV/XII). Fail-closed on invalid DTGs (never guess)."""
+
+    def test_dtg_two_digit_year(self):
+        self.assertEqual(parse_safe_iso_timestamp("030020Z JUL 26"),
+                         "2026-07-03T00:20:00")
+
+    def test_dtg_fixture_mar_xii_151(self):
+        # NAVAREA XII 151/26 memo header DTG (daily_memo_snapshot fixture)
+        self.assertEqual(parse_safe_iso_timestamp("040124Z MAR 26"),
+                         "2026-03-04T01:24:00")
+
+    def test_dtg_four_digit_year(self):
+        self.assertEqual(parse_safe_iso_timestamp("030020Z JUL 2026"),
+                         "2026-07-03T00:20:00")
+
+    def test_dtg_lowercase_month(self):
+        self.assertEqual(parse_safe_iso_timestamp("040658Z mar 26"),
+                         "2026-03-04T06:58:00")
+
+    def test_impossible_day_fail_closed(self):
+        self.assertIsNone(parse_safe_iso_timestamp("320000Z NOV 26"))
+
+    def test_unknown_month_fail_closed(self):
+        self.assertIsNone(parse_safe_iso_timestamp("030020Z XYZ 26"))
+
+    def test_build_master_payload_valid_from_from_dtg(self):
+        master = build_master_payload({
+            "warning_id": "469/26",
+            "navarea": "XII",
+            "title": "NORTH PACIFIC.",
+            "raw_text": "NAVAREA XII 469/26.",
+            "source_id": "nga-navarea-xii",
+            "issued_text": "030020Z JUL 26",
+        })
+        self.assertEqual(master["valid_from"], "2026-07-03T00:20:00")
+        self.assertNotIn("issued_text", master)
+
 if __name__ == "__main__":
     unittest.main()
 
