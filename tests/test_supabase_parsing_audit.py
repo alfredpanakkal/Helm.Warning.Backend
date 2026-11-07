@@ -22,6 +22,8 @@ Covers:
   - audit_only makes ZERO database writes of any kind (no run-ledger row).
   - Allowlist enforcement: title/dates are not AI-correctable.
   - Model verification fail-closed: unknown model aborts (exit 3) before any write.
+  - Gemini rate control: only AI-fixable records are assessed, hard-capped and
+    throttled; a 429 stops the AI pass and never retries through the REST fallback.
 """
 
 from datetime import datetime, timezone
@@ -36,7 +38,14 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+# Keep the suite fast: the real throttle (default AUDIT_AI_MAX_RPM=10, i.e. one
+# 6-second gap between Gemini calls) must not run inside unit tests. The
+# dedicated throttle test overrides AI_MAX_RPM and mocks time itself.
+os.environ.setdefault("AUDIT_AI_MAX_RPM", "1000000")
+
+from scripts import audit_supabase_parsing
 from scripts.audit_supabase_parsing import (
+    GeminiRateLimited,
     GeometryFetchError,
     GeometrySchemaError,
     fetch_all_warnings,
@@ -47,6 +56,7 @@ from scripts.audit_supabase_parsing import (
     create_correction_proposals,
     apply_approved_corrections,
     run_audit,
+    _throttle,
 )
 
 
@@ -1016,6 +1026,334 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertEqual(proposals[0]["field_name"], "data_quality")
         self.assertEqual(proposals[0]["status"], "pending")
         self.assertEqual(proposals[0]["raw_evidence"], "GULF OF MEXICO")
+
+
+    # --- Gemini rate control (audit 2026-11-07): filter, cap, throttle, 429 ---
+
+    def _rate_record(self, i):
+        """Record with AI-fixable issues (unplotted_reason discrepancy)."""
+        rec = dict(self.sample_active_warning)
+        rec["id"] = f"00000000-0000-0000-0000-{i:012d}"
+        rec["canonical_id"] = f"NAVAREA IV 10{i + 1}/26"
+        rec["unplotted_reason"] = "no_coordinates"
+        return rec
+
+    def _verify_model_response(self):
+        """urlopen mock response that satisfies gemini_verify_model."""
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({
+            "candidates": [{"content": {"parts": [{"text": "[]"}]}}]
+        }).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        return mock_resp
+
+    # 31. Hard cap: 5 AI-fixable records, cap 2 -> exactly 2 Gemini calls, one
+    # 'AI cap reached' limitation line, deterministic issues list NOT truncated.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    @patch("urllib.request.urlopen")
+    def test_ai_record_cap_limits_gemini_calls(self, mock_urlopen):
+        mock_urlopen.return_value = self._verify_model_response()
+        rows = [self._rate_record(i) for i in range(5)]
+        client = MockSupabaseClient({
+            "nav_warnings": rows,
+            "nav_warning_geometries": [],
+            "parsing_audit_runs": [],
+            "parsing_correction_proposals": [],
+        })
+        proposal = {
+            "canonical_id": "NAVAREA IV 101/26",
+            "field_name": "unplotted_reason",
+            "proposed_value": None,
+            "raw_evidence": "GULF OF MEXICO",
+        }
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch(
+                "scripts.audit_supabase_parsing.assess_warning_with_gemini",
+                return_value=[proposal],
+            ) as mock_assess:
+                report = run_audit(
+                    mode="propose_corrections", client=client,
+                    report_dir=tmp_dir, max_ai_records=2,
+                )
+        self.assertEqual(mock_assess.call_count, 2)
+        cap_lines = [l for l in report["limitations"] if "AI cap reached" in l]
+        self.assertEqual(len(cap_lines), 1)
+        self.assertIn("2 records assessed", cap_lines[0])
+        # The deterministic audit stays unfiltered: all 5 records, all issues
+        self.assertEqual(report["examined_count"], 5)
+        self.assertEqual(report["issue_count"], 15)
+        self.assertEqual(report["status"], "succeeded")
+
+    # 32. Records whose only issues are on non-AI-fixable fields (dates,
+    # status, geometry) never burn a Gemini call.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    @patch("urllib.request.urlopen")
+    def test_non_ai_fixable_records_skip_gemini(self, mock_urlopen):
+        mock_urlopen.return_value = self._verify_model_response()
+        rec = dict(self.sample_active_warning)
+        rec["triage_tier"] = "B"
+        rec["data_quality"] = "INFERRED"
+        rec["valid_from"] = "not-a-timestamp"
+        client = MockSupabaseClient({
+            "nav_warnings": [rec],
+            "nav_warning_geometries": [],
+            "parsing_audit_runs": [],
+            "parsing_correction_proposals": [],
+        })
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch(
+                "scripts.audit_supabase_parsing.assess_warning_with_gemini"
+            ) as mock_assess:
+                report = run_audit(
+                    mode="propose_corrections", client=client, report_dir=tmp_dir,
+                )
+        mock_assess.assert_not_called()
+        self.assertEqual(report["proposal_count"], 0)
+        # The deterministic issue survives unfiltered even though the AI pass
+        # skipped the record entirely.
+        self.assertTrue(any(
+            i["code"] == "INVALID_DATE_FORMAT" for i in report["issues"]
+        ))
+
+    # 33. Throttle: 10 RPM -> about a 6-second sleep between two calls.
+    def test_throttle_enforces_rpm_gap(self):
+        original = audit_supabase_parsing._last_ai_call
+        audit_supabase_parsing._last_ai_call = 0.0
+        try:
+            with patch.object(audit_supabase_parsing, "AI_MAX_RPM", 10), \
+                 patch("scripts.audit_supabase_parsing.time") as mock_time:
+                mock_time.monotonic.side_effect = [0.0, 0.0, 0.0, 0.0]
+                _throttle()
+                _throttle()
+            self.assertEqual(mock_time.sleep.call_count, 2)
+            for call in mock_time.sleep.call_args_list:
+                self.assertAlmostEqual(call[0][0], 6.0, places=3)
+        finally:
+            audit_supabase_parsing._last_ai_call = original
+
+    # 34. A 429 on the third record stops the AI pass: the two proposals
+    # already made are kept, the loop stops, status is partial.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    @patch("urllib.request.urlopen")
+    def test_rate_limited_429_stops_ai_pass(self, mock_urlopen):
+        mock_urlopen.return_value = self._verify_model_response()
+        rows = [self._rate_record(i) for i in range(3)]
+        client = MockSupabaseClient({
+            "nav_warnings": rows,
+            "nav_warning_geometries": [],
+            "parsing_audit_runs": [],
+            "parsing_correction_proposals": [],
+        })
+        proposal = {
+            "canonical_id": "NAVAREA IV 101/26",
+            "field_name": "unplotted_reason",
+            "proposed_value": None,
+            "raw_evidence": "GULF OF MEXICO",
+        }
+        calls = {"n": 0}
+
+        def fake_assess(**kwargs):
+            if calls["n"] == 2:
+                raise GeminiRateLimited("429 RESOURCE_EXHAUSTED: quota exceeded")
+            calls["n"] += 1
+            return [dict(proposal)]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch(
+                "scripts.audit_supabase_parsing.assess_warning_with_gemini",
+                side_effect=fake_assess,
+            ) as mock_assess:
+                report = run_audit(
+                    mode="propose_corrections", client=client, report_dir=tmp_dir,
+                )
+        self.assertEqual(mock_assess.call_count, 3)
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(len(report["proposals"]), 2)
+        self.assertEqual(report["proposal_count"], 2)
+        self.assertEqual(report["status"], "partial")
+        self.assertTrue(any("Stopped on Gemini 429 after 3 records" in l
+                            for l in report["limitations"]))
+
+    # 35. An SDK 429 must NOT fall through to the REST fallback (a failing run
+    # would otherwise make 2 calls per record against an exhausted quota).
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    def test_sdk_429_does_not_fall_through_to_rest(self):
+        import types
+        fake_google = types.ModuleType("google")
+        fake_genai = types.ModuleType("google.genai")
+
+        class _Models:
+            @staticmethod
+            def generate_content(**kwargs):
+                raise RuntimeError(
+                    "ClientError: 429 RESOURCE_EXHAUSTED quota exceeded"
+                )
+
+        class _QuotaClient:
+            def __init__(self, api_key):
+                self.models = _Models()
+
+        fake_genai.Client = _QuotaClient
+        fake_google.genai = fake_genai
+
+        with patch.dict(sys.modules, {"google": fake_google, "google.genai": fake_genai}), \
+             patch("urllib.request.urlopen") as mock_urlopen:
+            with self.assertRaises(GeminiRateLimited):
+                assess_warning_with_gemini(
+                    dict(self.sample_active_warning),
+                    model_name="gemini-3.8-flash",
+                    issues=[{"code": "TEST_ISSUE"}],
+                )
+        mock_urlopen.assert_not_called()
+
+    # 36. A REST 429 raises the same GeminiRateLimited instead of being
+    # swallowed into a silent per-record failure.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    def test_rest_429_raises_rate_limited(self):
+        import io
+        from urllib.error import HTTPError
+        with patch.dict(sys.modules, {"google": None}), \
+             patch("urllib.request.urlopen", side_effect=HTTPError(
+                 "https://api", 429, "Too Many Requests", None, io.BytesIO(b"{}"))):
+            with self.assertRaises(GeminiRateLimited):
+                assess_warning_with_gemini(
+                    dict(self.sample_active_warning),
+                    model_name="gemini-3.8-flash",
+                    issues=[{"code": "TEST_ISSUE"}],
+                )
+
+    # 37. AUDIT_AI_MAX_RPM="" (or invalid) must import cleanly and fall back
+    # to the default of 10, never raise ValueError at import time. A fresh
+    # interpreter is required: the value is read once, at module import.
+    def test_empty_or_invalid_rpm_env_imports_cleanly(self):
+        import subprocess
+        for env_value, expected in (("", 10), ("abc", 10), ("0", 1)):
+            env = dict(os.environ, AUDIT_AI_MAX_RPM=env_value)
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "from scripts import audit_supabase_parsing as m; "
+                 "assert m.AI_MAX_RPM == %d, m.AI_MAX_RPM" % expected],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                f"AUDIT_AI_MAX_RPM={env_value!r}: {result.stderr}",
+            )
+
+    # 38. A warning ID like "NAVAREA IV 429/26" inside an SDK error message
+    # is NOT a 429 status: the call must fall back to REST (urlopen called),
+    # never raise GeminiRateLimited and stop the AI pass. A bare substring
+    # "429" check would false-positive here.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    def test_warning_id_429_in_message_is_not_rate_limited(self):
+        import types
+        fake_google = types.ModuleType("google")
+        fake_genai = types.ModuleType("google.genai")
+
+        class _Models:
+            @staticmethod
+            def generate_content(**kwargs):
+                raise RuntimeError(
+                    "ClientError: could not assess NAVAREA IV 429/26 "
+                    "(GULF OF MEXICO) - context length exceeded"
+                )
+
+        class _ErrClient:
+            def __init__(self, api_key):
+                self.models = _Models()
+
+        fake_genai.Client = _ErrClient
+        fake_google.genai = fake_genai
+
+        with patch.dict(sys.modules, {"google": fake_google, "google.genai": fake_genai}), \
+             patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value = self._verify_model_response()
+            proposals = assess_warning_with_gemini(
+                dict(self.sample_active_warning),
+                model_name="gemini-3.8-flash",
+                issues=[{"code": "TEST_ISSUE"}],
+            )
+        mock_urlopen.assert_called_once()
+        self.assertEqual(proposals, [])
+
+    # 39. A status-code attribute (code == 429) on the SDK exception is
+    # honored even when the message text carries no 429 token at all.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    def test_sdk_status_code_attribute_429_raises_rate_limited(self):
+        import types
+        fake_google = types.ModuleType("google")
+        fake_genai = types.ModuleType("google.genai")
+
+        class _QuotaError(Exception):
+            code = 429
+
+        class _Models:
+            @staticmethod
+            def generate_content(**kwargs):
+                raise _QuotaError("Too Many Requests")
+
+        class _QuotaClient:
+            def __init__(self, api_key):
+                self.models = _Models()
+
+        fake_genai.Client = _QuotaClient
+        fake_google.genai = fake_genai
+
+        with patch.dict(sys.modules, {"google": fake_google, "google.genai": fake_genai}), \
+             patch("urllib.request.urlopen") as mock_urlopen:
+            with self.assertRaises(GeminiRateLimited):
+                assess_warning_with_gemini(
+                    dict(self.sample_active_warning),
+                    model_name="gemini-3.8-flash",
+                    issues=[{"code": "TEST_ISSUE"}],
+                )
+        mock_urlopen.assert_not_called()
+
+
+    # 40. --max-ai-records is rejected when negative (argparse exits 2).
+    def test_negative_max_ai_records_rejected(self):
+        with patch.object(
+            sys, "argv",
+            ["audit_supabase_parsing.py", "--mode", "audit_only",
+             "--max-ai-records", "-1"],
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                audit_supabase_parsing.main()
+        self.assertEqual(ctx.exception.code, 2)
+
+    # 41. --max-ai-records 0 is valid and means NO AI calls: the propose run
+    # completes with zero Gemini assessments, a cap limitation line, all
+    # deterministic issues kept, and status succeeded.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    @patch("urllib.request.urlopen")
+    def test_max_ai_records_zero_disables_ai_calls(self, mock_urlopen):
+        mock_urlopen.return_value = self._verify_model_response()
+        rows = [self._rate_record(i) for i in range(3)]
+        client = MockSupabaseClient({
+            "nav_warnings": rows,
+            "nav_warning_geometries": [],
+            "parsing_audit_runs": [],
+            "parsing_correction_proposals": [],
+        })
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch(
+                "scripts.audit_supabase_parsing.assess_warning_with_gemini",
+            ) as mock_assess:
+                report = run_audit(
+                    mode="propose_corrections", client=client,
+                    report_dir=tmp_dir, max_ai_records=0,
+                )
+        mock_assess.assert_not_called()
+        self.assertEqual(report["proposal_count"], 0)
+        cap_lines = [l for l in report["limitations"] if "AI cap reached" in l]
+        self.assertEqual(len(cap_lines), 1)
+        self.assertIn("0 records assessed", cap_lines[0])
+        self.assertEqual(report["examined_count"], 3)
+        self.assertEqual(report["issue_count"], 9)
+        self.assertEqual(report["status"], "succeeded")
 
 
 if __name__ == "__main__":
