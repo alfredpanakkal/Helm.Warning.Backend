@@ -117,6 +117,18 @@ RE_UNTIL = re.compile(
     r"\bUNTIL\s+(\d{1,2})\s+([A-Za-z]{3,9})\.?(?:\s+(\d{2,4}))?",
     re.IGNORECASE)
 
+# Issue-DTG rule (Alfred, 2026-10-31): NAVAREA IX and NAVTEX-style
+# universal bulletins carry the ISSUE date at the END of the warning as
+# a 'DDHHMM UTC MON YY' time group — '201400 UTC JUN 26' means
+# 20 JUN 2026, 14:00 UTC (day-hour-minute, NOT year-month-day). The
+# line-anchored-at-the-end guard keeps self-cancel datelines
+# ('CANCEL THIS WARNING 142100 UTC NOV 26') and validity ranges
+# ('270300 UTC OCT 26 TO 090259 UTC NOV 26') from being mistaken for
+# an issue date. Fail-closed: anything else yields None.
+RE_ISSUE_DTG = re.compile(
+    r"^(\d{2})(\d{2})(\d{2})\s*(?:UTC|Z)\s+([A-Za-z]{3,9})\.?(?:\s+(\d{2,4}))?\s*$",
+    re.IGNORECASE)
+
 # NAVAREA I (UK / North Atlantic) is a tolerated COMPANION region: its
 # warning headers never make a paste mixed-region, and its blocks are
 # excluded from segmentation. Pure-NAVAREA-I pastes are still rejected by
@@ -184,6 +196,39 @@ def _parse_year_hint(text: str):
     year = m.group(2) or m.group(3)  # 'YEAR 2026' alt / 'DATE: ...2026' alt
     return normalize_year(year)
 
+
+
+def _extract_issue_dtg(raw_text: str):
+    """Trailing issue time group of a warning block, or None.
+
+    '201400 UTC JUN 26' -> '201400 UTC JUN 26' (20 Jun 2026, 14:00 UTC).
+    The LAST non-empty line must be the bare time group: a line that
+    also carries CANCEL / UNTIL / TO is a dateline or validity range,
+    not an issue date. The matched text is stored verbatim (same
+    convention as the dedicated I / XII parsers).
+    """
+    lines = [l for l in (raw_text or "").split("\n") if l.strip()]
+    if not lines:
+        return None
+    last = lines[-1]
+    if re.search(r"\b(?:CANCEL|UNTIL|TO)\b", last, re.IGNORECASE):
+        return None
+    m = RE_ISSUE_DTG.match(last.strip())
+    if not m:
+        return None
+    day, hh, mm, mon, ytok = m.groups()
+    month = MONTHS.get((mon or "")[:3].lower())
+    if month is None:
+        return None
+    try:
+        d, h, mi = int(day), int(hh), int(mm or 0)
+    except (TypeError, ValueError):
+        return None
+    if not (1 <= d <= 31 and 0 <= h <= 23 and 0 <= mi <= 59):
+        return None
+    if ytok is not None and len(ytok) not in (2, 4):
+        return None
+    return m.group(0).strip()
 
 
 def _extract_validity_dates(raw_text, year):
@@ -602,7 +647,7 @@ def parse_warning(block, cfg):
         "source_id": cfg["source_id"],
         "navarea": cfg["navarea_id"],
         "title": title,
-        "issued_text": None,
+        "issued_text": _extract_issue_dtg(raw_text),
         "coordinates": None,
         "latitude": lat,
         "longitude": lon,
