@@ -21,6 +21,9 @@ Safety invariants:
     unavailable model fails the run closed (exit 3) and is never silently substituted.
   - The AI-correctable field set is whitelist-only and must stay a subset of the columns the
     admin_save_nav_warning RPC accepts in p_update. Titles, dates and status are never AI-edited.
+  - Gemini usage is rate-controlled (audit 2026-11-07): only records with at least one AI-fixable
+    issue are assessed, hard-capped by --max-ai-records, throttled to AUDIT_AI_MAX_RPM calls per
+    minute, and a 429 stops the AI pass without ever retrying through the REST fallback.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ import json
 import os
 import re
 import sys
+import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 import uuid
 
@@ -74,6 +78,17 @@ class GeometryFetchError(RuntimeError):
     schema), and the old per-batch except swallowed it — every warning was
     silently reported as TIER_A_ZERO_GEOMETRIES (700+ false errors). A failed
     geometry fetch must abort the run, never produce a geometry-blind report.
+    """
+
+
+class GeminiRateLimited(RuntimeError):
+    """Raised when the Gemini API returns 429 / RESOURCE_EXHAUSTED.
+
+    Rate limits are per Google Cloud PROJECT, and the audit shares one quota
+    pool with every sync job using the same GEMINI_API_KEY. A 429 must stop
+    the AI pass immediately and must never be retried through the REST
+    fallback, which would double the call count against an already
+    exhausted quota (audit 2026-11-07).
     """
 
 
@@ -622,7 +637,9 @@ def _gemini_rest_generate(model: str, prompt: str, api_key: str) -> str:
     """Plain REST generateContent call — no SDK dependency, used as the
     fallback when google-genai is missing OR when the SDK call itself
     fails (version drift, config-object changes, ClientError)."""
+    import urllib.error
     import urllib.request
+    _throttle()
     url = f"{API_ROOT}/{model}:generateContent"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -637,13 +654,41 @@ def _gemini_rest_generate(model: str, prompt: str, api_key: str) -> str:
         },
         method="POST"
     )
-    with urllib.request.urlopen(req, timeout=30) as http_resp:
-        res_data = json.loads(http_resp.read().decode("utf-8"))
-        candidates = res_data.get("candidates") or []
-        if candidates:
-            parts = candidates[0].get("content", {}).get("parts", [])
-            return parts[0].get("text", "") if parts else ""
+    try:
+        with urllib.request.urlopen(req, timeout=30) as http_resp:
+            res_data = json.loads(http_resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            raise GeminiRateLimited(
+                f"Gemini REST call returned 429 for model '{model}': {exc}"
+            ) from exc
+        raise
+    candidates = res_data.get("candidates") or []
+    if candidates:
+        parts = candidates[0].get("content", {}).get("parts", [])
+        return parts[0].get("text", "") if parts else ""
     return ""
+
+
+# --- Gemini rate control (audit 2026-11-07) ---------------------------------
+# Rate limits are per Google Cloud PROJECT, not per key: the audit shares its
+# GEMINI_API_KEY quota pool with every sync job (all-sync, manual-ingest,
+# navarea-xix-sync). AUDIT_AI_MAX_RPM (default 10) is a conservative local
+# choice, NOT a Google-documented limit; read the real tier limits at
+# https://aistudio.google.com/rate-limit before tuning it.
+AI_MAX_RPM = int(os.getenv("AUDIT_AI_MAX_RPM", "10"))
+
+_last_ai_call = 0.0
+
+
+def _throttle() -> None:
+    """Sleep so Gemini calls never exceed AI_MAX_RPM requests per minute."""
+    global _last_ai_call
+    gap = 60.0 / max(AI_MAX_RPM, 1)
+    wait = _last_ai_call + gap - time.monotonic()
+    if wait > 0:
+        time.sleep(wait)
+    _last_ai_call = time.monotonic()
 
 
 def assess_warning_with_gemini(
@@ -721,6 +766,7 @@ def assess_warning_with_gemini(
             genai = None
         if genai is not None:
             try:
+                _throttle()
                 client = genai.Client(api_key=api_key)
                 # Gemini 3.x removed temperature/top_p/top_k sampling controls.
                 resp = client.models.generate_content(
@@ -730,6 +776,11 @@ def assess_warning_with_gemini(
                 )
                 response_text = resp.text or ""
             except Exception as sdk_exc:
+                msg = str(sdk_exc)
+                if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                    # Quota exhausted: never double the call count by
+                    # retrying through REST against the same quota pool.
+                    raise GeminiRateLimited(msg) from sdk_exc
                 _note_gemini_failure(
                     canonical_id,
                     "google-genai SDK call failed, falling back to REST: "
@@ -738,6 +789,8 @@ def assess_warning_with_gemini(
                 response_text = ""
         if not response_text:
             response_text = _gemini_rest_generate(model, prompt, api_key)
+    except GeminiRateLimited:
+        raise
     except Exception as exc:
         _note_gemini_failure(canonical_id, f"{type(exc).__name__}: {exc}")
         return []
@@ -1124,6 +1177,7 @@ def run_audit(
     batch_size: int = 500,
     client: Optional[Any] = None,
     model_name: Optional[str] = None,
+    max_ai_records: int = 50,
 ) -> Dict[str, Any]:
     """Orchestrate parsing audit, proposal generation, or approved correction application.
     Generates a full report; propose/apply modes record results in public.parsing_audit_runs
@@ -1277,14 +1331,42 @@ def run_audit(
 
             # 4. Gemini Propose Corrections (if mode is propose_corrections)
             all_proposals: List[Dict[str, Any]] = []
+            ai_stopped = False
             if mode == "propose_corrections":
                 reset_gemini_failure_log()
+                # Rate control (audit 2026-11-07): quota is per Google Cloud
+                # project and shared with every sync job using the same
+                # GEMINI_API_KEY. Only records with at least one AI-fixable
+                # issue are assessed (bad dates/status/geometry cannot be
+                # fixed by the AI anyway) and never more than max_ai_records
+                # Gemini calls are made per run. A 429 keeps the proposals
+                # already made and stops the AI pass.
+                ai_calls = 0
                 for rec, rec_issues in records_with_issues:
-                    proposals = assess_warning_with_gemini(
-                        record=rec,
-                        model_name=selected_model,
-                        issues=rec_issues
-                    )
+                    ai_issues = [
+                        i for i in rec_issues
+                        if i.get("field") in ALLOWED_PROPOSAL_FIELDS
+                    ]
+                    if not ai_issues:
+                        continue
+                    if ai_calls >= max_ai_records:
+                        report["limitations"].append(
+                            f"AI cap reached: {max_ai_records} records assessed, remainder skipped."
+                        )
+                        break
+                    ai_calls += 1
+                    try:
+                        proposals = assess_warning_with_gemini(
+                            record=rec,
+                            model_name=selected_model,
+                            issues=ai_issues
+                        )
+                    except GeminiRateLimited as exc:
+                        report["limitations"].append(
+                            f"Stopped on Gemini 429 after {ai_calls} records: {exc}"
+                        )
+                        ai_stopped = True
+                        break
                     all_proposals.extend(proposals)
 
                 failures = gemini_failure_summary()
@@ -1313,7 +1395,11 @@ def run_audit(
                     report["proposal_count"] = len(all_proposals)
 
             report["proposals"] = all_proposals
-            report["status"] = "succeeded" if complete else "partial"
+            # A 429 stop means the AI assessment is incomplete even when the
+            # scan itself finished; never report a green 'succeeded'.
+            report["status"] = (
+                "succeeded" if (complete and not ai_stopped) else "partial"
+            )
 
     except Exception as exc:
         report["status"] = "failed"
@@ -1420,6 +1506,12 @@ def main() -> int:
         default=None,
         help="Gemini model name to use for AI proposals.",
     )
+    parser.add_argument(
+        "--max-ai-records",
+        type=int,
+        default=50,
+        help="Hard cap on Gemini-assessed records in propose_corrections mode (default: 50).",
+    )
 
     args = parser.parse_args()
 
@@ -1446,6 +1538,7 @@ def main() -> int:
             report_dir=args.report_dir,
             batch_size=args.batch_size,
             model_name=args.model_name,
+            max_ai_records=args.max_ai_records,
         )
         status = res.get("status")
         print(f"[audit] Run completed with status='{status}'. Examined={res.get('examined_count')}, Issues={res.get('issue_count')}, Proposals={res.get('proposal_count')}, Applied={res.get('applied_count')}")
