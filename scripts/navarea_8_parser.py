@@ -38,6 +38,7 @@ if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 
 from shared.utils import parse_coordinates, classify_hazard_categories
+from shared.models import extract_issue_dtg
 
 SOURCE_ID = "nho-navarea-viii"
 NAVAREA_ID = "VIII"
@@ -210,7 +211,7 @@ def parse_warning(block):
         "source_id": SOURCE_ID,
         "navarea": NAVAREA_ID,
         "title": _extract_title(body) or warning_id,
-        "issued_text": None,
+        "issued_text": extract_issue_dtg(raw_text),
         "coordinates": None,  # master no longer carries flat coords (20261020 schema)
         "latitude": lat,
         "longitude": lon,
