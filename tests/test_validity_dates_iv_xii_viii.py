@@ -52,15 +52,15 @@ IV_PLAIN_BODY = (
 def _iv_memo(number, body):
     return ("062049Z JAN 26\n"
             "NAVAREA IV %s/26(1).\n" % number
-            "GULF OF AMERICA.\n"
-            "TEXAS.\n" + body)
+            + "GULF OF AMERICA.\n"
+            + "TEXAS.\n" + body)
 
 
 def _xii_memo(number, body):
     return ("251304Z FEB 26\n"
             "NAVAREA XII %s/26(1).\n" % number
-            "NORTH PACIFIC.\n"
-            "CALIFORNIA.\n" + body)
+            + "NORTH PACIFIC.\n"
+            + "CALIFORNIA.\n" + body)
 
 
 VIII_CANCEL_BULLETIN = (
