@@ -39,6 +39,7 @@ if hasattr(sys.stdout, 'reconfigure'):
 
 from shared.utils import parse_coordinates, classify_hazard_categories
 from shared.models import (extract_issue_dtg, issue_dtg_is_future, issue_dtg_has_conflict)
+from scripts.navarea_universal_parser import _extract_validity_dates
 
 SOURCE_ID = "nho-navarea-viii"
 NAVAREA_ID = "VIII"
@@ -220,6 +221,18 @@ def parse_warning(block, now_utc=None):
     else:
         dtg_flags = []
 
+    # Validity dates (audit F1 extension to the dedicated parsers; the
+    # same fail-closed extractor the universal parser and the backfill
+    # script use). Keep a value ONLY when it carries a time of day:
+    # date-only stamps are dropped (None) and no time is ever invented.
+    # A cancel dateline with a time sets valid_to; valid_from stays the
+    # issue DTG (build_master_payload's issued_text fallback) unless a
+    # time-bearing range start exists.
+    valid_from_raw, valid_to_raw = _extract_validity_dates(
+        raw_text, block["year"])
+    valid_from = valid_from_raw if valid_from_raw and "T" in valid_from_raw else None
+    valid_to = valid_to_raw if valid_to_raw and "T" in valid_to_raw else None
+
     nav_warning = {
         "warning_id": warning_id,
         "canonical_id": canonical_id,
@@ -239,6 +252,8 @@ def parse_warning(block, now_utc=None):
         "geometry_sub_areas": geom_labels,
         "cross_refs": _extract_cross_refs(raw_text),
         "qa_flags": dtg_flags,
+        "valid_from": valid_from,
+        "valid_to": valid_to,
     }
     return raw_message, nav_warning
 
