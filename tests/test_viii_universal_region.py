@@ -173,8 +173,16 @@ class TestViiiLegacyParity(unittest.TestCase):
                         "valid_to", "geometry_sub_areas"):
                 self.assertEqual(uw[key], lw[key],
                                  uw["warning_id"] + " " + key)
-            self.assertEqual(uw["spatial"], lw["spatial"],
-                             uw["warning_id"] + " spatial")
+            # Geometry parity (type + coordinates). NOT the feature
+            # properties: the universal path stamps richer zone_label
+            # props ('Area A' vs the legacy bare 'A') by design.
+            uf = (uw["spatial"] or {}).get("features") or []
+            lf = (lw["spatial"] or {}).get("features") or []
+            self.assertEqual(len(uf), len(lf),
+                             uw["warning_id"] + " feature count")
+            for a, b in zip(uf, lf):
+                self.assertEqual(a["geometry"], b["geometry"],
+                                 uw["warning_id"] + " geometry")
 
 
 if __name__ == "__main__":
