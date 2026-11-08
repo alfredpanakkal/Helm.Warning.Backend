@@ -267,3 +267,55 @@ def roman_to_key(roman: str):
     """Maps a roman numeral to its region key, or None for dedicated-parser
     regions (I, IV, VIII, XI, XII)."""
     return _ROMAN_TO_KEY.get((roman or "").upper())
+
+
+# --- Inline sub-area markers (added 2026-11-08) ---------------------------
+# Sub-areas that do NOT start a line: NHO India writes '(A) 20-12.94N
+# ... (B) ...' INLINE inside the bounded-area sentence (NAVAREA VIII
+# 1139/26: four pipeline work areas that the legacy whole-clause parse
+# merged into one crooked ring); other coordinators label sub-areas
+# 'AREA 1', 'AREA A'. Both regexes are fail-closed:
+#   * coordinate gate - the lookahead requires whitespace, then a
+#     degrees run and a dash/space before more digits, so the marker
+#     DIRECTLY introduces a DDM coordinate: '(A) SEE NOTE' or
+#     'AREA 1 IS LOCATED' never match, and 'AREA B' inside
+#     'AREA BOUNDED BY' cannot either (\b after the single letter
+#     fails on 'BOUNDED'). Decimal-degree sub-area listings are
+#     deliberately NOT covered: no split beats a wrong split.
+#   * sequence gate - subarea_marks() accepts a family only when its
+#     markers form a strictly increasing sequence (>= 2) of one kind
+#     (A,B,C.. / 1,2,3..); a lone or non-monotonic family is prose
+#     ('(A) SEE NOTE (B) ABOVE', 'AREA 1.5 NM') and yields no marks.
+RE_PAREN_SUBAREA = re.compile(r"\(\s*([A-Z])\s*\)(?=\s+\d{1,3}[-\s]\d)")
+RE_AREA_LABEL = re.compile(r"\bAREA\s+([A-Z]|\d{1,2})\b(?=\s+\d{1,3}[-\s]\d)")
+
+
+def subarea_marks(body: str):
+    """Inline sub-area marker positions for clause segmentation.
+
+    Returns sorted [(start, label)] for the '(A)' parenthesized-letter
+    and 'AREA n' families, each accepted only as a strictly increasing
+    sequence of >= 2 same-kind labels whose markers directly introduce a
+    coordinate (the regex lookaheads). A family failing any gate is
+    prose and yields nothing - the clause never splits on it
+    (fail-closed: no split beats a wrong split).
+    """
+    out = []
+    for rex in (RE_PAREN_SUBAREA, RE_AREA_LABEL):
+        ms = [(m.start(), m.group(1)) for m in rex.finditer(body or "")]
+        if len(ms) < 2:
+            continue
+
+        def _rank(label):
+            return int(label) if label.isdigit() else ord(label)
+
+        ok = True
+        for i in range(len(ms) - 1):
+            a, b = ms[i][1], ms[i + 1][1]
+            if a.isdigit() != b.isdigit() or _rank(a) >= _rank(b):
+                ok = False
+                break
+        if ok:
+            out.extend(ms)
+    return sorted(out)
+
