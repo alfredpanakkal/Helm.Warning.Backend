@@ -27,6 +27,13 @@ deviate per region, so this module now carries:
 
 Region-specific quirk handling that needs a dedicated parser (NAVAREA
 1 / IV / VIII / XI / XII, Baltic) stays in those parsers.
+
+NAVAREA VIII note (2026-11-08): the VIII REGION CONFIG now lives in
+the universal parser's _region_config ('viii' branch, rule-only by
+construction — the Gemini layer refuses keys outside UNIVERSAL_REGIONS)
+so an A/B switch against the legacy scripts/navarea_8_parser.py can
+produce identical pipeline output; the legacy parser stays in place
+until that A/B diff retires it.
 """
 import re
 
@@ -90,6 +97,7 @@ NAVAREA_NAMES = {
     "vi": "Argentina / SE Atlantic",
     "vii": "South Africa",
     "8": "Indian Ocean",
+    "viii": "Indian Ocean",
     "ix": "Red Sea / Persian Gulf",
     "x": "Australia",
     "xi": "East Asia",
