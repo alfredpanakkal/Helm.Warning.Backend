@@ -1,0 +1,74 @@
+# One-off, re-runnable valid_from backfill (dispatch-only).
+# Runs the SAME rule the pipeline uses on active rows where
+# valid_from IS NULL (IV / XII / IX / VIII). Dry-run by default;
+# --apply requires apply=true AND confirm="BACKFILL".
+name: Backfill issue-DTG valid_from
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Apply mode (writes valid_from). false = dry-run only."
+        type: boolean
+        default: false
+      confirm:
+        description: 'Safety word for apply mode: must be "BACKFILL".'
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run backfill (dry-run or apply)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          APPLY_INPUT: ${{ inputs.apply }}
+          CONFIRM_INPUT: ${{ inputs.confirm }}
+        run: |
+          MODE="dry-run"
+          if [ "$APPLY_INPUT" = "true" ] && [ "$CONFIRM_INPUT" = "BACKFILL" ]; then
+            MODE="apply"
+          elif [ "$APPLY_INPUT" = "true" ]; then
+            echo "WARNING: apply=true but confirm is not 'BACKFILL' - running dry-run only."
+          fi
+          echo "Backfill mode: $MODE"
+          if [ "$MODE" = "apply" ]; then
+            python -m scripts.backfill_issue_dtg --apply
+          else
+            python -m scripts.backfill_issue_dtg
+          fi
+
+      - name: Upload report CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backfill-issue-dtg-report
+          path: backfill_issue_dtg_report.csv
+          if-no-files-found: warn
+
+      - name: Upload before-values CSV (apply runs)
+        if: always() && inputs.apply == true && inputs.confirm == 'BACKFILL'
+        uses: actions/upload-artifact@v4
+        with:
+          name: backfill-issue-dtg-before-values
+          path: backfill_issue_dtg_before_values.csv
+          if-no-files-found: warn
