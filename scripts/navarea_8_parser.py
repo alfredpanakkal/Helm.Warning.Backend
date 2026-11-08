@@ -40,6 +40,7 @@ if hasattr(sys.stdout, 'reconfigure'):
 from shared.utils import parse_coordinates, classify_hazard_categories
 from shared.models import (extract_issue_dtg, issue_dtg_is_future, issue_dtg_has_conflict)
 from scripts.navarea_universal_parser import _extract_validity_dates
+from shared.navarea_universal_text import subarea_marks
 
 SOURCE_ID = "nho-navarea-viii"
 NAVAREA_ID = "VIII"
@@ -87,23 +88,42 @@ def _segment_clauses(body: str):
     """
     Splits a warning body into geometry clauses:
       - numbered items (1. 2. ...) and lettered sub-areas (A. B. ...)
+      - inline sub-area markers ('(A) 20-12.94N ... (B) ...',
+        'AREA 1 20-10.0N ...') via subarea_marks() - NAVAREA VIII
+        1139/26's four '(A)'..'(D)' work areas must parse as SEPARATE
+        geometries, never one merged crooked ring (fail-closed gates in
+        shared/navarea_universal_text: a marker splits only when it
+        directly introduces a coordinate and its family is strictly
+        increasing).
       - otherwise a single clause with the full body.
-    Returns a list of {label, text}.
+    Returns a list of {label, text}; inline sub-area clauses carry the
+    preamble as 'context' (the governing 'IN AREAS BOUNDED BY' phrase
+    lives before the first marker).
     """
-    matches = list(RE_ITEM_LINE.finditer(body))
-    if not matches:
+    marks = [
+        {"start": m.start(), "label": m.group(1).strip()}
+        for m in RE_ITEM_LINE.finditer(body)
+    ] + [
+        {"start": start, "label": label, "subarea": True}
+        for start, label in subarea_marks(body)
+    ]
+    if not marks:
         return [{"label": "Area", "text": body}]
 
+    marks.sort(key=lambda x: x["start"])
     clauses = []
-    # Text before the first item belongs to the warning header clause.
-    preamble = body[:matches[0].start()].strip()
+    # Text before the first mark belongs to the warning header clause.
+    preamble = body[:marks[0]["start"]].strip()
     if preamble:
         clauses.append({"label": "Area", "text": preamble})
-    for i, m in enumerate(matches):
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
-        chunk = body[m.start():end].strip()
-        label = m.group(1).strip() or f"Item {i + 1}"
-        clauses.append({"label": label, "text": chunk})
+    for i, mark in enumerate(marks):
+        end = marks[i + 1]["start"] if i + 1 < len(marks) else len(body)
+        chunk = body[mark["start"]:end].strip()
+        label = mark["label"] or f"Item {i + 1}"
+        clause = {"label": label, "text": chunk}
+        if mark.get("subarea") and preamble:
+            clause["context"] = preamble
+        clauses.append(clause)
     return clauses
 
 
@@ -175,7 +195,8 @@ def parse_warning(block, now_utc=None):
     # Geometry: one Feature per clause that the shared parser can resolve.
     geoms = []
     for clause in clauses:
-        _, lat, lon, spatial = parse_coordinates(clause["text"])
+        _, lat, lon, spatial = parse_coordinates(
+            clause["text"], clause.get("context"))
         if spatial:
             geoms.append((clause["label"], spatial, lat, lon))
 

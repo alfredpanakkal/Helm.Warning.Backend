@@ -58,6 +58,7 @@ from shared.navarea_universal_text import (
     region_header_patterns, region_cancel_patterns, normalize_year, warning_header_re,
     RE_YEAR_HINT, TITLE_TRANSLATION_REGIONS,
     AUSCOAST_AREAS, RE_AUSCOAST_HEADER, RE_AUSCOAST_CANCEL, RE_NEVER_MATCHES,
+    subarea_marks,
 )
 from shared import translation
 from shared.models import (extract_issue_dtg, issue_dtg_is_future, issue_dtg_has_conflict)
@@ -332,8 +333,17 @@ def _segment_clauses(body: str):
         the lettered form only when the letter DIRECTLY introduces a
         coordinate ('A. 12-34.5N ...'); NAVAREA XI 0475/26 areas A/B/C
         must never merge into one shape.
+      - inline sub-area markers ('(A) 20-12.94N ... (B) ...',
+        'AREA 1 20-10.0N ...') via subarea_marks() - NAVAREA VIII
+        1139/26's four '(A)'..'(D)' work areas must parse as SEPARATE
+        geometries, never one merged crooked ring (fail-closed gates in
+        shared/navarea_universal_text: a marker splits only when it
+        directly introduces a coordinate and its family is strictly
+        increasing).
       - otherwise a single clause with the full body.
-    Returns a list of {label, text}.
+    Returns a list of {label, text}; inline sub-area clauses carry the
+    preamble as 'context' so the governing bounded-area phrase outside
+    the segment still drives classification.
     """
     marks = [
         {"start": m.start(), "label": m.group(1).strip()}
@@ -341,6 +351,9 @@ def _segment_clauses(body: str):
     ] + [
         {"start": m.start(), "label": m.group(1).strip()}
         for m in RE_LETTERED_LINE.finditer(body)
+    ] + [
+        {"start": start, "label": label, "subarea": True}
+        for start, label in subarea_marks(body)
     ]
     if not marks:
         return [{"label": "Area", "text": body}]
@@ -355,7 +368,10 @@ def _segment_clauses(body: str):
         if not chunk:
             continue
         label = mark["label"] or "Item " + str(idx + 1)
-        clauses.append({"label": label, "text": chunk})
+        clause = {"label": label, "text": chunk}
+        if mark.get("subarea") and preamble:
+            clause["context"] = preamble
+        clauses.append(clause)
     return clauses
 
 
@@ -541,7 +557,8 @@ def parse_warning(block, cfg, now_utc=None):
     _dq_order = {"EXPLICIT": 0, "INFERRED": 1, "AMBIGUOUS": 2}
     data_quality = None
     for clause in clauses:
-        _, lat, lon, spatial, report = parse_coordinates_detailed(clause["text"])
+        _, lat, lon, spatial, report = parse_coordinates_detailed(
+            clause["text"], clause.get("context"))
         for flag in report.get("flags") or []:
             if flag not in qa_flags:
                 qa_flags.append(flag)
