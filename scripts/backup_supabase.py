@@ -31,19 +31,19 @@ EXCLUDED_TABLES = {"admin_users"}
 # credential/email table), and views are never listed (they duplicate
 # base-table data).
 BACKUP_TABLES = (
-    "nav_warnings",
+    "ingestion_generations",
+    "manual_ingest_queue",
     "nav_warning_audits",
     "nav_warning_cancellations",
     "nav_warning_charts",
     "nav_warning_entities",
     "nav_warning_geometries",
     "nav_warning_schedules",
-    "raw_messages",
-    "ingestion_generations",
-    "manual_ingest_queue",
+    "nav_warnings",
     "parsing_audit_runs",
     "parsing_correction_proposals",
     "pipeline_runs",
+    "raw_messages",
     "sources_registry",
 )
 PAGE_SIZE = 1000
