@@ -17,8 +17,6 @@ import os
 import sys
 from datetime import datetime, timezone
 
-import requests
-
 # Never exported into backup artifacts (auth/credential material).
 EXCLUDED_TABLES = {"admin_users"}
 PAGE_SIZE = 1000
@@ -50,6 +48,10 @@ def _extract_table_names(openapi):
 
 def _fetch_all_rows(base_url, key, table):
     """All rows of one table, paginated; raises on any HTTP error."""
+    # Lazy import: the unittest job runs a bare interpreter with no pip
+    # packages (2026-10-28 live failure: ModuleNotFoundError 'requests');
+    # tests import this module for helper assertions only.
+    import requests
     rows = []
     offset = 0
     headers = {"apikey": key, "Authorization": "Bearer " + key}
@@ -79,6 +81,8 @@ def main() -> int:
         print("❌ Fatal: SUPABASE_URL and SUPABASE_KEY are required.",
               file=sys.stderr)
         return 1
+
+    import requests
 
     base_url = _normalize_base_url(url)
     headers = {"apikey": key, "Authorization": "Bearer " + key}
