@@ -50,7 +50,6 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          ALLOW_DRY_RUN: '1'
         run: |
           PYTHONPATH=${{ github.workspace }} python -m scripts.backup_supabase
 
