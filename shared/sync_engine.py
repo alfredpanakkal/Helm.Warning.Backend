@@ -44,15 +44,6 @@ CANCEL_MIN_FEED_COUNT = int(os.environ.get("SYNC_CANCEL_MIN_FEED_COUNT", "10"))
 CANCEL_MIN_FEED_FRACTION = float(os.environ.get("SYNC_CANCEL_MIN_FEED_FRACTION", "0.5"))
 
 
-# Full-rewrite mode (manual only: the workflow_dispatch
-# full-rewrite.yml sets SYNC_FORCE_REPARSE=1). Re-parses every
-# stored ACTIVE warning even when its raw-text checksum is
-# unchanged, so rows parsed before a parser-rule change
-# self-correct on the next harvest. Daily/scheduled runs never
-# set this — the differential skip stays the default.
-FORCE_REPARSE = os.environ.get("SYNC_FORCE_REPARSE", "").lower() in ("1", "true", "yes")
-
-
 def get_supabase_client():
     """Initializes and returns the Supabase client.
     Exits loud if SUPABASE_URL or SUPABASE_KEY are missing unless ALLOW_DRY_RUN=1.
@@ -406,7 +397,7 @@ def run_differential_sync(
     try:
         res_warn = (
             supabase_client.table("nav_warnings")
-            .select("id, canonical_id, status, raw_text, valid_to, triage_tier, qa_flags")
+            .select("id, canonical_id, status, raw_text, valid_to, triage_tier")
             .eq("source_id", source_id)
             .execute()
         )
@@ -437,10 +428,6 @@ def run_differential_sync(
 
     print(f"  ✔ Found {len(existing_warnings)} existing warnings in database")
     print(f"  ✔ Found {len(existing_checksums)} existing checksums in database")
-    if FORCE_REPARSE:
-        print("  🔁 SYNC_FORCE_REPARSE active (full-rewrite mode): checksum-matched "
-              "active rows re-parse under current rules; AI/admin-corrected "
-              "rows preserved.")
 
     # 2. Compute differential keyed on canonical_id
     diff = compute_differential(
@@ -448,8 +435,7 @@ def run_differential_sync(
         scraped_messages=scraped_messages,
         existing_warnings=existing_warnings,
         existing_checksums=existing_checksums,
-        key_fn=lambda w: w.get("canonical_id"),
-        force_reparse=FORCE_REPARSE,
+        key_fn=lambda w: w.get("canonical_id")
     )
 
     # Warnings active in DB but absent from this scrape (lifecycle input).
@@ -672,7 +658,6 @@ def run_differential_sync(
             "feed_credible": feed_credible,
             "full_snapshot": full_snapshot,
         },
-        "force_reparse": FORCE_REPARSE,
     }
     _record_generation(
         supabase_client, source_id, navarea_name, started_at,
