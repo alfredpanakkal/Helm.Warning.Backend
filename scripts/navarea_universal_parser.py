@@ -55,7 +55,8 @@ from shared.utils import (
 )
 from shared.navarea_universal_text import (
     UNIVERSAL_REGIONS, NAVAREA_NAMES, regions_in_text,
-    region_header_patterns, region_cancel_patterns, normalize_year, warning_header_re,
+    region_header_patterns, region_cancel_patterns, cancel_ref_re,
+    normalize_year, warning_header_re,
     RE_YEAR_HINT, TITLE_TRANSLATION_REGIONS,
     AUSCOAST_AREAS, RE_AUSCOAST_HEADER, RE_AUSCOAST_CANCEL, RE_NEVER_MATCHES,
     subarea_marks,
