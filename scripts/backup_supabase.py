@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""backup_supabase.py — Full-data export of every Supabase table.
+"""backup_supabase.py — Data export of the allowlisted Supabase tables.
 
-Insurance backup against data loss: walks the PostgREST OpenAPI
-root to discover every readable table/view, then exports ALL rows
-(service key bypasses RLS; paginated, fail-closed on any HTTP
-error) to backups/<table>.json plus a manifest.json with row
-counts and the fetch timestamp. Run by .github/workflows/
-supabase-backup.yml (monthly cron + manual workflow_dispatch).
+Exports every row of each table in BACKUP_TABLES (an explicit
+allowlist — tables are NEVER discovered dynamically, so a table
+added later is not silently pulled into a backup artifact) to
+backups/<table>.json plus a manifest.json with row counts and the
+fetch timestamp. Service key bypasses RLS; pagination is
+fail-closed on any HTTP error — a table that 404s or fails fails
+the whole run. Run by .github/workflows/supabase-backup.yml
+(monthly cron + manual workflow_dispatch).
 
-admin_users is EXCLUDED by name so credentials/emails never leave
-Supabase in a backup artifact. ALLOW_DRY_RUN=1 (PR CI) makes the
-script a credential-check no-op.
+admin_users (and anything else not on the allowlist) is never
+exported, so credential/identity material never leaves Supabase.
+Note: this JSON export is a data export, not a proven backup — a
+restore has never been tested. pg_dump is the real backup.
 """
 import json
 import os
@@ -19,6 +22,30 @@ from datetime import datetime, timezone
 
 # Never exported into backup artifacts (auth/credential material).
 EXCLUDED_TABLES = {"admin_users"}
+
+# Explicit allowlist: the ONLY tables exported. Derived from the
+# repo migrations (20261019 pipeline, 20261020 raw_messages,
+# 20261023 lifecycle + paste queue, 20261026 parsing audit) plus the
+# live-DB ledger/registry tables (ingestion_generations, pipeline_runs,
+# sources_registry). Data tables only — never admin_users (or any
+# credential/email table), and views are never listed (they duplicate
+# base-table data).
+BACKUP_TABLES = (
+    "nav_warnings",
+    "nav_warning_audits",
+    "nav_warning_cancellations",
+    "nav_warning_charts",
+    "nav_warning_entities",
+    "nav_warning_geometries",
+    "nav_warning_schedules",
+    "raw_messages",
+    "ingestion_generations",
+    "manual_ingest_queue",
+    "parsing_audit_runs",
+    "parsing_correction_proposals",
+    "pipeline_runs",
+    "sources_registry",
+)
 PAGE_SIZE = 1000
 REQUEST_TIMEOUT = 60
 
@@ -29,21 +56,6 @@ def _normalize_base_url(url):
     if base.endswith("/rest/v1"):
         base = base[: -len("/rest/v1")]
     return base
-
-
-def _extract_table_names(openapi):
-    """Readable table/view names from the PostgREST OpenAPI root.
-
-    Only paths exposing a GET operation are included, so RPC-only
-    paths (POST, e.g. admin_save_nav_warning) are never fetched.
-    """
-    names = set()
-    for path, ops in (openapi.get("paths") or {}).items():
-        if isinstance(ops, dict) and "get" in ops:
-            parts = str(path).strip("/").split("/")
-            if len(parts) == 1 and parts[0]:
-                names.add(parts[0])
-    return sorted(names - EXCLUDED_TABLES)
 
 
 def _fetch_all_rows(base_url, key, table):
@@ -82,23 +94,11 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
-    import requests
-
     base_url = _normalize_base_url(url)
-    headers = {"apikey": key, "Authorization": "Bearer " + key}
-    try:
-        root = requests.get(base_url + "/rest/v1/", headers=headers,
-                            timeout=REQUEST_TIMEOUT)
-        root.raise_for_status()
-        tables = _extract_table_names(root.json())
-    except Exception as e:
-        print("❌ Fatal: could not discover tables via PostgREST root: "
-              + str(e), file=sys.stderr)
-        return 1
 
-    if not tables:
-        print("❌ Fatal: PostgREST root exposed no readable tables.",
-              file=sys.stderr)
+    if set(BACKUP_TABLES) & EXCLUDED_TABLES:
+        print("❌ Fatal: BACKUP_TABLES must never include an excluded "
+              "table.", file=sys.stderr)
         return 1
 
     os.makedirs("backups", exist_ok=True)
@@ -107,7 +107,7 @@ def main() -> int:
                 "tables": {}}
 
     failed = []
-    for table in tables:
+    for table in BACKUP_TABLES:
         try:
             rows = _fetch_all_rows(base_url, key, table)
         except Exception as e:
