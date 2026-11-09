@@ -93,19 +93,21 @@ class TestMain(unittest.TestCase):
                 with open(os.path.join("backups", "manifest.json"),
                           encoding="utf-8") as f:
                     manifest = json.load(f)
+                files = set(os.listdir("backups"))
             finally:
                 os.chdir(prev)
         self.assertEqual(rc, 0)
         # exactly the allowlist was fetched — nothing else
         self.assertEqual(set(calls), set(backup_supabase.BACKUP_TABLES))
         self.assertNotIn("admin_users", calls)
-        # a table NOT on the allowlist is never exported
+        self.assertEqual(len(calls), len(set(calls)))
+        # a table NOT on the allowlist is never exported: the manifest
+        # and the artifact directory contain exactly the allowlist
         self.assertEqual(set(manifest["tables"]),
                          set(backup_supabase.BACKUP_TABLES))
-        for t in backup_supabase.BACKUP_TABLES:
-            self.assertTrue(os.path.exists(
-                os.path.join(prev, "backups", t + ".json")) is False or True)
-        self.assertEqual(len(calls), len(set(calls)))
+        expected = {t + ".json" for t in backup_supabase.BACKUP_TABLES}
+        expected.add("manifest.json")
+        self.assertEqual(files, expected)
 
     def test_failed_table_fails_the_run(self):
         def fake_fetch(base_url, key, table):
