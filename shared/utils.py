@@ -1058,17 +1058,46 @@ def classify_hazard(raw_text: str) -> str:
     return cats[0] if cats else "general"
 
 
+CORRECTION_QA_FLAGS = {"edited_by_admin", "ai_correction_applied"}
+
+
+def _has_applied_corrections(existing_record) -> bool:
+    """True when the stored row carries AI/admin correction qa_flags.
+
+    compute_differential has no DB access; corrections are read
+    purely from the record dict the caller selected (the sync
+    engine selects qa_flags alongside status). Tolerant to a
+    single string value; never raises on odd payloads.
+    """
+    flags = (existing_record or {}).get("qa_flags") or []
+    if isinstance(flags, str):
+        flags = [flags]
+    try:
+        return bool(set(flags) & CORRECTION_QA_FLAGS)
+    except TypeError:
+        return False
+
+
 def compute_differential(
     scraped_warnings: List[Dict[str, Any]],
     scraped_messages: List[Dict[str, Any]],
     existing_warnings: Dict[str, Dict[str, Any]],
     existing_checksums: Set[Tuple[str, str]],
-    key_fn: Optional[Any] = None
+    key_fn: Optional[Any] = None,
+    force_reparse: bool = False
 ) -> Dict[str, Any]:
     """
     Deterministically computes differential actions between scraped data and current database state.
     Supports canonical_id and custom key function.
     Returns: {'skip': [...], 'new': [...], 'update': [...], 'cancel': [...]}
+
+    force_reparse=True (SYNC_FORCE_REPARSE full-rewrite mode): an
+    ACTIVE row whose raw-text checksum matches is re-classified
+    skip -> update, so it re-parses under the CURRENT parser rules
+    (rows parsed before a rule change otherwise stay stale forever).
+    Rows carrying AI/admin correction qa_flags
+    ('edited_by_admin', 'ai_correction_applied') stay skipped:
+    a fresh rule parse must never clobber applied corrections.
     """
     scraped_warnings = scraped_warnings if scraped_warnings is not None else []
     scraped_messages = scraped_messages if scraped_messages is not None else []
@@ -1112,7 +1141,12 @@ def compute_differential(
                 (warn.get("warning_id", ""), chk) in existing_checksums
             )
 
-            if is_active and checksum_matches:
+            if is_active and checksum_matches and not force_reparse:
+                to_skip.append(wid)
+            elif (is_active and checksum_matches and force_reparse
+                  and _has_applied_corrections(existing_record)):
+                # Full-rewrite mode: AI/admin-corrected rows are
+                # never clobbered by a fresh rule parse.
                 to_skip.append(wid)
             else:
                 to_update.append((warn, raw_msg))
