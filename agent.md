@@ -114,6 +114,7 @@ All coordinate parsing must flow through `shared/utils.py`. **Never write ad-hoc
 - **CANCEL cross-references are evidence-based**: the sync resolves "CANCEL <ref>" wording into a `cancelled` transition only with `SYNC_APPLY_CANCEL_REFS=1` (default: resolve + log only). Always a status transition; never a deletion.
 - **The `navarea` column holds the bare coordinator code** (e.g. `III`, `X`): prefixed labels are stripped on sync and AUSCOAST pseudo-regions file under `X`; one-time backfill in `migrations/20261030_navarea_label_backfill.sql`.
 - **Validity dates are extracted fail-closed**: `valid_from` / `valid_to` come only from explicit wording; "UNTIL FURTHER NOTICE" or unknown dates store NULL, never a guess.
+- **A combined line 'CANCEL <refs> AND THIS MSG <DTG>' sets valid_to from the DTG** (same line, Z or UTC and the year required, no year inheritance). 'AND THIS MSG' without a DTG, 'AND THIS PARAGRAPH' and 'CANCEL THIS PARAGRAPH' never set valid_to.
 - **The universal parser is the one shared parse path** for regions III, V, VII, IX and X — never write per-region parsers for these; extend `scripts/navarea_universal_parser.py` and `shared/navarea_universal_text.py`.
 
 ## 4. The H02 Triage Precedence Gate
