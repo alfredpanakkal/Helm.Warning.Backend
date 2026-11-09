@@ -55,7 +55,8 @@ from shared.utils import (
 )
 from shared.navarea_universal_text import (
     UNIVERSAL_REGIONS, NAVAREA_NAMES, regions_in_text,
-    region_header_patterns, region_cancel_patterns, normalize_year, warning_header_re,
+    region_header_patterns, region_cancel_patterns, cancel_ref_re,
+    normalize_year, warning_header_re,
     RE_YEAR_HINT, TITLE_TRANSLATION_REGIONS,
     AUSCOAST_AREAS, RE_AUSCOAST_HEADER, RE_AUSCOAST_CANCEL, RE_NEVER_MATCHES,
     subarea_marks,
@@ -81,6 +82,24 @@ RE_PATH_REGION = re.compile(r"navarea[_-]([a-z0-9]+)", re.IGNORECASE)
 # leak into the last warning's raw text / title. Requires a run of 3-6
 # N's so a trailing single-coordinate hemisphere letter is never eaten.
 RE_BROADCAST_TAIL = re.compile(r"(?:[\s=.]*N{3,6}[\s=.]*)+\s*$")
+
+# NAVAREA VIII (NHO India) mirror text arrives as ONE long line per
+# warning: the mirror flattens the bulletin's line breaks, so numbered
+# items ('... 2. CANCEL THIS MSG ...') sit mid-line and the line-anchored
+# RE_ITEM_LINE can never see them. The VIII region config flags the body
+# for _normalize_flattened_items() (a COPY used only for clause
+# segmentation and title extraction — raw_text stays verbatim): each
+# inline item marker gets its own line, with the same boundary guard the
+# legacy VIII parser used (whitespace before, uppercase word after, so
+# coordinate fragments like '074-08.15E' or '2.5NM' never match).
+RE_INLINE_ITEM = re.compile(r"(?:^|\s)(\d{1,2})\.[\s]+(?=[A-Z])")
+
+
+def _normalize_flattened_items(body: str):
+    """Gives inline 'N. UPPERCASE' item markers their own lines (VIII)."""
+    if not body:
+        return body
+    return RE_INLINE_ITEM.sub(lambda m: "\n" + m.group(0).lstrip(), body)
 
 # Title cut length (audit finding F7, 2026-10-30): the title cuts at
 # the first sentence boundary at or past this many characters — a
@@ -160,6 +179,36 @@ def _region_config(region_key):
             "cancel_res": [RE_AUSCOAST_CANCEL],
             "companion_re": RE_NEVER_MATCHES,
             "translate_titles": False,
+        }
+    if region_key == "viii":
+        # NAVAREA VIII (NHO India): config parity with the legacy
+        # scripts/navarea_8_parser.py so the A/B switch (run_navarea_8
+        # VIII_PARSER=universal) and its eventual retirement produce
+        # IDENTICAL pipeline output. Deliberately NOT added to
+        # UNIVERSAL_REGIONS: the Gemini layer refuses keys outside that
+        # dict, which keeps NAVAREA VIII rule-first only (pipeline
+        # policy) by construction — the same mechanism the AUSCOAST
+        # pseudo-regions use. No region-extra header/cancel patterns
+        # are needed: the tolerant defaults already cover the live NHO
+        # forms ('NAVAREA VIII -1102/26', 'NAVAREA VIII 1066/26',
+        # 'CANCEL NAVAREA VIII MSG 1024/26', dash-form cancel refs).
+        # flatten_items: mirror text is one long line, so inline item
+        # markers need line normalization before segmentation.
+        # validity_requires_time: Alfred's 2026-11-07 contract — keep a
+        # validity stamp ONLY when it carries a time of day; a date-only
+        # stamp is dropped and no time is ever invented.
+        return {
+            "key": "viii",
+            "roman": "VIII",
+            "id_prefix": "NAVAREA VIII",
+            "source_id": "nho-navarea-viii",
+            "navarea_id": "VIII",
+            "header_res": [warning_header_re("VIII")],
+            "cancel_res": [cancel_ref_re("VIII")],
+            "companion_re": RE_NEVER_MATCHES,
+            "translate_titles": False,
+            "flatten_items": True,
+            "validity_requires_time": True,
         }
     roman = UNIVERSAL_REGIONS[region_key]
     return {
@@ -549,6 +598,11 @@ def parse_warning(block, cfg, now_utc=None):
     }
 
     body = raw_text.replace(block["header_text"], "", 1).strip()
+    if cfg.get("flatten_items"):
+        # NAVAREA VIII mirror text is one long line: give inline item
+        # markers their own lines so the shared line-anchored rules see
+        # them (segmentation/title only — raw_text stays verbatim).
+        body = _normalize_flattened_items(body)
     clauses = _segment_clauses(body)
 
     geoms = []
@@ -658,6 +712,12 @@ def parse_warning(block, cfg, now_utc=None):
     # upsert RPC) already consumed these keys — the parser just never
     # produced them. Fail-closed: None means "no date evidence".
     valid_from, valid_to = _extract_validity_dates(raw_text, year)
+    if cfg.get("validity_requires_time"):
+        # NAVAREA VIII contract (Alfred, 2026-11-07): keep a validity
+        # stamp ONLY when it carries a time of day; date-only stamps are
+        # dropped and no time is ever invented.
+        valid_from = valid_from if valid_from and "T" in valid_from else None
+        valid_to = valid_to if valid_to and "T" in valid_to else None
 
     # Issue-DTG guard (shared, pure helpers; now_utc injected by the
     # caller so tests never read the real clock): a DTG later than
