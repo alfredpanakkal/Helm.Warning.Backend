@@ -123,6 +123,8 @@ MONTHS = {
 #   self-cancel: "CANCEL THIS WARNING 142100 UTC NOV 26" /
 #                "CANCEL THIS MSG 301000Z NOV" (authoritative end date)
 #   until:       "UNTIL 31 DEC 2026" (never "UNTIL FURTHER NOTICE")
+#   combined:   "CANCEL NAVAREA VIII MSG 1097/26 AND THIS MSG 131830 UTC
+#                NOV 26" (same line; Z/UTC + year required, no fallback)
 RE_VALIDITY_RANGE = re.compile(
     r"(?:FROM\s+)?(\d{1,2})(\d{2})?(\d{2})?(?:\s*(?:Z|UTC))?"
     r"\s+([A-Za-z]{3,9})\.?(?:\s+(\d{2,4}))?\s+TO\s+"
@@ -133,6 +135,11 @@ RE_CANCEL_SELF = re.compile(
     r"CANCEL\s+THIS\s+(?:WARNING|MSG|MESSAGE)\s+"
     r"(\d{1,2})(\d{2})?(\d{2})?(?:\s*(?:Z|UTC))?"
     r"\s+([A-Za-z]{3,9})\.?(?:[/\s]+(\d{2,4}))?",
+    re.IGNORECASE)
+RE_CANCEL_AND_THIS_MSG = re.compile(
+    r"CANCEL[^\n]*?AND[ \t]+THIS[ \t]+(?:MSG|MESSAGE)[ \t]+"
+    r"(\d{1,2})(\d{2})(\d{2})[ \t]*(?:Z|UTC)[ \t]+"
+    r"([A-Za-z]{3,9})\.?[ \t]+(\d{2}|\d{4})(?!\d)",
     re.IGNORECASE)
 RE_UNTIL = re.compile(
     r"\bUNTIL\s+(\d{1,2})\s+([A-Za-z]{3,9})\.?(?:\s+(\d{2,4}))?",
@@ -292,6 +299,9 @@ def _extract_validity_dates(raw_text, year):
       - an explicit date range sets both ends;
       - a self-cancel dateline ("CANCEL THIS WARNING ...") is the
         authoritative end and wins over a range end;
+      - a combined line ("CANCEL <refs> AND THIS MSG <DTG>", same
+        line, Z/UTC and the year required) is an equally authoritative
+        end when no plain "CANCEL THIS ..." exists;
       - "UNTIL <date>" sets valid_to when nothing else did;
       - a token with no year falls back to the warning year (from the
         header id / bulletin hint); a year-less END month earlier than
@@ -362,6 +372,13 @@ def _extract_validity_dates(raw_text, year):
                                 m.group(4), m.group(5))
         if cancel_to:
             valid_to = cancel_to  # self-cancel dateline is authoritative
+    else:
+        m = RE_CANCEL_AND_THIS_MSG.search(text)
+        if m:
+            cancel_to = parse_token(m.group(1), m.group(2), m.group(3),
+                                    m.group(4), m.group(5))
+            if cancel_to:
+                valid_to = cancel_to  # combined dateline is authoritative
     if valid_to is None:
         m = RE_UNTIL.search(text)
         if m:
