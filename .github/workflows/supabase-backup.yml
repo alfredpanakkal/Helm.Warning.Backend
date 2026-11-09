@@ -31,8 +31,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Optional pg_dump (full schema + data) if SUPABASE_DB_URL secret is set
-        continue-on-error: true
+      - name: Optional pg_dump (public schema only) if SUPABASE_DB_URL secret is set
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
@@ -43,7 +42,7 @@ jobs:
           mkdir -p backups
           pg_dump --version
           pg_dump "$SUPABASE_DB_URL" --schema=public -f backups/schema.sql
-          pg_dump "$SUPABASE_DB_URL" -Fc -f "backups/supabase_full_$(date -u +%Y%m%dT%H%M%SZ).dump"
+          pg_dump "$SUPABASE_DB_URL" --schema=public -Fc -f "backups/supabase_full_$(date -u +%Y%m%dT%H%M%SZ).dump"
           echo "pg_dump complete."
 
       - name: Export All Table Data (PostgREST JSON, admin_users excluded)
