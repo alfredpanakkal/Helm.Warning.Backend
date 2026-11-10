@@ -22,6 +22,12 @@
 --   drop function if exists public.geom_geojson(public.nav_warning_geometries);
 --   notify pgrst, 'reload schema';
 
+-- 42P13 guard: a pre-existing geom_geojson(nav_warning_geometries) with a
+-- different input parameter name blocks CREATE OR REPLACE (live apply hit
+-- "cannot change name of input parameter \"rec\""). Drop first so the
+-- migration is re-runnable regardless of any prior definition.
+drop function if exists public.geom_geojson(public.nav_warning_geometries);
+
 create or replace function public.geom_geojson(g public.nav_warning_geometries)
 returns jsonb
 language sql
