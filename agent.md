@@ -45,6 +45,9 @@ Helm.Warning.Backend/
 │   ├── navarea-ix-sync.yml       # NAVAREA IX (NHO Pakistan per-row docs, daily 04:30 UTC)
 │   ├── navarea-x-sync.yml        # NAVAREA X (AMSA + AUSCOAST A-H, daily 07:45 UTC)
 │   ├── navarea-xii-sync.yml       # NAVAREA XII (NGA US West Coast, 6h)
+│   ├── navarea-xix-sync.yml       # NAVAREA XIX (Kystverket NavcoReport)
+│   ├── backfill-issue-dtg.yml     # One-time DTG issue-date backfill (manual dispatch)
+│   ├── supabase-backup.yml        # Monthly data export + public-schema pg_dump (90-day artifact)
 │   ├── supabase-parsing-audit.yml # Manual dispatch: Audit, Propose, Apply (Production-Gated)
 │   └── tests.yml                  # Automated CI regression test suite
 ├── migrations/
@@ -57,7 +60,9 @@ Helm.Warning.Backend/
 │   ├── 20261023_lifecycle_safety.sql      # Generation ledger, cancel guard, geometry preservation RPC
 │   ├── 20261023_manual_ingest_queue.sql
 │   ├── 20261026_parsing_audit.sql         # Audit runs & correction proposals schema (Plain REFERENCES)
-│   └── 20261030_navarea_label_backfill.sql  # One-time backfill: bare coordinator codes in navarea
+│   ├── 20261030_navarea_label_backfill.sql  # One-time backfill: bare coordinator codes in navarea
+│   ├── 20261107_st_asgeojson_public_wrapper.sql # Public ST_AsGeoJSON wrapper for spatial views
+│   └── 20261109_full_rewrite_backup.sql    # Pre-rewrite snapshot tables (applied 2026-11-09; kept as record)
 ├── scrapers/
 │   ├── navarea_8.py              # NAVAREA VIII PDF fast-path scraper
 │   ├── navarea_8_table.py        # NAVAREA VIII Playwright table scraper

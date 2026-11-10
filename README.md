@@ -11,7 +11,7 @@
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![Database: PostGIS 3.x](https://img.shields.io/badge/Database-PostGIS_3.x-336791.svg?logo=postgresql&logoColor=white)](https://postgis.net/)
 [![Architecture: Master--Child RPC](https://img.shields.io/badge/Architecture-Master--Child_RPC-orange.svg)](#-data-safety-and-synchronization)
-[![CI Workflows: 16 Active](https://img.shields.io/badge/Workflows-16_Active-brightgreen.svg)](#-supported-navarea-sources)
+[![CI Workflows: 19 Active](https://img.shields.io/badge/Workflows-19_Active-brightgreen.svg)](#-supported-navarea-sources)
 [![Agent Guide: agent.md](https://img.shields.io/badge/Agent_Docs-agent.md-purple.svg)](agent.md)
 
 > **Official Maritime Safety Notice**: Automated extraction, parsing, and classification provided by this system are designed to assist watchstanders and operations personnel. They **do not replace official navigational safety broadcasts, statutory nautical publications, or the professional judgment of a certified Officer of the Watch (OOW)**. Always consult official Navigational Area (NAVAREA) coordinators and national hydrographic offices for navigational decisions.
@@ -256,9 +256,10 @@ The following twelve international maritime warning feeds are implemented, teste
 
 ```text
 .
-├── .github/workflows/       # Automated sync schedules & parsing audit workflows
+├── .github/workflows/       # Automated sync schedules, audit & backup workflows
 │   ├── all-sync.yml         # Master orchestrator workflow (all regions, every 6 hours)
 │   ├── supabase-parsing-audit.yml # Manual dispatch: Audit, Propose, Apply (Production-Gated)
+│   ├── supabase-backup.yml  # Monthly data export + public-schema pg_dump (90-day artifact)
 │   └── navarea-*-sync.yml   # Regional sync automation workflows
 ├── migrations/              # Versioned PostgreSQL & PostGIS database migrations
 │   ├── 20261023_lifecycle_safety.sql # Run ledger, cancel guard & geometry preservation RPC
@@ -697,9 +698,9 @@ Contributions are welcome! Please adhere to the following conventions:
 
 ## ✅ Documentation Verification
 
-- **Last Inspected & Verified**: October 30, 2026
+- **Last Inspected & Verified**: November 9, 2026
 - **Verified Working Scrapers**: 12 sources (Baltic, NAVAREA I, II, III, IV, V, VII, VIII, IX, X incl. AUSCOAST A–H, XI, XII)
-- **Active Automation Workflows**: 16 GitHub Actions workflows in `.github/workflows/` (12 regional/master syncs, manual-ingest, parsing audit, tests)
+- **Active Automation Workflows**: 19 GitHub Actions workflows in `.github/workflows/` (13 regional syncs incl. Baltic & NAVAREA XIX, master all-sync, manual-ingest, DTG backfill, parsing audit, supabase backup, tests)
 - **Pending Operational Step**: apply `migrations/20261030_navarea_label_backfill.sql` to live Supabase (one-time `navarea` label backfill)
 - **Database Model**: Master-Child PostGIS with `public.upsert_nav_warning` RPC, `ingestion_generations` run ledger, and plain-reference `parsing_audit_runs` & `parsing_correction_proposals` audit schema
 - **Agent Technical Reference**: Authoritative guidelines maintained in [`agent.md`](agent.md) and [`AGENTS.md`](AGENTS.md)
