@@ -21,9 +21,11 @@ Safety invariants:
     unavailable model fails the run closed (exit 3) and is never silently substituted.
   - The AI-correctable field set is whitelist-only and must stay a subset of the columns the
     admin_save_nav_warning RPC accepts in p_update. Titles, dates and status are never AI-edited.
-  - Gemini usage is rate-controlled (audit 2026-11-07): only records with at least one AI-fixable
-    issue are assessed, hard-capped by --max-ai-records, throttled to AUDIT_AI_MAX_RPM calls per
-    minute, and a 429 stops the AI pass without ever retrying through the REST fallback.
+  - Gemini usage is rate-controlled (audit 2026-11-07, tightened 2026-11-10): only records with
+    at least one AI-fixable issue are assessed, hard-capped by --max-ai-records, and throttled
+    to AUDIT_AI_MAX_RPM calls per minute (default 4, under the Free Tier's 5 req/min). The
+    first 429 of a run is retried once after honoring the API's retryDelay; a further 429
+    stops the AI pass, and the REST fallback is never used against an exhausted quota.
 """
 
 from __future__ import annotations
@@ -92,7 +94,15 @@ class GeminiRateLimited(RuntimeError):
     the AI pass immediately and must never be retried through the REST
     fallback, which would double the call count against an already
     exhausted quota (audit 2026-11-07).
+
+    retry_delay carries the API's own retryDelay (google.rpc.RetryInfo, e.g.
+    "36s") when present, so the caller can honor it exactly once (audit
+    2026-11-10). None means the API gave no delay guidance.
     """
+
+    def __init__(self, message: str, retry_delay: Optional[float] = None):
+        super().__init__(message)
+        self.retry_delay = retry_delay
 
 
 API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -678,7 +688,8 @@ def _gemini_rest_generate(model: str, prompt: str, api_key: str) -> str:
     except urllib.error.HTTPError as exc:
         if exc.code == 429:
             raise GeminiRateLimited(
-                f"Gemini REST call returned 429 for model '{model}': {exc}"
+                f"Gemini REST call returned 429 for model '{model}': {exc}",
+                retry_delay=_extract_retry_delay(exc),
             ) from exc
         raise
     candidates = res_data.get("candidates") or []
@@ -688,23 +699,23 @@ def _gemini_rest_generate(model: str, prompt: str, api_key: str) -> str:
     return ""
 
 
-# --- Gemini rate control (audit 2026-11-07) ---------------------------------
+# --- Gemini rate control (audit 2026-11-07, default tightened 2026-11-10) ---
 # Rate limits are per Google Cloud PROJECT, not per key: the audit shares its
 # GEMINI_API_KEY quota pool with every sync job (all-sync, manual-ingest,
-# navarea-xix-sync). AUDIT_AI_MAX_RPM (default 10) is a conservative local
-# choice, NOT a Google-documented limit; read the real tier limits at
-# https://aistudio.google.com/rate-limit before tuning it.
+# navarea-xix-sync). The Gemini Free Tier allows 5 requests per minute, so the
+# default AUDIT_AI_MAX_RPM is 4 — strictly under the limit, leaving headroom
+# for the sync jobs sharing the same project quota.
 def _resolve_ai_max_rpm() -> int:
     """AUDIT_AI_MAX_RPM as int with a floor of 1.
 
     Empty or invalid values must never raise at import time (a bad env var
     in CI would crash the whole script before argparse even runs): empty ->
-    default 10, unparseable -> default 10, < 1 -> 1.
+    default 4, unparseable -> default 4, < 1 -> 1.
     """
     try:
-        return max(1, int(os.getenv("AUDIT_AI_MAX_RPM") or "10"))
+        return max(1, int(os.getenv("AUDIT_AI_MAX_RPM") or "4"))
     except ValueError:
-        return 10
+        return 4
 
 
 AI_MAX_RPM = _resolve_ai_max_rpm()
@@ -741,6 +752,53 @@ def _is_rate_limit_error(exc: Exception) -> bool:
             return True
     text = str(exc)
     return "RESOURCE_EXHAUSTED" in text or bool(_RATE_LIMIT_429_RE.search(text))
+
+
+# Google's 429 payloads carry their own wait hint: error.details[]
+# [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "36s"}]
+# (the REST path may also send a Retry-After header). Change A (audit
+# 2026-11-10): honor it exactly once before the AI pass gives up — but cap
+# it, so a hostile or looping value cannot eat the 60-minute workflow
+# budget. Only the number of seconds is read; nothing is logged here.
+_RETRY_DELAY_RE = re.compile(r"retryDelay[\"']?\s*[:=]\s*[\"']?(\d+(?:\.\d+)?)")
+RETRY_DELAY_CAP_SECONDS = 120.0
+
+
+def _extract_retry_delay(exc: Exception) -> Optional[float]:
+    """Parse the API's retryDelay / Retry-After hint from a 429 error.
+
+    Returns seconds (capped at RETRY_DELAY_CAP_SECONDS), or None when the
+    error carries no usable delay guidance.
+    """
+    text = str(exc)
+    try:
+        body = exc.read()  # HTTPError body (REST path)
+        if body:
+            text += " " + body.decode("utf-8", "replace")
+    except Exception:
+        pass
+    headers = getattr(exc, "headers", None)
+    if headers is not None:
+        for header in ("Retry-After", "retryDelay"):
+            try:
+                value = headers.get(header)
+            except Exception:
+                value = None
+            if value:
+                try:
+                    return min(
+                        max(float(str(value).strip().rstrip("s")), 0.0),
+                        RETRY_DELAY_CAP_SECONDS,
+                    )
+                except ValueError:
+                    continue
+    match = _RETRY_DELAY_RE.search(text)
+    if match:
+        try:
+            return min(max(float(match.group(1)), 0.0), RETRY_DELAY_CAP_SECONDS)
+        except ValueError:
+            return None
+    return None
 
 
 def assess_warning_with_gemini(
@@ -831,7 +889,9 @@ def assess_warning_with_gemini(
                 if _is_rate_limit_error(sdk_exc):
                     # Quota exhausted: never double the call count by
                     # retrying through REST against the same quota pool.
-                    raise GeminiRateLimited(str(sdk_exc)) from sdk_exc
+                    raise GeminiRateLimited(
+                        str(sdk_exc), retry_delay=_extract_retry_delay(sdk_exc)
+                    ) from sdk_exc
                 _note_gemini_failure(
                     canonical_id,
                     "google-genai SDK call failed, falling back to REST: "
@@ -1391,8 +1451,13 @@ def run_audit(
                 # issue are assessed (bad dates/status/geometry cannot be
                 # fixed by the AI anyway) and never more than max_ai_records
                 # Gemini calls are made per run. A 429 keeps the proposals
-                # already made and stops the AI pass.
+                # already made and stops the AI pass. Change A (audit
+                # 2026-11-10): the FIRST 429 of a run honors the API's own
+                # retryDelay (Google's RetryInfo hint) exactly once — one
+                # retry of the same record after sleeping the delay — and
+                # only a further 429 stops the pass for good.
                 ai_calls = 0
+                ai_429_retried = False
                 for rec, rec_issues in records_with_issues:
                     ai_issues = [
                         i for i in rec_issues
@@ -1413,11 +1478,34 @@ def run_audit(
                             issues=ai_issues
                         )
                     except GeminiRateLimited as exc:
-                        report["limitations"].append(
-                            f"Stopped on Gemini 429 after {ai_calls} records: {exc}"
-                        )
-                        ai_stopped = True
-                        break
+                        retried_proposals = None
+                        if not ai_429_retried and exc.retry_delay is not None:
+                            # Honor the API's retryDelay hint exactly once,
+                            # then stop the AI pass for good.
+                            ai_429_retried = True
+                            print(
+                                f"[audit] Gemini 429; honoring retryDelay "
+                                f"({exc.retry_delay:.0f}s) and retrying once "
+                                f"before stopping.",
+                                file=sys.stderr,
+                            )
+                            time.sleep(exc.retry_delay)
+                            try:
+                                retried_proposals = assess_warning_with_gemini(
+                                    record=rec,
+                                    model_name=selected_model,
+                                    issues=ai_issues
+                                )
+                            except GeminiRateLimited:
+                                retried_proposals = None
+                        if retried_proposals is None:
+                            report["limitations"].append(
+                                f"Stopped on Gemini 429 after {ai_calls} records: {exc}"
+                            )
+                            ai_stopped = True
+                            break
+                        all_proposals.extend(retried_proposals)
+                        continue
                     all_proposals.extend(proposals)
 
                 failures = gemini_failure_summary()

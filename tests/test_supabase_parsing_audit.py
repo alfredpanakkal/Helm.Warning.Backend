@@ -1286,11 +1286,12 @@ class TestSupabaseParsingAudit(unittest.TestCase):
                 )
 
     # 37. AUDIT_AI_MAX_RPM="" (or invalid) must import cleanly and fall back
-    # to the default of 10, never raise ValueError at import time. A fresh
-    # interpreter is required: the value is read once, at module import.
+    # to the default of 4 (under the Free Tier's 5 req/min), never raise
+    # ValueError at import time. A fresh interpreter is required: the value
+    # is read once, at module import.
     def test_empty_or_invalid_rpm_env_imports_cleanly(self):
         import subprocess
-        for env_value, expected in (("", 10), ("abc", 10), ("0", 1)):
+        for env_value, expected in (("", 4), ("abc", 4), ("0", 1)):
             env = dict(os.environ, AUDIT_AI_MAX_RPM=env_value)
             result = subprocess.run(
                 [sys.executable, "-c",
@@ -1417,6 +1418,195 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertEqual(report["examined_count"], 3)
         self.assertEqual(report["issue_count"], 9)
         self.assertEqual(report["status"], "succeeded")
+
+    # 42. Change A: the FIRST 429's retryDelay is honored exactly once — the
+    # same record is retried after sleeping the API-given delay, and a
+    # successful retry keeps the run green (status succeeded).
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    @patch("urllib.request.urlopen")
+    def test_429_retry_delay_honored_once_then_recovers(self, mock_urlopen):
+        mock_urlopen.return_value = self._verify_model_response()
+        rows = [self._rate_record(i) for i in range(3)]
+        client = MockSupabaseClient({
+            "nav_warnings": rows,
+            "nav_warning_geometries": [],
+            "parsing_audit_runs": [],
+            "parsing_correction_proposals": [],
+        })
+        proposal = {
+            "canonical_id": "NAVAREA IV 101/26",
+            "field_name": "unplotted_reason",
+            "proposed_value": None,
+            "raw_evidence": "GULF OF MEXICO",
+        }
+        calls = {"n": 0}
+
+        def fake_assess(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise GeminiRateLimited(
+                    "429 RESOURCE_EXHAUSTED: quota exceeded", retry_delay=7.0
+                )
+            return [dict(proposal)]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch(
+                "scripts.audit_supabase_parsing.assess_warning_with_gemini",
+                side_effect=fake_assess,
+            ) as mock_assess, patch(
+                "scripts.audit_supabase_parsing.time"
+            ) as mock_time:
+                report = run_audit(
+                    mode="propose_corrections", client=client,
+                    report_dir=tmp_dir,
+                )
+        # 3 records + exactly 1 retry of the 429'd record
+        self.assertEqual(mock_assess.call_count, 4)
+        self.assertEqual(mock_time.sleep.call_count, 1)
+        self.assertAlmostEqual(mock_time.sleep.call_args[0][0], 7.0, places=3)
+        self.assertEqual(len(report["proposals"]), 3)
+        self.assertEqual(report["proposal_count"], 3)
+        self.assertEqual(report["status"], "succeeded")
+        self.assertIsNone(report["coverage"]["incomplete_reason"])
+
+    # 43. Change A: a 429 whose retry ALSO 429s stops the pass after the
+    # single retryDelay-honoring retry: partial status, proposals kept,
+    # 'Stopped on Gemini 429' limitation line.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    @patch("urllib.request.urlopen")
+    def test_429_retry_delay_once_then_stop_on_second_429(self, mock_urlopen):
+        mock_urlopen.return_value = self._verify_model_response()
+        rows = [self._rate_record(i) for i in range(3)]
+        client = MockSupabaseClient({
+            "nav_warnings": rows,
+            "nav_warning_geometries": [],
+            "parsing_audit_runs": [],
+            "parsing_correction_proposals": [],
+        })
+        proposal = {
+            "canonical_id": "NAVAREA IV 101/26",
+            "field_name": "unplotted_reason",
+            "proposed_value": None,
+            "raw_evidence": "GULF OF MEXICO",
+        }
+        calls = {"n": 0}
+
+        def fake_assess(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise GeminiRateLimited(
+                    "429 RESOURCE_EXHAUSTED: quota exceeded", retry_delay=5.0
+                )
+            if calls["n"] == 3:
+                raise GeminiRateLimited("429 RESOURCE_EXHAUSTED again")
+            return [dict(proposal)]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch(
+                "scripts.audit_supabase_parsing.assess_warning_with_gemini",
+                side_effect=fake_assess,
+            ) as mock_assess, patch(
+                "scripts.audit_supabase_parsing.time"
+            ) as mock_time:
+                report = run_audit(
+                    mode="propose_corrections", client=client,
+                    report_dir=tmp_dir,
+                )
+        # record 1 ok, record 2 429, record 2 retried -> 429 -> stop
+        self.assertEqual(mock_assess.call_count, 3)
+        self.assertEqual(mock_time.sleep.call_count, 1)
+        self.assertAlmostEqual(mock_time.sleep.call_args[0][0], 5.0, places=3)
+        self.assertEqual(len(report["proposals"]), 1)
+        self.assertTrue(any("Stopped on Gemini 429 after 2 records" in l
+                            for l in report["limitations"]))
+        self.assertEqual(report["status"], "partial")
+
+    # 44. Change A: retryDelay inside an SDK 429 message is parsed onto the
+    # raised GeminiRateLimited (36s), and absurd values are capped at 120s.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    def test_sdk_429_retry_delay_parsed_and_capped(self):
+        import types
+        fake_google = types.ModuleType("google")
+        fake_genai = types.ModuleType("google.genai")
+
+        class _Models:
+            @staticmethod
+            def generate_content(**kwargs):
+                raise RuntimeError(
+                    "ClientError: 429 RESOURCE_EXHAUSTED. {'error': "
+                    "{'details': [{'@type': 'type.googleapis.com/"
+                    "google.rpc.RetryInfo', 'retryDelay': '36s'}]}}"
+                )
+
+        class _DelayClient:
+            def __init__(self, api_key):
+                self.models = _Models()
+
+        fake_genai.Client = _DelayClient
+        fake_google.genai = fake_genai
+
+        with patch.dict(sys.modules, {"google": fake_google, "google.genai": fake_genai}):
+            with self.assertRaises(GeminiRateLimited) as ctx:
+                assess_warning_with_gemini(
+                    dict(self.sample_active_warning),
+                    model_name="gemini-3.8-flash",
+                    issues=[{"code": "TEST_ISSUE"}],
+                )
+        self.assertAlmostEqual(ctx.exception.retry_delay, 36.0, places=3)
+
+        class _ModelsHuge:
+            @staticmethod
+            def generate_content(**kwargs):
+                raise RuntimeError(
+                    "ClientError: 429 RESOURCE_EXHAUSTED. {'error': "
+                    "{'details': [{'@type': 'type.googleapis.com/"
+                    "google.rpc.RetryInfo', 'retryDelay': '9999s'}]}}"
+                )
+
+        class _HugeClient:
+            def __init__(self, api_key):
+                self.models = _ModelsHuge()
+
+        fake_genai.Client = _HugeClient
+        with patch.dict(sys.modules, {"google": fake_google, "google.genai": fake_genai}):
+            with self.assertRaises(GeminiRateLimited) as ctx:
+                assess_warning_with_gemini(
+                    dict(self.sample_active_warning),
+                    model_name="gemini-3.8-flash",
+                    issues=[{"code": "TEST_ISSUE"}],
+                )
+        self.assertAlmostEqual(
+            ctx.exception.retry_delay,
+            audit_supabase_parsing.RETRY_DELAY_CAP_SECONDS,
+            places=3,
+        )
+
+    # 45. Change A: retryDelay inside a REST 429 error body is parsed onto
+    # the raised GeminiRateLimited as well.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    def test_rest_429_retry_delay_parsed(self):
+        import io
+        from urllib.error import HTTPError
+        body = json.dumps({
+            "error": {
+                "code": 429,
+                "status": "RESOURCE_EXHAUSTED",
+                "details": [{
+                    "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                    "retryDelay": "42s",
+                }],
+            }
+        }).encode("utf-8")
+        with patch.dict(sys.modules, {"google": None}), \
+             patch("urllib.request.urlopen", side_effect=HTTPError(
+                 "https://api", 429, "Too Many Requests", None, io.BytesIO(body))):
+            with self.assertRaises(GeminiRateLimited) as ctx:
+                assess_warning_with_gemini(
+                    dict(self.sample_active_warning),
+                    model_name="gemini-3.8-flash",
+                    issues=[{"code": "TEST_ISSUE"}],
+                )
+        self.assertAlmostEqual(ctx.exception.retry_delay, 42.0, places=3)
 
 
 if __name__ == "__main__":
