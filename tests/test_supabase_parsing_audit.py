@@ -137,6 +137,8 @@ class MockTableQueryBuilder:
         })
 
         if self._action == "select":
+            if self.table_name in self.client.fail_on_select_tables:
+                raise RuntimeError("Simulated geometry fetch failure")
             rows = self.client.tables.get(self.table_name, [])
             if self._order_by:
                 rows = sorted(rows, key=lambda x: str(x.get(self._order_by, "")))
@@ -236,6 +238,7 @@ class MockSupabaseClient:
         self.fail_on_update = False
         self.count_overrides = {}
         self.fail_on_count = False
+        self.fail_on_select_tables = set()
 
     def table(self, table_name):
         return MockTableQueryBuilder(table_name, self)
@@ -819,14 +822,18 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertEqual(len(client.recorded_rpcs), 0)
 
 
-    # 20. Geometry fetch consumes the st_asgeojson computed column (real schema
-    # has no geojson column; geometry lives in PostGIS geom_postgis).
-    def test_geometry_fetch_accepts_st_asgeojson_computed_key(self):
+    # 20. Geometry fetch consumes the geom_geojson computed column (real
+    # schema has no geojson column; geometry lives in PostGIS geom_postgis).
+    # The select must use NO function-call syntax: st_asgeojson(geom_postgis)
+    # trips PGRST200 in PostgREST.
+    def test_geometry_fetch_accepts_geom_geojson_computed_key(self):
+        self.assertIn("geom_geojson", audit_supabase_parsing.GEOMETRY_SELECT_COLS)
+        self.assertNotIn("st_asgeojson(", audit_supabase_parsing.GEOMETRY_SELECT_COLS)
         geom_row = {
             "warning_id": self.sample_active_warning["id"],
             "zone_label": "Centroid",
             "feature_type": "POINT",
-            "st_asgeojson": {
+            "geom_geojson": {
                 "type": "Point",
                 "coordinates": [-91.25, 95.0]  # out of bounds on purpose
             },
@@ -834,7 +841,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         client = MockSupabaseClient({"nav_warning_geometries": [geom_row]})
         geoms = fetch_geometries_for_warnings(client, [self.sample_active_warning["id"]])
         self.assertEqual(len(geoms[self.sample_active_warning["id"]]), 1)
-        # The validator must consume the st_asgeojson payload
+        # The validator must consume the geom_geojson payload
         issues = validate_warning_geometry(
             dict(self.sample_active_warning),
             geoms[self.sample_active_warning["id"]],
@@ -853,6 +860,62 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         client = MockSupabaseClient({"nav_warning_geometries": [geom_row]})
         with self.assertRaises(GeometrySchemaError):
             fetch_geometries_for_warnings(client, [self.sample_active_warning["id"]])
+
+    # 21b. Missing payload key on a NON-first row aborts too: the schema guard
+    # checks every fetched row, not just the first one.
+    def test_geometry_fetch_fails_loudly_when_non_first_row_lacks_key(self):
+        good_row = {
+            "warning_id": self.sample_active_warning["id"],
+            "zone_label": "Centroid",
+            "feature_type": "POINT",
+            "geom_geojson": {"type": "Point", "coordinates": [-91.25, 27.75]},
+        }
+        bad_row = {
+            "warning_id": self.sample_active_warning["id"],
+            "zone_label": "Area A",
+            "feature_type": "POLYGON",
+            "geom_postgis": "010600000000000000",  # raw hex, no payload key
+        }
+        client = MockSupabaseClient({"nav_warning_geometries": [good_row, bad_row]})
+        with self.assertRaises(GeometrySchemaError):
+            fetch_geometries_for_warnings(client, [self.sample_active_warning["id"]])
+
+    # 21c. A null geometry payload is FLAGGED (needs review), never skipped,
+    # never defaulted: no clamping, no reprojection, no coordinate edits.
+    def test_null_geometry_payload_flagged_not_skipped(self):
+        null_geom = {
+            "geom_id": "g-null",
+            "warning_id": self.sample_active_warning["id"],
+            "zone_label": "Centroid",
+            "feature_type": "POINT",
+            "geom_geojson": None,
+        }
+        client = MockSupabaseClient({"nav_warning_geometries": [null_geom]})
+        geoms = fetch_geometries_for_warnings(client, [self.sample_active_warning["id"]])
+        self.assertEqual(len(geoms[self.sample_active_warning["id"]]), 1)
+        issues = validate_warning_geometry(
+            dict(self.sample_active_warning),
+            geoms[self.sample_active_warning["id"]],
+        )
+        self.assertTrue(any(iss["code"] == "MISSING_GEOMETRY_PAYLOAD" for iss in issues))
+        payload_issue = next(
+            iss for iss in issues if iss["code"] == "MISSING_GEOMETRY_PAYLOAD"
+        )
+        self.assertEqual(payload_issue["severity"], "ERROR")
+
+    # 21d. A geometry fetch abort inside run_audit must produce
+    # status=failed AND scan_complete=False — never both failed and complete.
+    def test_run_audit_geometry_abort_forces_scan_complete_false(self):
+        client = MockSupabaseClient({
+            "nav_warnings": [dict(self.sample_active_warning)],
+            "nav_warning_geometries": [dict(self.sample_geometry)],
+        })
+        client.fail_on_select_tables = {"nav_warning_geometries"}
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            res = run_audit(mode="audit_only", client=client, report_dir=tmp_dir)
+        self.assertEqual(res["status"], "failed")
+        self.assertFalse(res["scan_complete"])
+        self.assertIn("Geometry batch fetch failed", str(res.get("error")))
 
     # 22. Legacy geojson key still honored (backwards compatibility of the lookup)
     def test_validator_still_accepts_legacy_geojson_key(self):
@@ -973,7 +1036,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         client.table.return_value.select.return_value.in_.return_value = query
         with self.assertRaises(GeometryFetchError) as ctx:
             fetch_geometries_for_warnings(client, [self.sample_active_warning["id"]])
-        self.assertIn("st_asgeojson_public_wrapper", str(ctx.exception))
+        self.assertIn("geom_geojson_computed_column", str(ctx.exception))
 
     # 29. Any geometry batch failure aborts — never a geometry-blind report.
     def test_geometry_fetch_any_batch_failure_raises(self):
