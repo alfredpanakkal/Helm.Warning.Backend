@@ -21,9 +21,12 @@ Safety invariants:
     unavailable model fails the run closed (exit 3) and is never silently substituted.
   - The AI-correctable field set is whitelist-only and must stay a subset of the columns the
     admin_save_nav_warning RPC accepts in p_update. Titles, dates and status are never AI-edited.
-  - Gemini usage is rate-controlled (audit 2026-11-07): only records with at least one AI-fixable
-    issue are assessed, hard-capped by --max-ai-records, throttled to AUDIT_AI_MAX_RPM calls per
-    minute, and a 429 stops the AI pass without ever retrying through the REST fallback.
+  - Gemini usage is rate-controlled (audit 2026-11-07, tightened 2026-11-10): only records with
+    at least one AI-fixable issue are assessed, hard-capped by --max-ai-records, and throttled
+    to AUDIT_AI_MAX_RPM calls per minute (default 4, under the Free Tier's 5 req/min). The
+    first 429 of a run is retried once after honoring the API's retryDelay; a further 429
+    stops the AI pass, and the REST fallback is 5xx-only and never used against an
+    exhausted quota. Any other Gemini failure marks the record needs_review, never passed.
 """
 
 from __future__ import annotations
@@ -92,6 +95,24 @@ class GeminiRateLimited(RuntimeError):
     the AI pass immediately and must never be retried through the REST
     fallback, which would double the call count against an already
     exhausted quota (audit 2026-11-07).
+
+    retry_delay carries the API's own retryDelay (google.rpc.RetryInfo, e.g.
+    "36s") when present, so the caller can honor it exactly once (audit
+    2026-11-10). None means the API gave no delay guidance.
+    """
+
+    def __init__(self, message: str, retry_delay: Optional[float] = None):
+        super().__init__(message)
+        self.retry_delay = retry_delay
+
+
+class GeminiUnavailable(RuntimeError):
+    """Raised when no Gemini response could be obtained for a record.
+
+    Change B (audit 2026-11-10): the REST fallback is reserved for 5xx-class
+    SDK errors (and a missing SDK); any other SDK failure is a hard failure,
+    not a silent empty-proposal success. The record was NOT assessed — the
+    caller must mark it needs_review and treat the AI pass as incomplete.
     """
 
 
@@ -678,7 +699,8 @@ def _gemini_rest_generate(model: str, prompt: str, api_key: str) -> str:
     except urllib.error.HTTPError as exc:
         if exc.code == 429:
             raise GeminiRateLimited(
-                f"Gemini REST call returned 429 for model '{model}': {exc}"
+                f"Gemini REST call returned 429 for model '{model}': {exc}",
+                retry_delay=_extract_retry_delay(exc),
             ) from exc
         raise
     candidates = res_data.get("candidates") or []
@@ -688,23 +710,23 @@ def _gemini_rest_generate(model: str, prompt: str, api_key: str) -> str:
     return ""
 
 
-# --- Gemini rate control (audit 2026-11-07) ---------------------------------
+# --- Gemini rate control (audit 2026-11-07, default tightened 2026-11-10) ---
 # Rate limits are per Google Cloud PROJECT, not per key: the audit shares its
 # GEMINI_API_KEY quota pool with every sync job (all-sync, manual-ingest,
-# navarea-xix-sync). AUDIT_AI_MAX_RPM (default 10) is a conservative local
-# choice, NOT a Google-documented limit; read the real tier limits at
-# https://aistudio.google.com/rate-limit before tuning it.
+# navarea-xix-sync). The Gemini Free Tier allows 5 requests per minute, so the
+# default AUDIT_AI_MAX_RPM is 4 — strictly under the limit, leaving headroom
+# for the sync jobs sharing the same project quota.
 def _resolve_ai_max_rpm() -> int:
     """AUDIT_AI_MAX_RPM as int with a floor of 1.
 
     Empty or invalid values must never raise at import time (a bad env var
     in CI would crash the whole script before argparse even runs): empty ->
-    default 10, unparseable -> default 10, < 1 -> 1.
+    default 4, unparseable -> default 4, < 1 -> 1.
     """
     try:
-        return max(1, int(os.getenv("AUDIT_AI_MAX_RPM") or "10"))
+        return max(1, int(os.getenv("AUDIT_AI_MAX_RPM") or "4"))
     except ValueError:
-        return 10
+        return 4
 
 
 AI_MAX_RPM = _resolve_ai_max_rpm()
@@ -741,6 +763,78 @@ def _is_rate_limit_error(exc: Exception) -> bool:
             return True
     text = str(exc)
     return "RESOURCE_EXHAUSTED" in text or bool(_RATE_LIMIT_429_RE.search(text))
+
+
+# A 5xx SDK error is the ONLY class of SDK failure that may fall back to the
+# REST path (change B, audit 2026-11-10): transient server-side
+# unavailability is worth one attempt through the other transport, while any
+# other SDK failure (auth, config, request shape) would fail identically over
+# REST — and doubling calls against the shared quota pool is exactly what the
+# 2026-11-07 audit stopped. Same lookaround guard as the 429 matcher: warning
+# IDs like "NAVAREA IV 503/26" must never read as a 503.
+_SERVER_ERROR_5XX_RE = re.compile(r"(?<![\w/])5\d\d(?![\w/])")
+
+
+def _is_server_error(exc: Exception) -> bool:
+    """True if the Gemini exception represents a 5xx server-side failure."""
+    for attr in ("code", "status_code", "status"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int) and 500 <= value <= 599:
+            return True
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.isdigit() and 500 <= int(stripped) <= 599:
+                return True
+    return bool(_SERVER_ERROR_5XX_RE.search(str(exc)))
+
+
+# Google's 429 payloads carry their own wait hint: error.details[]
+# [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "36s"}]
+# (the REST path may also send a Retry-After header). Change A (audit
+# 2026-11-10): honor it exactly once before the AI pass gives up — but cap
+# it, so a hostile or looping value cannot eat the 60-minute workflow
+# budget. Only the number of seconds is read; nothing is logged here.
+_RETRY_DELAY_RE = re.compile(r"retryDelay[\"']?\s*[:=]\s*[\"']?(\d+(?:\.\d+)?)")
+RETRY_DELAY_CAP_SECONDS = 120.0
+
+
+def _extract_retry_delay(exc: Exception) -> Optional[float]:
+    """Parse the API's retryDelay / Retry-After hint from a 429 error.
+
+    Returns seconds (capped at RETRY_DELAY_CAP_SECONDS), or None when the
+    error carries no usable delay guidance.
+    """
+    text = str(exc)
+    try:
+        body = exc.read()  # HTTPError body (REST path)
+        if body:
+            text += " " + body.decode("utf-8", "replace")
+    except Exception:
+        pass
+    headers = getattr(exc, "headers", None)
+    if headers is not None:
+        for header in ("Retry-After", "retryDelay"):
+            try:
+                value = headers.get(header)
+            except Exception:
+                value = None
+            if value:
+                try:
+                    return min(
+                        max(float(str(value).strip().rstrip("s")), 0.0),
+                        RETRY_DELAY_CAP_SECONDS,
+                    )
+                except ValueError:
+                    continue
+    match = _RETRY_DELAY_RE.search(text)
+    if match:
+        try:
+            return min(max(float(match.group(1)), 0.0), RETRY_DELAY_CAP_SECONDS)
+        except ValueError:
+            return None
+    return None
 
 
 def assess_warning_with_gemini(
@@ -807,15 +901,19 @@ def assess_warning_with_gemini(
 
     response_text = ""
     try:
-        # Prefer google-genai SDK; fall back to the plain REST call when the
-        # SDK is missing OR when the SDK call itself fails (version drift,
-        # config-object changes, ClientError). Audit 2026-11-07: the SDK
-        # failed for all 809 records and there was no fallback, so the
-        # semantic audit silently produced zero proposals.
+        # Prefer google-genai SDK. Change B (audit 2026-11-10): the REST path
+        # shares the SAME Gemini quota pool, so the fallback is now reserved
+        # for 5xx-class SDK errors (transient server-side unavailability) and
+        # for a missing SDK. A 429 raises GeminiRateLimited (never retried
+        # through REST against an exhausted quota), and any other SDK
+        # failure raises GeminiUnavailable — the record is unassessed, never
+        # a silent empty-proposal success. An SDK response with empty text is
+        # a real (empty) answer, not a trigger for a second paid call.
         try:
             from google import genai
         except ImportError:
             genai = None
+        sdk_failed_with_5xx = False
         if genai is not None:
             try:
                 _throttle()
@@ -831,20 +929,39 @@ def assess_warning_with_gemini(
                 if _is_rate_limit_error(sdk_exc):
                     # Quota exhausted: never double the call count by
                     # retrying through REST against the same quota pool.
-                    raise GeminiRateLimited(str(sdk_exc)) from sdk_exc
+                    raise GeminiRateLimited(
+                        str(sdk_exc), retry_delay=_extract_retry_delay(sdk_exc)
+                    ) from sdk_exc
+                if not _is_server_error(sdk_exc):
+                    # Non-5xx SDK failure: no REST fallback (it shares the
+                    # quota pool and would fail the same way) — fail closed.
+                    _note_gemini_failure(
+                        canonical_id,
+                        "google-genai SDK call failed (non-5xx, no REST fallback): "
+                        + type(sdk_exc).__name__ + ": " + str(sdk_exc),
+                    )
+                    raise GeminiUnavailable(
+                        f"Gemini SDK call failed for {canonical_id}: "
+                        f"{type(sdk_exc).__name__}: {sdk_exc}"
+                    ) from sdk_exc
+                # 5xx: transient server-side failure, worth exactly one
+                # attempt through the other transport.
                 _note_gemini_failure(
                     canonical_id,
-                    "google-genai SDK call failed, falling back to REST: "
+                    "google-genai SDK 5xx, falling back to REST: "
                     + type(sdk_exc).__name__ + ": " + str(sdk_exc),
                 )
-                response_text = ""
-        if not response_text:
+                sdk_failed_with_5xx = True
+        if not response_text and (genai is None or sdk_failed_with_5xx):
             response_text = _gemini_rest_generate(model, prompt, api_key)
-    except GeminiRateLimited:
+    except (GeminiRateLimited, GeminiUnavailable):
         raise
     except Exception as exc:
         _note_gemini_failure(canonical_id, f"{type(exc).__name__}: {exc}")
-        return []
+        raise GeminiUnavailable(
+            f"Gemini assessment unavailable for {canonical_id}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
 
     # Clean markdown fences if model returned them
     cleaned = re.sub(r"^```[a-zA-Z]*|^```|```$", "", response_text.strip()).strip()
@@ -914,6 +1031,22 @@ def assess_warning_with_gemini(
         })
 
     return validated_proposals
+
+
+def _ai_unassessed_entry(record: Dict[str, Any], reason: str) -> Dict[str, Any]:
+    """A record the AI pass could not assess — always needs_review.
+
+    An unassessed record is never counted as passed: it stays visible in
+    report['ai_unassessed'] (warning ids, reason, needs_review=True) so a
+    human can re-run or hand-review it (change C, audit 2026-11-10).
+    """
+    return {
+        "warning_id": record.get("id"),
+        "canonical_id": record.get("canonical_id"),
+        "navarea": record.get("navarea"),
+        "reason": reason,
+        "needs_review": True,
+    }
 
 
 def create_correction_proposals(
@@ -1286,12 +1419,14 @@ def run_audit(
         "proposals": [],
         "apply_summary": {},
         # --- v2 sections (Phase 2 WP2 coverage / WP3 failures /
-        # WP4 issue_summary + limitations). Empty in WP1; later work
-        # packages populate them. Additive only: v1 keys are frozen.
+        # WP4 issue_summary + limitations). Populated at the end of
+        # run_audit from data the run itself collected. Additive only:
+        # v1 keys are frozen.
         "coverage": {},
         "failures": {},
         "issue_summary": {},
         "limitations": [],
+        "ai_unassessed": [],
     }
 
     try:
@@ -1383,27 +1518,45 @@ def run_audit(
             # 4. Gemini Propose Corrections (if mode is propose_corrections)
             all_proposals: List[Dict[str, Any]] = []
             ai_stopped = False
+            ai_failed = False
+            ai_unassessed: List[Dict[str, Any]] = []
+            # Per-run failure accounting (change D, audit 2026-11-10): both
+            # scan modes start from a clean Gemini failure log so
+            # report['failures']['ai'] reflects THIS run only.
+            reset_gemini_failure_log()
             if mode == "propose_corrections":
-                reset_gemini_failure_log()
                 # Rate control (audit 2026-11-07): quota is per Google Cloud
                 # project and shared with every sync job using the same
                 # GEMINI_API_KEY. Only records with at least one AI-fixable
                 # issue are assessed (bad dates/status/geometry cannot be
                 # fixed by the AI anyway) and never more than max_ai_records
                 # Gemini calls are made per run. A 429 keeps the proposals
-                # already made and stops the AI pass.
+                # already made and stops the AI pass. Change A (audit
+                # 2026-11-10): the FIRST 429 of a run honors the API's own
+                # retryDelay (Google's RetryInfo hint) exactly once — one
+                # retry of the same record after sleeping the delay — and
+                # only a further 429 stops the pass for good.
                 ai_calls = 0
-                for rec, rec_issues in records_with_issues:
-                    ai_issues = [
-                        i for i in rec_issues
-                        if i.get("field") in ALLOWED_PROPOSAL_FIELDS
-                    ]
-                    if not ai_issues:
-                        continue
+                ai_429_retried = False
+                # Change C (audit 2026-11-10): records that could not be
+                # AI-assessed (quota stop, hard failure, cap) are collected
+                # in ai_unassessed with needs_review=True — an unassessed
+                # record is never treated as passed.
+                ai_candidates = [
+                    (rec, [i for i in rec_issues
+                           if i.get("field") in ALLOWED_PROPOSAL_FIELDS])
+                    for rec, rec_issues in records_with_issues
+                ]
+                ai_candidates = [(rec, iss) for rec, iss in ai_candidates if iss]
+                for idx, (rec, ai_issues) in enumerate(ai_candidates):
                     if ai_calls >= max_ai_records:
                         report["limitations"].append(
                             f"AI cap reached: {max_ai_records} records assessed, remainder skipped."
                         )
+                        for skipped, _ in ai_candidates[idx:]:
+                            ai_unassessed.append(
+                                _ai_unassessed_entry(skipped, "ai_cap_reached")
+                            )
                         break
                     ai_calls += 1
                     try:
@@ -1413,11 +1566,46 @@ def run_audit(
                             issues=ai_issues
                         )
                     except GeminiRateLimited as exc:
-                        report["limitations"].append(
-                            f"Stopped on Gemini 429 after {ai_calls} records: {exc}"
+                        retried_proposals = None
+                        if not ai_429_retried and exc.retry_delay is not None:
+                            # Honor the API's retryDelay hint exactly once,
+                            # then stop the AI pass for good.
+                            ai_429_retried = True
+                            print(
+                                f"[audit] Gemini 429; honoring retryDelay "
+                                f"({exc.retry_delay:.0f}s) and retrying once "
+                                f"before stopping.",
+                                file=sys.stderr,
+                            )
+                            time.sleep(exc.retry_delay)
+                            try:
+                                retried_proposals = assess_warning_with_gemini(
+                                    record=rec,
+                                    model_name=selected_model,
+                                    issues=ai_issues
+                                )
+                            except (GeminiRateLimited, GeminiUnavailable):
+                                retried_proposals = None
+                        if retried_proposals is None:
+                            report["limitations"].append(
+                                f"Stopped on Gemini 429 after {ai_calls} records: {exc}"
+                            )
+                            ai_stopped = True
+                            for skipped, _ in ai_candidates[idx:]:
+                                ai_unassessed.append(
+                                    _ai_unassessed_entry(skipped, "gemini_quota")
+                                )
+                            break
+                        all_proposals.extend(retried_proposals)
+                        continue
+                    except GeminiUnavailable:
+                        # No Gemini response for this record: keep it marked
+                        # needs_review and let the remaining records run.
+                        ai_failed = True
+                        ai_unassessed.append(
+                            _ai_unassessed_entry(rec, "gemini_unavailable")
                         )
-                        ai_stopped = True
-                        break
+                        continue
                     all_proposals.extend(proposals)
 
                 failures = gemini_failure_summary()
@@ -1446,11 +1634,41 @@ def run_audit(
                     report["proposal_count"] = len(all_proposals)
 
             report["proposals"] = all_proposals
-            # A 429 stop means the AI assessment is incomplete even when the
-            # scan itself finished; never report a green 'succeeded'.
+            report["ai_unassessed"] = ai_unassessed
+            # Change C: any AI failure (429 stop after the single retryDelay
+            # retry, or a per-record GeminiUnavailable) makes the AI pass
+            # incomplete — status partial and coverage.incomplete_reason set,
+            # so a partial run can no longer coexist with scan_complete=True
+            # and reason=None. Unassessed records stay needs_review, never
+            # passed.
+            ai_incomplete = ai_stopped or ai_failed
+            if ai_incomplete and report["coverage"].get("incomplete_reason") is None:
+                report["coverage"]["incomplete_reason"] = (
+                    "gemini_quota" if ai_stopped else "gemini_unavailable"
+                )
             report["status"] = (
-                "succeeded" if (complete and not ai_stopped) else "partial"
+                "succeeded" if (complete and not ai_incomplete) else "partial"
             )
+
+            # Change D: populate the v2 failure-accounting and issue-summary
+            # sections from data this run already collected — real counts
+            # only, no invented numbers, no fake success (audit 2026-11-10).
+            failures_section: Dict[str, Any] = {"ai": gemini_failure_summary()}
+            if fetch_err:
+                failures_section["fetch_error"] = fetch_err
+            if mode == "propose_corrections":
+                failures_section["ai_unassessed_count"] = len(ai_unassessed)
+            report["failures"] = failures_section
+
+            issue_by_code: Dict[str, int] = {}
+            for iss in all_issues:
+                code = str(iss.get("code") or "UNKNOWN")
+                issue_by_code[code] = issue_by_code.get(code, 0) + 1
+            report["issue_summary"] = {
+                "total": len(all_issues),
+                "records_with_issues": len(records_with_issues),
+                "by_code": issue_by_code,
+            }
 
     except Exception as exc:
         report["status"] = "failed"

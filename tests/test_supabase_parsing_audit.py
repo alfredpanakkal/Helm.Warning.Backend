@@ -46,6 +46,7 @@ os.environ.setdefault("AUDIT_AI_MAX_RPM", "1000000")
 from scripts import audit_supabase_parsing
 from scripts.audit_supabase_parsing import (
     GeminiRateLimited,
+    GeminiUnavailable,
     GeometryFetchError,
     GeometrySchemaError,
     fetch_all_warnings,
@@ -425,16 +426,18 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         )
         self.assertEqual(proposals, [])
 
-    # 7. Gemini model unavailable / connection error
+    # 7. Gemini unavailable / connection error: no response could be
+    # obtained, so the record is UNASSESSED — GeminiUnavailable (change B),
+    # never a silent empty-proposal success.
     @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
     @patch("urllib.request.urlopen", side_effect=RuntimeError("503 Service Unavailable"))
     def test_gemini_unavailable_fails_safely(self, mock_urlopen):
-        proposals = assess_warning_with_gemini(
-            self.sample_active_warning,
-            model_name="gemini-3.8-flash",
-            issues=[{"code": "TEST_ISSUE"}]
-        )
-        self.assertEqual(proposals, [])
+        with self.assertRaises(GeminiUnavailable):
+            assess_warning_with_gemini(
+                self.sample_active_warning,
+                model_name="gemini-3.8-flash",
+                issues=[{"code": "TEST_ISSUE"}]
+            )
 
     # 8. Audit-only mode ensures ZERO mutations and ZERO Gemini calls
     @patch("scripts.audit_supabase_parsing.assess_warning_with_gemini")
@@ -951,12 +954,17 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertEqual(res["report_version"], 2)
         # New sections exist and are empty at first (populated by WP2-WP4)
         self.assertIn("coverage", res)
-        # WP2 populates coverage; failures/issue_summary stay empty until WP3/WP4.
+        # WP2 populates coverage.
         self.assertEqual(res["coverage"]["scan_status"], "complete")
+        # Change D: failures/issue_summary are now populated from data the
+        # run already collected — {} only when nothing actually failed.
         self.assertIn("failures", res)
-        self.assertEqual(res["failures"], {})
+        self.assertEqual(res["failures"], {"ai": {}})
         self.assertIn("issue_summary", res)
-        self.assertEqual(res["issue_summary"], {})
+        self.assertEqual(res["issue_summary"]["total"], res["issue_count"])
+        self.assertEqual(sum(res["issue_summary"]["by_code"].values()),
+                         res["issue_count"])
+        self.assertIn("records_with_issues", res["issue_summary"])
         self.assertIn("limitations", res)
         self.assertEqual(res["limitations"], [])
 
@@ -1047,16 +1055,17 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         with self.assertRaises(GeometryFetchError):
             fetch_geometries_for_warnings(client, [self.sample_active_warning["id"]])
 
-    # 30. SDK present but failing falls back to the plain REST call and the
-    # full SDK error is logged (2026-11-07: 809 bare 'ClientError' lines).
-    def test_gemini_sdk_failure_falls_back_to_rest(self):
+    # 30. Change B: an SDK 5xx (503 Service Unavailable) falls back to the
+    # plain REST call, which succeeds — the record IS assessed and the full
+    # SDK error is logged (2026-11-07: 809 bare 'ClientError' lines).
+    def test_gemini_sdk_5xx_falls_back_to_rest(self):
         import types
         fake_google = types.ModuleType("google")
         fake_genai = types.ModuleType("google.genai")
 
         class _Boom:
             def __init__(self, api_key):
-                raise RuntimeError("SDK ClientError: config rejected")
+                raise RuntimeError("503 Service Unavailable")
 
         fake_genai.Client = _Boom
         fake_google.genai = fake_genai
@@ -1146,6 +1155,15 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertEqual(report["examined_count"], 5)
         self.assertEqual(report["issue_count"], 15)
         self.assertEqual(report["status"], "succeeded")
+        # Change C: cap-skipped records are ai-unassessed and needs_review
+        # (the cap is a deliberate bound, so the status stays succeeded —
+        # but the skipped records are never silently treated as passed).
+        self.assertEqual(len(report["ai_unassessed"]), 3)
+        self.assertTrue(all(e["reason"] == "ai_cap_reached"
+                            for e in report["ai_unassessed"]))
+        self.assertTrue(all(e["needs_review"]
+                            for e in report["ai_unassessed"]))
+        self.assertIsNone(report["coverage"]["incomplete_reason"])
 
     # 32. Records whose only issues are on non-AI-fixable fields (dates,
     # status, geometry) never burn a Gemini call.
@@ -1236,6 +1254,15 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertEqual(report["status"], "partial")
         self.assertTrue(any("Stopped on Gemini 429 after 3 records" in l
                             for l in report["limitations"]))
+        # Change C: partial + scan_complete=True must now carry a NAMED
+        # reason, and the record the AI never assessed stays needs_review.
+        self.assertTrue(report["scan_complete"])
+        self.assertEqual(report["coverage"]["incomplete_reason"], "gemini_quota")
+        self.assertEqual(len(report["ai_unassessed"]), 1)
+        self.assertEqual(report["ai_unassessed"][0]["canonical_id"],
+                         "NAVAREA IV 103/26")
+        self.assertEqual(report["ai_unassessed"][0]["reason"], "gemini_quota")
+        self.assertTrue(report["ai_unassessed"][0]["needs_review"])
 
     # 35. An SDK 429 must NOT fall through to the REST fallback (a failing run
     # would otherwise make 2 calls per record against an exhausted quota).
@@ -1286,11 +1313,12 @@ class TestSupabaseParsingAudit(unittest.TestCase):
                 )
 
     # 37. AUDIT_AI_MAX_RPM="" (or invalid) must import cleanly and fall back
-    # to the default of 10, never raise ValueError at import time. A fresh
-    # interpreter is required: the value is read once, at module import.
+    # to the default of 4 (under the Free Tier's 5 req/min), never raise
+    # ValueError at import time. A fresh interpreter is required: the value
+    # is read once, at module import.
     def test_empty_or_invalid_rpm_env_imports_cleanly(self):
         import subprocess
-        for env_value, expected in (("", 10), ("abc", 10), ("0", 1)):
+        for env_value, expected in (("", 4), ("abc", 4), ("0", 1)):
             env = dict(os.environ, AUDIT_AI_MAX_RPM=env_value)
             result = subprocess.run(
                 [sys.executable, "-c",
@@ -1307,9 +1335,10 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             )
 
     # 38. A warning ID like "NAVAREA IV 429/26" inside an SDK error message
-    # is NOT a 429 status: the call must fall back to REST (urlopen called),
-    # never raise GeminiRateLimited and stop the AI pass. A bare substring
-    # "429" check would false-positive here.
+    # is NOT a 429 status: it must not raise GeminiRateLimited. Change B: it
+    # is also a non-5xx failure, so there is NO REST fallback either — the
+    # record is unassessed (GeminiUnavailable) and the REST client is never
+    # called against the same quota pool.
     @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
     def test_warning_id_429_in_message_is_not_rate_limited(self):
         import types
@@ -1333,14 +1362,13 @@ class TestSupabaseParsingAudit(unittest.TestCase):
 
         with patch.dict(sys.modules, {"google": fake_google, "google.genai": fake_genai}), \
              patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.return_value = self._verify_model_response()
-            proposals = assess_warning_with_gemini(
-                dict(self.sample_active_warning),
-                model_name="gemini-3.8-flash",
-                issues=[{"code": "TEST_ISSUE"}],
-            )
-        mock_urlopen.assert_called_once()
-        self.assertEqual(proposals, [])
+            with self.assertRaises(GeminiUnavailable):
+                assess_warning_with_gemini(
+                    dict(self.sample_active_warning),
+                    model_name="gemini-3.8-flash",
+                    issues=[{"code": "TEST_ISSUE"}],
+                )
+        mock_urlopen.assert_not_called()
 
     # 39. A status-code attribute (code == 429) on the SDK exception is
     # honored even when the message text carries no 429 token at all.
@@ -1417,6 +1445,348 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertEqual(report["examined_count"], 3)
         self.assertEqual(report["issue_count"], 9)
         self.assertEqual(report["status"], "succeeded")
+
+    # 42. Change A: the FIRST 429's retryDelay is honored exactly once — the
+    # same record is retried after sleeping the API-given delay, and a
+    # successful retry keeps the run green (status succeeded).
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    @patch("urllib.request.urlopen")
+    def test_429_retry_delay_honored_once_then_recovers(self, mock_urlopen):
+        mock_urlopen.return_value = self._verify_model_response()
+        rows = [self._rate_record(i) for i in range(3)]
+        client = MockSupabaseClient({
+            "nav_warnings": rows,
+            "nav_warning_geometries": [],
+            "parsing_audit_runs": [],
+            "parsing_correction_proposals": [],
+        })
+        proposal = {
+            "canonical_id": "NAVAREA IV 101/26",
+            "field_name": "unplotted_reason",
+            "proposed_value": None,
+            "raw_evidence": "GULF OF MEXICO",
+        }
+        calls = {"n": 0}
+
+        def fake_assess(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise GeminiRateLimited(
+                    "429 RESOURCE_EXHAUSTED: quota exceeded", retry_delay=7.0
+                )
+            return [dict(proposal)]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch(
+                "scripts.audit_supabase_parsing.assess_warning_with_gemini",
+                side_effect=fake_assess,
+            ) as mock_assess, patch(
+                "scripts.audit_supabase_parsing.time"
+            ) as mock_time:
+                report = run_audit(
+                    mode="propose_corrections", client=client,
+                    report_dir=tmp_dir,
+                )
+        # 3 records + exactly 1 retry of the 429'd record
+        self.assertEqual(mock_assess.call_count, 4)
+        self.assertEqual(mock_time.sleep.call_count, 1)
+        self.assertAlmostEqual(mock_time.sleep.call_args[0][0], 7.0, places=3)
+        self.assertEqual(len(report["proposals"]), 3)
+        self.assertEqual(report["proposal_count"], 3)
+        self.assertEqual(report["status"], "succeeded")
+        self.assertIsNone(report["coverage"]["incomplete_reason"])
+
+    # 43. Change A: a 429 whose retry ALSO 429s stops the pass after the
+    # single retryDelay-honoring retry: partial status, proposals kept,
+    # 'Stopped on Gemini 429' limitation line.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    @patch("urllib.request.urlopen")
+    def test_429_retry_delay_once_then_stop_on_second_429(self, mock_urlopen):
+        mock_urlopen.return_value = self._verify_model_response()
+        rows = [self._rate_record(i) for i in range(3)]
+        client = MockSupabaseClient({
+            "nav_warnings": rows,
+            "nav_warning_geometries": [],
+            "parsing_audit_runs": [],
+            "parsing_correction_proposals": [],
+        })
+        proposal = {
+            "canonical_id": "NAVAREA IV 101/26",
+            "field_name": "unplotted_reason",
+            "proposed_value": None,
+            "raw_evidence": "GULF OF MEXICO",
+        }
+        calls = {"n": 0}
+
+        def fake_assess(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise GeminiRateLimited(
+                    "429 RESOURCE_EXHAUSTED: quota exceeded", retry_delay=5.0
+                )
+            if calls["n"] == 3:
+                raise GeminiRateLimited("429 RESOURCE_EXHAUSTED again")
+            return [dict(proposal)]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch(
+                "scripts.audit_supabase_parsing.assess_warning_with_gemini",
+                side_effect=fake_assess,
+            ) as mock_assess, patch(
+                "scripts.audit_supabase_parsing.time"
+            ) as mock_time:
+                report = run_audit(
+                    mode="propose_corrections", client=client,
+                    report_dir=tmp_dir,
+                )
+        # record 1 ok, record 2 429, record 2 retried -> 429 -> stop
+        self.assertEqual(mock_assess.call_count, 3)
+        self.assertEqual(mock_time.sleep.call_count, 1)
+        self.assertAlmostEqual(mock_time.sleep.call_args[0][0], 5.0, places=3)
+        self.assertEqual(len(report["proposals"]), 1)
+        self.assertTrue(any("Stopped on Gemini 429 after 2 records" in l
+                            for l in report["limitations"]))
+        self.assertEqual(report["status"], "partial")
+
+    # 44. Change A: retryDelay inside an SDK 429 message is parsed onto the
+    # raised GeminiRateLimited (36s), and absurd values are capped at 120s.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    def test_sdk_429_retry_delay_parsed_and_capped(self):
+        import types
+        fake_google = types.ModuleType("google")
+        fake_genai = types.ModuleType("google.genai")
+
+        class _Models:
+            @staticmethod
+            def generate_content(**kwargs):
+                raise RuntimeError(
+                    "ClientError: 429 RESOURCE_EXHAUSTED. {'error': "
+                    "{'details': [{'@type': 'type.googleapis.com/"
+                    "google.rpc.RetryInfo', 'retryDelay': '36s'}]}}"
+                )
+
+        class _DelayClient:
+            def __init__(self, api_key):
+                self.models = _Models()
+
+        fake_genai.Client = _DelayClient
+        fake_google.genai = fake_genai
+
+        with patch.dict(sys.modules, {"google": fake_google, "google.genai": fake_genai}):
+            with self.assertRaises(GeminiRateLimited) as ctx:
+                assess_warning_with_gemini(
+                    dict(self.sample_active_warning),
+                    model_name="gemini-3.8-flash",
+                    issues=[{"code": "TEST_ISSUE"}],
+                )
+        self.assertAlmostEqual(ctx.exception.retry_delay, 36.0, places=3)
+
+        class _ModelsHuge:
+            @staticmethod
+            def generate_content(**kwargs):
+                raise RuntimeError(
+                    "ClientError: 429 RESOURCE_EXHAUSTED. {'error': "
+                    "{'details': [{'@type': 'type.googleapis.com/"
+                    "google.rpc.RetryInfo', 'retryDelay': '9999s'}]}}"
+                )
+
+        class _HugeClient:
+            def __init__(self, api_key):
+                self.models = _ModelsHuge()
+
+        fake_genai.Client = _HugeClient
+        with patch.dict(sys.modules, {"google": fake_google, "google.genai": fake_genai}):
+            with self.assertRaises(GeminiRateLimited) as ctx:
+                assess_warning_with_gemini(
+                    dict(self.sample_active_warning),
+                    model_name="gemini-3.8-flash",
+                    issues=[{"code": "TEST_ISSUE"}],
+                )
+        self.assertAlmostEqual(
+            ctx.exception.retry_delay,
+            audit_supabase_parsing.RETRY_DELAY_CAP_SECONDS,
+            places=3,
+        )
+
+    # 45. Change A: retryDelay inside a REST 429 error body is parsed onto
+    # the raised GeminiRateLimited as well.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    def test_rest_429_retry_delay_parsed(self):
+        import io
+        from urllib.error import HTTPError
+        body = json.dumps({
+            "error": {
+                "code": 429,
+                "status": "RESOURCE_EXHAUSTED",
+                "details": [{
+                    "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                    "retryDelay": "42s",
+                }],
+            }
+        }).encode("utf-8")
+        with patch.dict(sys.modules, {"google": None}), \
+             patch("urllib.request.urlopen", side_effect=HTTPError(
+                 "https://api", 429, "Too Many Requests", None, io.BytesIO(body))):
+            with self.assertRaises(GeminiRateLimited) as ctx:
+                assess_warning_with_gemini(
+                    dict(self.sample_active_warning),
+                    model_name="gemini-3.8-flash",
+                    issues=[{"code": "TEST_ISSUE"}],
+                )
+        self.assertAlmostEqual(ctx.exception.retry_delay, 42.0, places=3)
+
+    # 46. Change B: an SDK response with EMPTY text is a real (empty)
+    # answer — no second, quota-burning REST call for the same record.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    def test_sdk_empty_response_never_calls_rest(self):
+        import types
+        fake_google = types.ModuleType("google")
+        fake_genai = types.ModuleType("google.genai")
+
+        class _Resp:
+            text = ""
+
+        class _Models:
+            @staticmethod
+            def generate_content(**kwargs):
+                return _Resp()
+
+        class _EmptyClient:
+            def __init__(self, api_key):
+                self.models = _Models()
+
+        fake_genai.Client = _EmptyClient
+        fake_google.genai = fake_genai
+
+        with patch.dict(sys.modules, {"google": fake_google, "google.genai": fake_genai}), \
+             patch("urllib.request.urlopen") as mock_urlopen:
+            proposals = assess_warning_with_gemini(
+                dict(self.sample_active_warning),
+                model_name="gemini-3.8-flash",
+                issues=[{"code": "TEST_ISSUE"}],
+            )
+        mock_urlopen.assert_not_called()
+        self.assertEqual(proposals, [])
+
+    # 47. Change C: a per-record GeminiUnavailable (e.g. 503 on both
+    # transports) does NOT abort the pass — remaining records are assessed,
+    # but the run is honest: status partial, scan_complete True with
+    # incomplete_reason='gemini_unavailable', the failed record marked
+    # needs_review and never passed, and summary.json carries the reason.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    @patch("urllib.request.urlopen")
+    def test_gemini_unavailable_record_marks_partial_and_needs_review(
+        self, mock_urlopen
+    ):
+        mock_urlopen.return_value = self._verify_model_response()
+        rows = [self._rate_record(i) for i in range(3)]
+        client = MockSupabaseClient({
+            "nav_warnings": rows,
+            "nav_warning_geometries": [],
+            "parsing_audit_runs": [],
+            "parsing_correction_proposals": [],
+        })
+        proposal = {
+            "canonical_id": "NAVAREA IV 101/26",
+            "field_name": "unplotted_reason",
+            "proposed_value": None,
+            "raw_evidence": "GULF OF MEXICO",
+        }
+
+        def fake_assess(**kwargs):
+            if kwargs.get("record", {}).get("canonical_id") == "NAVAREA IV 102/26":
+                raise GeminiUnavailable("503 Service Unavailable")
+            return [dict(proposal)]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch(
+                "scripts.audit_supabase_parsing.assess_warning_with_gemini",
+                side_effect=fake_assess,
+            ) as mock_assess:
+                report = run_audit(
+                    mode="propose_corrections", client=client,
+                    report_dir=tmp_dir,
+                )
+            with open(os.path.join(tmp_dir, "summary.json"),
+                      encoding="utf-8") as fh:
+                summary = json.load(fh)
+        # The pass kept going: all 3 records attempted, 2 proposals kept
+        self.assertEqual(mock_assess.call_count, 3)
+        self.assertEqual(len(report["proposals"]), 2)
+        self.assertEqual(report["proposal_count"], 2)
+        # Honest status: partial even though the scan itself completed
+        self.assertTrue(report["scan_complete"])
+        self.assertEqual(report["status"], "partial")
+        self.assertEqual(report["coverage"]["incomplete_reason"],
+                         "gemini_unavailable")
+        # The failed record is needs_review, never passed: no proposal exists
+        # for it and it is listed in ai_unassessed.
+        self.assertEqual([e["canonical_id"] for e in report["ai_unassessed"]],
+                         ["NAVAREA IV 102/26"])
+        self.assertEqual(report["ai_unassessed"][0]["reason"],
+                         "gemini_unavailable")
+        self.assertTrue(report["ai_unassessed"][0]["needs_review"])
+        self.assertFalse(any(
+            p["canonical_id"] == "NAVAREA IV 102/26"
+            for p in report["proposals"]
+        ))
+        # summary.json (what the workflow gate reads) carries the reason
+        self.assertEqual(summary["incomplete_reason"], "gemini_unavailable")
+        self.assertEqual(summary["status"], "partial")
+
+    # 48. Change D: failures and issue_summary are populated from existing
+    # data only — real counts, no invented numbers, no fake success. Both
+    # records fail with a hard 503 (no SDK): the failure log, the
+    # ai_unassessed list and the per-code issue aggregation all reconcile.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    @patch("urllib.request.urlopen")
+    def test_failures_and_issue_summary_populated_from_existing_data(
+        self, mock_urlopen
+    ):
+        verify_resp = self._verify_model_response()
+        mock_urlopen.side_effect = [
+            verify_resp,  # model verification (fail-closed gate)
+            RuntimeError("503 Service Unavailable"),  # record 1 REST call
+            RuntimeError("503 Service Unavailable"),  # record 2 REST call
+        ]
+        rows = [self._rate_record(i) for i in range(2)]
+        client = MockSupabaseClient({
+            "nav_warnings": rows,
+            "nav_warning_geometries": [],
+            "parsing_audit_runs": [],
+            "parsing_correction_proposals": [],
+        })
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.dict(sys.modules, {"google": None}):
+            report = run_audit(
+                mode="propose_corrections", client=client,
+                report_dir=tmp_dir,
+            )
+        # Honest status for a fully failed AI pass
+        self.assertEqual(report["status"], "partial")
+        self.assertEqual(report["coverage"]["incomplete_reason"],
+                         "gemini_unavailable")
+        # failures: real reasons from the Gemini failure log + real count
+        self.assertEqual(
+            report["failures"]["ai"],
+            {"RuntimeError: 503 Service Unavailable": 2},
+        )
+        self.assertEqual(report["failures"]["ai_unassessed_count"], 2)
+        self.assertEqual(report["ai_failures"],
+                         report["failures"]["ai"])
+        self.assertEqual(len(report["ai_unassessed"]), 2)
+        self.assertTrue(all(e["needs_review"] for e in report["ai_unassessed"]))
+        self.assertEqual(report["proposal_count"], 0)
+        # issue_summary: aggregated from the deterministic issues list
+        self.assertEqual(report["issue_summary"]["total"],
+                         report["issue_count"])
+        self.assertEqual(report["issue_summary"]["records_with_issues"], 2)
+        expected_by_code = {}
+        for iss in report["issues"]:
+            expected_by_code[iss["code"]] = (
+                expected_by_code.get(iss["code"], 0) + 1
+            )
+        self.assertEqual(report["issue_summary"]["by_code"], expected_by_code)
 
 
 if __name__ == "__main__":
