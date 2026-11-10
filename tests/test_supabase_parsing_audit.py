@@ -46,6 +46,7 @@ os.environ.setdefault("AUDIT_AI_MAX_RPM", "1000000")
 from scripts import audit_supabase_parsing
 from scripts.audit_supabase_parsing import (
     GeminiRateLimited,
+    GeminiUnavailable,
     GeometryFetchError,
     GeometrySchemaError,
     fetch_all_warnings,
@@ -425,16 +426,18 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         )
         self.assertEqual(proposals, [])
 
-    # 7. Gemini model unavailable / connection error
+    # 7. Gemini unavailable / connection error: no response could be
+    # obtained, so the record is UNASSESSED — GeminiUnavailable (change B),
+    # never a silent empty-proposal success.
     @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
     @patch("urllib.request.urlopen", side_effect=RuntimeError("503 Service Unavailable"))
     def test_gemini_unavailable_fails_safely(self, mock_urlopen):
-        proposals = assess_warning_with_gemini(
-            self.sample_active_warning,
-            model_name="gemini-3.8-flash",
-            issues=[{"code": "TEST_ISSUE"}]
-        )
-        self.assertEqual(proposals, [])
+        with self.assertRaises(GeminiUnavailable):
+            assess_warning_with_gemini(
+                self.sample_active_warning,
+                model_name="gemini-3.8-flash",
+                issues=[{"code": "TEST_ISSUE"}]
+            )
 
     # 8. Audit-only mode ensures ZERO mutations and ZERO Gemini calls
     @patch("scripts.audit_supabase_parsing.assess_warning_with_gemini")
@@ -1047,16 +1050,17 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         with self.assertRaises(GeometryFetchError):
             fetch_geometries_for_warnings(client, [self.sample_active_warning["id"]])
 
-    # 30. SDK present but failing falls back to the plain REST call and the
-    # full SDK error is logged (2026-11-07: 809 bare 'ClientError' lines).
-    def test_gemini_sdk_failure_falls_back_to_rest(self):
+    # 30. Change B: an SDK 5xx (503 Service Unavailable) falls back to the
+    # plain REST call, which succeeds — the record IS assessed and the full
+    # SDK error is logged (2026-11-07: 809 bare 'ClientError' lines).
+    def test_gemini_sdk_5xx_falls_back_to_rest(self):
         import types
         fake_google = types.ModuleType("google")
         fake_genai = types.ModuleType("google.genai")
 
         class _Boom:
             def __init__(self, api_key):
-                raise RuntimeError("SDK ClientError: config rejected")
+                raise RuntimeError("503 Service Unavailable")
 
         fake_genai.Client = _Boom
         fake_google.genai = fake_genai
@@ -1308,9 +1312,10 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             )
 
     # 38. A warning ID like "NAVAREA IV 429/26" inside an SDK error message
-    # is NOT a 429 status: the call must fall back to REST (urlopen called),
-    # never raise GeminiRateLimited and stop the AI pass. A bare substring
-    # "429" check would false-positive here.
+    # is NOT a 429 status: it must not raise GeminiRateLimited. Change B: it
+    # is also a non-5xx failure, so there is NO REST fallback either — the
+    # record is unassessed (GeminiUnavailable) and the REST client is never
+    # called against the same quota pool.
     @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
     def test_warning_id_429_in_message_is_not_rate_limited(self):
         import types
@@ -1334,14 +1339,13 @@ class TestSupabaseParsingAudit(unittest.TestCase):
 
         with patch.dict(sys.modules, {"google": fake_google, "google.genai": fake_genai}), \
              patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.return_value = self._verify_model_response()
-            proposals = assess_warning_with_gemini(
-                dict(self.sample_active_warning),
-                model_name="gemini-3.8-flash",
-                issues=[{"code": "TEST_ISSUE"}],
-            )
-        mock_urlopen.assert_called_once()
-        self.assertEqual(proposals, [])
+            with self.assertRaises(GeminiUnavailable):
+                assess_warning_with_gemini(
+                    dict(self.sample_active_warning),
+                    model_name="gemini-3.8-flash",
+                    issues=[{"code": "TEST_ISSUE"}],
+                )
+        mock_urlopen.assert_not_called()
 
     # 39. A status-code attribute (code == 429) on the SDK exception is
     # honored even when the message text carries no 429 token at all.
@@ -1607,6 +1611,39 @@ class TestSupabaseParsingAudit(unittest.TestCase):
                     issues=[{"code": "TEST_ISSUE"}],
                 )
         self.assertAlmostEqual(ctx.exception.retry_delay, 42.0, places=3)
+
+    # 46. Change B: an SDK response with EMPTY text is a real (empty)
+    # answer — no second, quota-burning REST call for the same record.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    def test_sdk_empty_response_never_calls_rest(self):
+        import types
+        fake_google = types.ModuleType("google")
+        fake_genai = types.ModuleType("google.genai")
+
+        class _Resp:
+            text = ""
+
+        class _Models:
+            @staticmethod
+            def generate_content(**kwargs):
+                return _Resp()
+
+        class _EmptyClient:
+            def __init__(self, api_key):
+                self.models = _Models()
+
+        fake_genai.Client = _EmptyClient
+        fake_google.genai = fake_genai
+
+        with patch.dict(sys.modules, {"google": fake_google, "google.genai": fake_genai}), \
+             patch("urllib.request.urlopen") as mock_urlopen:
+            proposals = assess_warning_with_gemini(
+                dict(self.sample_active_warning),
+                model_name="gemini-3.8-flash",
+                issues=[{"code": "TEST_ISSUE"}],
+            )
+        mock_urlopen.assert_not_called()
+        self.assertEqual(proposals, [])
 
 
 if __name__ == "__main__":

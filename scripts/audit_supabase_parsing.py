@@ -25,7 +25,8 @@ Safety invariants:
     at least one AI-fixable issue are assessed, hard-capped by --max-ai-records, and throttled
     to AUDIT_AI_MAX_RPM calls per minute (default 4, under the Free Tier's 5 req/min). The
     first 429 of a run is retried once after honoring the API's retryDelay; a further 429
-    stops the AI pass, and the REST fallback is never used against an exhausted quota.
+    stops the AI pass, and the REST fallback is 5xx-only and never used against an
+    exhausted quota. Any other Gemini failure marks the record needs_review, never passed.
 """
 
 from __future__ import annotations
@@ -103,6 +104,16 @@ class GeminiRateLimited(RuntimeError):
     def __init__(self, message: str, retry_delay: Optional[float] = None):
         super().__init__(message)
         self.retry_delay = retry_delay
+
+
+class GeminiUnavailable(RuntimeError):
+    """Raised when no Gemini response could be obtained for a record.
+
+    Change B (audit 2026-11-10): the REST fallback is reserved for 5xx-class
+    SDK errors (and a missing SDK); any other SDK failure is a hard failure,
+    not a silent empty-proposal success. The record was NOT assessed — the
+    caller must mark it needs_review and treat the AI pass as incomplete.
+    """
 
 
 API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -754,6 +765,31 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     return "RESOURCE_EXHAUSTED" in text or bool(_RATE_LIMIT_429_RE.search(text))
 
 
+# A 5xx SDK error is the ONLY class of SDK failure that may fall back to the
+# REST path (change B, audit 2026-11-10): transient server-side
+# unavailability is worth one attempt through the other transport, while any
+# other SDK failure (auth, config, request shape) would fail identically over
+# REST — and doubling calls against the shared quota pool is exactly what the
+# 2026-11-07 audit stopped. Same lookaround guard as the 429 matcher: warning
+# IDs like "NAVAREA IV 503/26" must never read as a 503.
+_SERVER_ERROR_5XX_RE = re.compile(r"(?<![\w/])5\d\d(?![\w/])")
+
+
+def _is_server_error(exc: Exception) -> bool:
+    """True if the Gemini exception represents a 5xx server-side failure."""
+    for attr in ("code", "status_code", "status"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int) and 500 <= value <= 599:
+            return True
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.isdigit() and 500 <= int(stripped) <= 599:
+                return True
+    return bool(_SERVER_ERROR_5XX_RE.search(str(exc)))
+
+
 # Google's 429 payloads carry their own wait hint: error.details[]
 # [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "36s"}]
 # (the REST path may also send a Retry-After header). Change A (audit
@@ -865,15 +901,19 @@ def assess_warning_with_gemini(
 
     response_text = ""
     try:
-        # Prefer google-genai SDK; fall back to the plain REST call when the
-        # SDK is missing OR when the SDK call itself fails (version drift,
-        # config-object changes, ClientError). Audit 2026-11-07: the SDK
-        # failed for all 809 records and there was no fallback, so the
-        # semantic audit silently produced zero proposals.
+        # Prefer google-genai SDK. Change B (audit 2026-11-10): the REST path
+        # shares the SAME Gemini quota pool, so the fallback is now reserved
+        # for 5xx-class SDK errors (transient server-side unavailability) and
+        # for a missing SDK. A 429 raises GeminiRateLimited (never retried
+        # through REST against an exhausted quota), and any other SDK
+        # failure raises GeminiUnavailable — the record is unassessed, never
+        # a silent empty-proposal success. An SDK response with empty text is
+        # a real (empty) answer, not a trigger for a second paid call.
         try:
             from google import genai
         except ImportError:
             genai = None
+        sdk_failed_with_5xx = False
         if genai is not None:
             try:
                 _throttle()
@@ -892,19 +932,36 @@ def assess_warning_with_gemini(
                     raise GeminiRateLimited(
                         str(sdk_exc), retry_delay=_extract_retry_delay(sdk_exc)
                     ) from sdk_exc
+                if not _is_server_error(sdk_exc):
+                    # Non-5xx SDK failure: no REST fallback (it shares the
+                    # quota pool and would fail the same way) — fail closed.
+                    _note_gemini_failure(
+                        canonical_id,
+                        "google-genai SDK call failed (non-5xx, no REST fallback): "
+                        + type(sdk_exc).__name__ + ": " + str(sdk_exc),
+                    )
+                    raise GeminiUnavailable(
+                        f"Gemini SDK call failed for {canonical_id}: "
+                        f"{type(sdk_exc).__name__}: {sdk_exc}"
+                    ) from sdk_exc
+                # 5xx: transient server-side failure, worth exactly one
+                # attempt through the other transport.
                 _note_gemini_failure(
                     canonical_id,
-                    "google-genai SDK call failed, falling back to REST: "
+                    "google-genai SDK 5xx, falling back to REST: "
                     + type(sdk_exc).__name__ + ": " + str(sdk_exc),
                 )
-                response_text = ""
-        if not response_text:
+                sdk_failed_with_5xx = True
+        if not response_text and (genai is None or sdk_failed_with_5xx):
             response_text = _gemini_rest_generate(model, prompt, api_key)
-    except GeminiRateLimited:
+    except (GeminiRateLimited, GeminiUnavailable):
         raise
     except Exception as exc:
         _note_gemini_failure(canonical_id, f"{type(exc).__name__}: {exc}")
-        return []
+        raise GeminiUnavailable(
+            f"Gemini assessment unavailable for {canonical_id}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
 
     # Clean markdown fences if model returned them
     cleaned = re.sub(r"^```[a-zA-Z]*|^```|```$", "", response_text.strip()).strip()
