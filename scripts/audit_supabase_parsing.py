@@ -49,13 +49,16 @@ from shared.utils import parse_coordinates, repair_coordinate_token
 DEFAULT_MODEL = "gemini-3.8-flash"
 
 # Columns fetched from nav_warning_geometries. The live table stores geometry as
-# the PostGIS `geometry` column `geom_postgis` (verified 2026-10-28 via
+# the PostGIS `geography` column `geom_postgis` (verified 2026-10-28 via
 # information_schema: there is NO `geojson` or `geom_geojson` column), so the
-# GeoJSON payload is requested as a PostgREST computed column:
-#   st_asgeojson(geom_postgis)  ->  returned under the key "st_asgeojson".
+# GeoJSON payload is exposed as a PostgREST computed column
+# (migrations/20261110_geom_geojson_computed_column.sql):
+#   geom_geojson  ->  GeoJSON object under the key "geom_geojson".
+# Function-call syntax like st_asgeojson(geom_postgis) trips PGRST200 in
+# PostgREST and must never appear in the select.
 GEOMETRY_SELECT_COLS = (
     "warning_id, zone_label, feature_type, buffer_nm, corridor_half_width_nm, "
-    "st_asgeojson(geom_postgis)"
+    "geom_geojson"
 )
 
 # Keys under which a GeoJSON payload may appear in a fetched geometry row.
@@ -260,11 +263,12 @@ def fetch_geometries_for_warnings(
             # issuing a geometry-blind report.
             if "PGRST200" in str(exc):
                 raise GeometryFetchError(
-                    "PostgREST cannot resolve the st_asgeojson computed column "
-                    "(PGRST200): Supabase keeps PostGIS in the 'extensions' schema, "
-                    "so select=st_asgeojson(geom_postgis) finds no public function. "
-                    "Apply migrations/20261107_st_asgeojson_public_wrapper.sql to "
-                    f"expose public.st_asgeojson(geometry). Original error: {exc}"
+                    "PostgREST cannot resolve the geom_geojson computed column "
+                    "(PGRST200): the geometry select must use the PostgREST "
+                    "computed column public.geom_geojson(nav_warning_geometries), "
+                    "NOT function-call syntax like st_asgeojson(geom_postgis). "
+                    "Apply migrations/20261110_geom_geojson_computed_column.sql to "
+                    f"expose it (service_role only). Original error: {exc}"
                 ) from exc
             raise GeometryFetchError(
                 f"Geometry batch fetch failed at offset {i}: "
