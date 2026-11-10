@@ -224,7 +224,6 @@ def fetch_geometries_for_warnings(
         return {}
 
     geoms_by_wid: Dict[str, List[Dict[str, Any]]] = {wid: [] for wid in warning_ids}
-    geojson_key_checked = False
 
     for i in range(0, len(warning_ids), batch_size):
         chunk = warning_ids[i:i + batch_size]
@@ -236,12 +235,13 @@ def fetch_geometries_for_warnings(
                 .execute()
             )
             rows = res.data or []
-            # Fail-loudly schema check (first fetched row only): every row must
-            # carry a GeoJSON payload key, otherwise all geometry checks would
-            # silently no-op for the rest of the run.
-            if rows and not geojson_key_checked:
-                geojson_key_checked = True
-                if not any(k in rows[0] for k in GEOJSON_KEYS):
+            # Fail-loudly schema check: EVERY fetched row must carry a GeoJSON
+            # payload key. (A key present with a null value is legal here: a
+            # null payload is FLAGGED per-row by the validator, never skipped.)
+            # Otherwise all geometry checks would silently no-op for the rest
+            # of the run.
+            for g in rows:
+                if not any(k in g for k in GEOJSON_KEYS):
                     raise GeometrySchemaError(
                         "Fetched nav_warning_geometries rows carry none of the GeoJSON keys "
                         + str(GEOJSON_KEYS)
@@ -493,6 +493,20 @@ def validate_warning_geometry(
                 geojson_blob = json.loads(geojson_blob)
             except Exception:
                 geojson_blob = None
+
+        if geojson_blob is None:
+            # Null or missing geometry payload is FLAGGED, never skipped,
+            # never defaulted: no clamping, no reprojection, no coordinate
+            # edits. Invalid geometry goes to review, not repair.
+            issues.append({
+                "code": "MISSING_GEOMETRY_PAYLOAD",
+                "field": f"geometries[{idx}].geojson",
+                "severity": "ERROR",
+                "message": "Geometry row carries no GeoJSON payload (null or missing geom_geojson). "
+                           "Flagged for review; not repaired.",
+                "current_value": None,
+            })
+            continue
 
         if isinstance(geojson_blob, dict):
             gtype = geojson_blob.get("type")
