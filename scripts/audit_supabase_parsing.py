@@ -27,6 +27,10 @@ Safety invariants:
     first 429 of a run is retried once after honoring the API's retryDelay; a further 429
     stops the AI pass, and the REST fallback is 5xx-only and never used against an
     exhausted quota. Any other Gemini failure marks the record needs_review, never passed.
+  - AI assessment is batched (2026-11-10): one Gemini request carries up to AUDIT_AI_BATCH_SIZE
+    records (default 20), so a 45-record pass costs 3 requests instead of 45 against the shared
+    per-project quota. Every returned item is re-validated against its OWN record: cross-record
+    evidence and unknown canonical_ids are dropped, never trusted.
 """
 
 from __future__ import annotations
@@ -731,6 +735,25 @@ def _resolve_ai_max_rpm() -> int:
 
 AI_MAX_RPM = _resolve_ai_max_rpm()
 
+
+def _resolve_ai_batch_size() -> int:
+    """AUDIT_AI_BATCH_SIZE as int with a floor of 1.
+
+    Batching (2026-11-10): one Gemini request carries up to this many
+    warning records, cutting request counts ~20x against the shared
+    per-project Free-Tier quota. Empty or invalid values must never raise
+    at import time (a bad env var in CI would crash the whole script
+    before argparse even runs): empty -> default 20, unparseable -> 20,
+    < 1 -> 1.
+    """
+    try:
+        return max(1, int(os.getenv("AUDIT_AI_BATCH_SIZE") or "20"))
+    except ValueError:
+        return 20
+
+
+AI_BATCH_SIZE = _resolve_ai_batch_size()
+
 _last_ai_call = 0.0
 
 
@@ -837,6 +860,127 @@ def _extract_retry_delay(exc: Exception) -> Optional[float]:
     return None
 
 
+def _gemini_generate(model: str, prompt: str, api_key: str, label: str) -> str:
+    """One Gemini generation attempt through the SDK-first / 5xx-REST path.
+
+    Change B semantics (audit 2026-11-10) unchanged: a 429 raises
+    GeminiRateLimited BEFORE any REST fallback (the REST path shares the
+    same per-project quota pool); a non-5xx SDK failure raises
+    GeminiUnavailable with no fallback; only a 5xx SDK error (or a missing
+    SDK) gets exactly one attempt through REST; an SDK response with empty
+    text is a real (empty) answer, never a trigger for a second call.
+    `label` identifies the assessed unit (a canonical_id or a batch
+    summary) in the failure log — logging metadata only.
+    """
+    response_text = ""
+    try:
+        try:
+            from google import genai
+        except ImportError:
+            genai = None
+        sdk_failed_with_5xx = False
+        if genai is not None:
+            try:
+                _throttle()
+                client = genai.Client(api_key=api_key)
+                # Gemini 3.x removed temperature/top_p/top_k sampling controls.
+                resp = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config={"response_mime_type": "application/json"}
+                )
+                response_text = resp.text or ""
+            except Exception as sdk_exc:
+                if _is_rate_limit_error(sdk_exc):
+                    # Quota exhausted: never double the call count by
+                    # retrying through REST against the same quota pool.
+                    raise GeminiRateLimited(
+                        str(sdk_exc), retry_delay=_extract_retry_delay(sdk_exc)
+                    ) from sdk_exc
+                if not _is_server_error(sdk_exc):
+                    # Non-5xx SDK failure: no REST fallback (it shares the
+                    # quota pool and would fail the same way) — fail closed.
+                    _note_gemini_failure(
+                        label,
+                        "google-genai SDK call failed (non-5xx, no REST fallback): "
+                        + type(sdk_exc).__name__ + ": " + str(sdk_exc),
+                    )
+                    raise GeminiUnavailable(
+                        f"Gemini SDK call failed for {label}: "
+                        f"{type(sdk_exc).__name__}: {sdk_exc}"
+                    ) from sdk_exc
+                # 5xx: transient server-side failure, worth exactly one
+                # attempt through the other transport.
+                _note_gemini_failure(
+                    label,
+                    "google-genai SDK 5xx, falling back to REST: "
+                    + type(sdk_exc).__name__ + ": " + str(sdk_exc),
+                )
+                sdk_failed_with_5xx = True
+        if not response_text and (genai is None or sdk_failed_with_5xx):
+            response_text = _gemini_rest_generate(model, prompt, api_key)
+    except (GeminiRateLimited, GeminiUnavailable):
+        raise
+    except Exception as exc:
+        _note_gemini_failure(label, f"{type(exc).__name__}: {exc}")
+        raise GeminiUnavailable(
+            f"Gemini assessment unavailable for {label}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    return response_text
+
+
+def _validated_ai_proposal(
+    item: Dict[str, Any], record: Dict[str, Any], model: str
+) -> Optional[Dict[str, Any]]:
+    """Validate one model-proposed correction item against ITS record.
+
+    Fail-closed: field allowlist, strict grounding (raw_evidence must be a
+    verbatim substring of THIS record's raw_text — cross-record evidence is
+    dropped), confidence clamped to [0, 1]. Returns the proposal dict
+    matching the parsing_correction_proposals schema, or None when the
+    item must be dropped (invalid items never become proposals).
+    """
+    field_name = str(item.get("field_name") or "").strip()
+    raw_evidence = str(item.get("raw_evidence") or "").strip()
+    explanation = str(item.get("explanation") or "").strip()
+    confidence = item.get("confidence")
+
+    # 1. Field allowlist check
+    if field_name not in ALLOWED_PROPOSAL_FIELDS:
+        return None
+
+    # 2. Strict Grounding: raw_evidence must be present in this record's raw_text
+    if not raw_evidence or raw_evidence not in (record.get("raw_text") or ""):
+        return None
+
+    # 3. Confidence range check
+    conf_val = None
+    if confidence is not None:
+        try:
+            conf_val = max(0.0, min(1.0, float(confidence)))
+        except (ValueError, TypeError):
+            conf_val = None
+
+    return {
+        "warning_record_id": record.get("id"),
+        "canonical_id": record.get("canonical_id") or "UNKNOWN",
+        "navarea": record.get("navarea"),
+        "field_name": field_name,
+        "original_value": item.get("original_value", record.get(field_name)),
+        "proposed_value": item.get("proposed_value"),
+        "raw_evidence": raw_evidence,
+        "explanation": explanation,
+        "confidence": conf_val,
+        "validation": {
+            "grounded": True,
+            "model_name": model,
+            "assessed_at": datetime.now(timezone.utc).isoformat(),
+        },
+        "status": "pending",
+    }
+
+
 def assess_warning_with_gemini(
     record: Dict[str, Any],
     model_name: Optional[str] = None,
@@ -899,69 +1043,11 @@ def assess_warning_with_gemini(
         f"OUTPUT ONLY RAW JSON, NO MARKDOWN FENCES."
     )
 
-    response_text = ""
-    try:
-        # Prefer google-genai SDK. Change B (audit 2026-11-10): the REST path
-        # shares the SAME Gemini quota pool, so the fallback is now reserved
-        # for 5xx-class SDK errors (transient server-side unavailability) and
-        # for a missing SDK. A 429 raises GeminiRateLimited (never retried
-        # through REST against an exhausted quota), and any other SDK
-        # failure raises GeminiUnavailable — the record is unassessed, never
-        # a silent empty-proposal success. An SDK response with empty text is
-        # a real (empty) answer, not a trigger for a second paid call.
-        try:
-            from google import genai
-        except ImportError:
-            genai = None
-        sdk_failed_with_5xx = False
-        if genai is not None:
-            try:
-                _throttle()
-                client = genai.Client(api_key=api_key)
-                # Gemini 3.x removed temperature/top_p/top_k sampling controls.
-                resp = client.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config={"response_mime_type": "application/json"}
-                )
-                response_text = resp.text or ""
-            except Exception as sdk_exc:
-                if _is_rate_limit_error(sdk_exc):
-                    # Quota exhausted: never double the call count by
-                    # retrying through REST against the same quota pool.
-                    raise GeminiRateLimited(
-                        str(sdk_exc), retry_delay=_extract_retry_delay(sdk_exc)
-                    ) from sdk_exc
-                if not _is_server_error(sdk_exc):
-                    # Non-5xx SDK failure: no REST fallback (it shares the
-                    # quota pool and would fail the same way) — fail closed.
-                    _note_gemini_failure(
-                        canonical_id,
-                        "google-genai SDK call failed (non-5xx, no REST fallback): "
-                        + type(sdk_exc).__name__ + ": " + str(sdk_exc),
-                    )
-                    raise GeminiUnavailable(
-                        f"Gemini SDK call failed for {canonical_id}: "
-                        f"{type(sdk_exc).__name__}: {sdk_exc}"
-                    ) from sdk_exc
-                # 5xx: transient server-side failure, worth exactly one
-                # attempt through the other transport.
-                _note_gemini_failure(
-                    canonical_id,
-                    "google-genai SDK 5xx, falling back to REST: "
-                    + type(sdk_exc).__name__ + ": " + str(sdk_exc),
-                )
-                sdk_failed_with_5xx = True
-        if not response_text and (genai is None or sdk_failed_with_5xx):
-            response_text = _gemini_rest_generate(model, prompt, api_key)
-    except (GeminiRateLimited, GeminiUnavailable):
-        raise
-    except Exception as exc:
-        _note_gemini_failure(canonical_id, f"{type(exc).__name__}: {exc}")
-        raise GeminiUnavailable(
-            f"Gemini assessment unavailable for {canonical_id}: "
-            f"{type(exc).__name__}: {exc}"
-        ) from exc
+    # Batching refactor (2026-11-10): the SDK/REST transport and the
+    # per-item validation now live in shared helpers so the single-record
+    # path and the batch path can never drift apart. label=canonical_id
+    # keeps the failure-log notes byte-identical to the pre-batch behavior.
+    response_text = _gemini_generate(model, prompt, api_key, canonical_id)
 
     # Clean markdown fences if model returned them
     cleaned = re.sub(r"^```[a-zA-Z]*|^```|```$", "", response_text.strip()).strip()
@@ -990,47 +1076,156 @@ def assess_warning_with_gemini(
     for item in data:
         if not isinstance(item, dict):
             continue
-
-        field_name = str(item.get("field_name") or "").strip()
-        raw_evidence = str(item.get("raw_evidence") or "").strip()
-        explanation = str(item.get("explanation") or "").strip()
-        confidence = item.get("confidence")
-
-        # 1. Field allowlist check
-        if field_name not in ALLOWED_PROPOSAL_FIELDS:
-            continue
-
-        # 2. Strict Grounding: raw_evidence must be present in raw_text
-        if not raw_evidence or raw_evidence not in raw_text:
-            continue
-
-        # 3. Confidence range check
-        conf_val = None
-        if confidence is not None:
-            try:
-                conf_val = max(0.0, min(1.0, float(confidence)))
-            except (ValueError, TypeError):
-                conf_val = None
-
-        validated_proposals.append({
-            "warning_record_id": record.get("id"),
-            "canonical_id": canonical_id,
-            "navarea": record.get("navarea"),
-            "field_name": field_name,
-            "original_value": item.get("original_value", record.get(field_name)),
-            "proposed_value": item.get("proposed_value"),
-            "raw_evidence": raw_evidence,
-            "explanation": explanation,
-            "confidence": conf_val,
-            "validation": {
-                "grounded": True,
-                "model_name": model,
-                "assessed_at": datetime.now(timezone.utc).isoformat(),
-            },
-            "status": "pending",
-        })
+        proposal = _validated_ai_proposal(item, record, model)
+        if proposal is not None:
+            validated_proposals.append(proposal)
 
     return validated_proposals
+
+
+def _ai_batch_label(records_issues: List[Tuple[Dict[str, Any], List[Dict[str, Any]]]]) -> str:
+    """Human-readable label for a batch in the Gemini failure log."""
+    first = records_issues[0][0].get("canonical_id") or "UNKNOWN"
+    last = records_issues[-1][0].get("canonical_id") or "UNKNOWN"
+    return f"AI batch of {len(records_issues)} record(s) ({first}..{last})"
+
+
+# AI proposals are requested in batches (maintainer decision 2026-11-10):
+# one Gemini call carries up to AUDIT_AI_BATCH_SIZE records (default 20),
+# so a 50-record pass costs 3 requests instead of 50 against the shared
+# per-project Free-Tier quota (5 req/min). Every returned item is
+# re-validated against ITS OWN record — cross-record evidence and unknown
+# canonical_ids are dropped, never trusted.
+def assess_warnings_with_gemini(
+    records_issues: List[Tuple[Dict[str, Any], List[Dict[str, Any]]]],
+    model_name: Optional[str] = None,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Assess a batch of warning records in ONE Gemini call.
+
+    Returns {canonical_id: [validated proposals]}. Records are independent:
+    a returned item is only accepted if its canonical_id matches a record in
+    this batch AND its raw_evidence appears verbatim in THAT record's raw
+    text (a model mixing text between records produces no proposals).
+    Records without raw_text are skipped (same as the single path: no
+    evidence to ground on, so no assessment). Raises GeminiRateLimited /
+    GeminiUnavailable with the same semantics as the single-record path; a
+    hard failure leaves the WHOLE batch unassessed (the caller keeps going
+    with the next batch).
+    """
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        return {}
+
+    model = model_name or os.getenv("GEMINI_MODEL_NAME") or DEFAULT_MODEL
+
+    assessable: List[Tuple[Dict[str, Any], List[Dict[str, Any]]]] = []
+    by_canon: Dict[str, Dict[str, Any]] = {}
+    for rec, rec_issues in records_issues:
+        raw_text = rec.get("raw_text") or ""
+        if not raw_text.strip():
+            # Inconclusive without raw text — same as the single path ([]).
+            continue
+        assessable.append((rec, rec_issues))
+        by_canon[rec.get("canonical_id") or "UNKNOWN"] = rec
+    if not assessable:
+        return {}
+
+    blocks = []
+    for i, (rec, rec_issues) in enumerate(assessable, start=1):
+        canonical_id = rec.get("canonical_id") or "UNKNOWN"
+        blocks.append(
+            f"RECORD {i}\n"
+            f"CANONICAL_ID: {canonical_id}\n"
+            f"RAW SOURCE BULLETIN TEXT:\n\"\"\"\n{rec.get('raw_text') or ''}\n\"\"\"\n\n"
+            f"CURRENT PARSED ATTRIBUTES:\n"
+            f"- title: {rec.get('title')}\n"
+            f"- area_text: {rec.get('area_text')}\n"
+            f"- categories: {rec.get('categories')}\n"
+            f"- triage_tier: {rec.get('triage_tier')}\n"
+            f"- data_quality: {rec.get('data_quality')}\n"
+            f"- unplotted_reason: {rec.get('unplotted_reason')}\n"
+            f"- valid_from: {rec.get('valid_from')}\n"
+            f"- valid_to: {rec.get('valid_to')}\n"
+            f"- shoal_depth_m: {rec.get('shoal_depth_m')}\n\n"
+            f"IDENTIFIED ISSUES:\n{json.dumps(rec_issues, indent=2)}"
+        )
+
+    prompt = (
+        f"You are a maritime safety MSI data auditor inspecting {len(assessable)} NAVAREA "
+        f"navigational warning records.\n"
+        f"Compare each stored record with its own verbatim bulletin text. The records are "
+        f"independent: NEVER use text from one record as evidence for another record's "
+        f"correction.\n\n"
+        + "\n\n".join(blocks)
+        + "\n\n"
+        f"INSTRUCTIONS:\n"
+        f"1. Only propose corrections for fields that are unambiguously supported by that "
+        f"record's own raw text.\n"
+        f"2. Never invent or extrapolate coordinates. If coordinates lack a hemisphere, set "
+        f"proposed_value to null and unplotted_reason to 'missing_hemisphere' "
+        f"(requires_review=true).\n"
+        f"3. Every proposal MUST have an exact 'raw_evidence' snippet verbatim from THAT "
+        f"record's own source text.\n"
+        f"4. Allowed fields to correct: {sorted(list(ALLOWED_PROPOSAL_FIELDS))}.\n"
+        f"5. Return ONE JSON array containing the proposals for ALL records. If no "
+        f"corrections are warranted for a record, return no item for it.\n"
+        f"Schema for each item:\n"
+        f"{{\n"
+        f"  \"canonical_id\": \"<the record's CANONICAL_ID, copied exactly>\",\n"
+        f"  \"field_name\": \"<field>\",\n"
+        f"  \"original_value\": <current_val>,\n"
+        f"  \"proposed_value\": <new_val>,\n"
+        f"  \"raw_evidence\": \"<exact quote from that record's source text>\",\n"
+        f"  \"explanation\": \"<short justification>\",\n"
+        f"  \"confidence\": 0.0 to 1.0,\n"
+        f"  \"requires_review\": true\n"
+        f"}}\n"
+        f"OUTPUT ONLY RAW JSON, NO MARKDOWN FENCES."
+    )
+
+    label = _ai_batch_label(assessable)
+    response_text = _gemini_generate(model, prompt, api_key, label)
+
+    # Clean markdown fences if model returned them
+    cleaned = re.sub(r"^```[a-zA-Z]*|^```|```$", "", response_text.strip()).strip()
+    if not cleaned:
+        return {}
+
+    try:
+        data = json.loads(cleaned)
+    except Exception:
+        # Try finding array bounds
+        s = cleaned.find("[")
+        e = cleaned.rfind("]")
+        if s >= 0 and e > s:
+            try:
+                data = json.loads(cleaned[s:e + 1])
+            except Exception:
+                return {}
+        else:
+            return {}
+
+    if not isinstance(data, list):
+        return {}
+
+    results: Dict[str, List[Dict[str, Any]]] = {}
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        claimed = str(item.get("canonical_id") or "").strip()
+        rec = by_canon.get(claimed)
+        if rec is None:
+            # Attribution failure: the item belongs to no record in this
+            # batch (hallucinated or cross-batch id) — dropped, loudly.
+            _note_gemini_failure(
+                claimed or "UNKNOWN",
+                "batch response item with unknown canonical_id dropped",
+            )
+            continue
+        proposal = _validated_ai_proposal(item, rec, model)
+        if proposal is not None:
+            results.setdefault(claimed, []).append(proposal)
+    return results
 
 
 def _ai_unassessed_entry(record: Dict[str, Any], reason: str) -> Dict[str, Any]:
@@ -1530,12 +1725,17 @@ def run_audit(
                 # GEMINI_API_KEY. Only records with at least one AI-fixable
                 # issue are assessed (bad dates/status/geometry cannot be
                 # fixed by the AI anyway) and never more than max_ai_records
-                # Gemini calls are made per run. A 429 keeps the proposals
-                # already made and stops the AI pass. Change A (audit
+                # records are handed to the AI per run. Change A (audit
                 # 2026-11-10): the FIRST 429 of a run honors the API's own
                 # retryDelay (Google's RetryInfo hint) exactly once — one
-                # retry of the same record after sleeping the delay — and
+                # retry of the same batch after sleeping the delay — and
                 # only a further 429 stops the pass for good.
+                # Batching (2026-11-10): the candidates are assessed in
+                # batches of up to AI_BATCH_SIZE records per Gemini request
+                # (default 20, AUDIT_AI_BATCH_SIZE), so a 45-candidate pass
+                # costs 3 requests instead of 45 against the shared
+                # per-project quota. A hard failure marks only its own
+                # batch's records unassessed; later batches still run.
                 ai_calls = 0
                 ai_429_retried = False
                 # Change C (audit 2026-11-10): records that could not be
@@ -1548,7 +1748,8 @@ def run_audit(
                     for rec, rec_issues in records_with_issues
                 ]
                 ai_candidates = [(rec, iss) for rec, iss in ai_candidates if iss]
-                for idx, (rec, ai_issues) in enumerate(ai_candidates):
+                idx = 0
+                while idx < len(ai_candidates):
                     if ai_calls >= max_ai_records:
                         report["limitations"].append(
                             f"AI cap reached: {max_ai_records} records assessed, remainder skipped."
@@ -1558,15 +1759,20 @@ def run_audit(
                                 _ai_unassessed_entry(skipped, "ai_cap_reached")
                             )
                         break
-                    ai_calls += 1
+                    # One Gemini request carries a whole batch, bounded by
+                    # the remaining cap (the cap counts RECORDS, not calls).
+                    remaining = max_ai_records - ai_calls
+                    batch = ai_candidates[idx: idx + min(AI_BATCH_SIZE, remaining)]
+                    batch_start = idx
+                    idx += len(batch)
+                    ai_calls += len(batch)
                     try:
-                        proposals = assess_warning_with_gemini(
-                            record=rec,
+                        by_canon = assess_warnings_with_gemini(
+                            records_issues=batch,
                             model_name=selected_model,
-                            issues=ai_issues
                         )
                     except GeminiRateLimited as exc:
-                        retried_proposals = None
+                        retried_by_canon = None
                         if not ai_429_retried and exc.retry_delay is not None:
                             # Honor the API's retryDelay hint exactly once,
                             # then stop the AI pass for good.
@@ -1579,34 +1785,37 @@ def run_audit(
                             )
                             time.sleep(exc.retry_delay)
                             try:
-                                retried_proposals = assess_warning_with_gemini(
-                                    record=rec,
+                                retried_by_canon = assess_warnings_with_gemini(
+                                    records_issues=batch,
                                     model_name=selected_model,
-                                    issues=ai_issues
                                 )
                             except (GeminiRateLimited, GeminiUnavailable):
-                                retried_proposals = None
-                        if retried_proposals is None:
+                                retried_by_canon = None
+                        if retried_by_canon is None:
                             report["limitations"].append(
                                 f"Stopped on Gemini 429 after {ai_calls} records: {exc}"
                             )
                             ai_stopped = True
-                            for skipped, _ in ai_candidates[idx:]:
+                            # Quota is per PROJECT: every record not yet
+                            # assessed in this run is unassessable — the
+                            # remainder is marked, not silently skipped.
+                            for skipped, _ in ai_candidates[batch_start:]:
                                 ai_unassessed.append(
                                     _ai_unassessed_entry(skipped, "gemini_quota")
                                 )
                             break
-                        all_proposals.extend(retried_proposals)
-                        continue
+                        by_canon = retried_by_canon
                     except GeminiUnavailable:
-                        # No Gemini response for this record: keep it marked
-                        # needs_review and let the remaining records run.
+                        # No Gemini response for this batch: keep its records
+                        # marked needs_review and let the remaining batches run.
                         ai_failed = True
-                        ai_unassessed.append(
-                            _ai_unassessed_entry(rec, "gemini_unavailable")
-                        )
+                        for rec, _ in batch:
+                            ai_unassessed.append(
+                                _ai_unassessed_entry(rec, "gemini_unavailable")
+                            )
                         continue
-                    all_proposals.extend(proposals)
+                    for proposals in by_canon.values():
+                        all_proposals.extend(proposals)
 
                 failures = gemini_failure_summary()
                 if failures:

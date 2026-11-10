@@ -24,6 +24,9 @@ Covers:
   - Model verification fail-closed: unknown model aborts (exit 3) before any write.
   - Gemini rate control: only AI-fixable records are assessed, hard-capped and
     throttled; a 429 stops the AI pass and never retries through the REST fallback.
+  - Batching (2026-11-10): records are assessed in batches of up to AUDIT_AI_BATCH_SIZE
+    (default 20) per Gemini request; cross-record evidence and unknown canonical_ids in
+    batch responses are dropped, and a hard failure marks only its own batch.
 """
 
 from datetime import datetime, timezone
@@ -38,8 +41,8 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# Keep the suite fast: the real throttle (default AUDIT_AI_MAX_RPM=10, i.e. one
-# 6-second gap between Gemini calls) must not run inside unit tests. The
+# Keep the suite fast: the real throttle (default AUDIT_AI_MAX_RPM=4, i.e. one
+# 15-second gap between Gemini calls) must not run inside unit tests. The
 # dedicated throttle test overrides AI_MAX_RPM and mocks time itself.
 os.environ.setdefault("AUDIT_AI_MAX_RPM", "1000000")
 
@@ -54,6 +57,7 @@ from scripts.audit_supabase_parsing import (
     validate_warning_record,
     validate_warning_geometry,
     assess_warning_with_gemini,
+    assess_warnings_with_gemini,
     create_correction_proposals,
     apply_approved_corrections,
     run_audit,
@@ -440,7 +444,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             )
 
     # 8. Audit-only mode ensures ZERO mutations and ZERO Gemini calls
-    @patch("scripts.audit_supabase_parsing.assess_warning_with_gemini")
+    @patch("scripts.audit_supabase_parsing.assess_warnings_with_gemini")
     def test_audit_only_mode_zero_mutations(self, mock_gemini):
         client = MockSupabaseClient({
             "nav_warnings": [dict(self.sample_active_warning)],
@@ -1119,7 +1123,8 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         mock_resp.__enter__.return_value = mock_resp
         return mock_resp
 
-    # 31. Hard cap: 5 AI-fixable records, cap 2 -> exactly 2 Gemini calls, one
+    # 31. Hard cap: 5 AI-fixable records, cap 2 -> exactly ONE batched Gemini
+    # call covering 2 records (the cap bounds the first batch), one
     # 'AI cap reached' limitation line, deterministic issues list NOT truncated.
     @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
     @patch("urllib.request.urlopen")
@@ -1140,14 +1145,15 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmp_dir:
             with patch(
-                "scripts.audit_supabase_parsing.assess_warning_with_gemini",
-                return_value=[proposal],
+                "scripts.audit_supabase_parsing.assess_warnings_with_gemini",
+                return_value={proposal["canonical_id"]: [proposal]},
             ) as mock_assess:
                 report = run_audit(
                     mode="propose_corrections", client=client,
                     report_dir=tmp_dir, max_ai_records=2,
                 )
-        self.assertEqual(mock_assess.call_count, 2)
+        # Batching: the remaining cap (2) bounds the first batch -> ONE call
+        self.assertEqual(mock_assess.call_count, 1)
         cap_lines = [l for l in report["limitations"] if "AI cap reached" in l]
         self.assertEqual(len(cap_lines), 1)
         self.assertIn("2 records assessed", cap_lines[0])
@@ -1183,7 +1189,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         })
         with tempfile.TemporaryDirectory() as tmp_dir:
             with patch(
-                "scripts.audit_supabase_parsing.assess_warning_with_gemini"
+                "scripts.audit_supabase_parsing.assess_warnings_with_gemini"
             ) as mock_assess:
                 report = run_audit(
                     mode="propose_corrections", client=client, report_dir=tmp_dir,
@@ -1213,7 +1219,9 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             audit_supabase_parsing._last_ai_call = original
 
     # 34. A 429 on the third record stops the AI pass: the two proposals
-    # already made are kept, the loop stops, status is partial.
+    # already made are kept, the loop stops, status is partial. (Batching:
+    # AI_BATCH_SIZE is pinned to 1 so this test drives the per-record 429
+    # timing through the batch loop with unchanged semantics.)
     @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
     @patch("urllib.request.urlopen")
     def test_rate_limited_429_stops_ai_pass(self, mock_urlopen):
@@ -1233,17 +1241,20 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         }
         calls = {"n": 0}
 
-        def fake_assess(**kwargs):
+        def fake_batch(**kwargs):
             if calls["n"] == 2:
                 raise GeminiRateLimited("429 RESOURCE_EXHAUSTED: quota exceeded")
             calls["n"] += 1
-            return [dict(proposal)]
+            canon = kwargs["records_issues"][0][0]["canonical_id"]
+            return {canon: [dict(proposal)]}
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             with patch(
-                "scripts.audit_supabase_parsing.assess_warning_with_gemini",
-                side_effect=fake_assess,
-            ) as mock_assess:
+                "scripts.audit_supabase_parsing.assess_warnings_with_gemini",
+                side_effect=fake_batch,
+            ) as mock_assess, patch.object(
+                audit_supabase_parsing, "AI_BATCH_SIZE", 1
+            ):
                 report = run_audit(
                     mode="propose_corrections", client=client, report_dir=tmp_dir,
                 )
@@ -1431,7 +1442,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         })
         with tempfile.TemporaryDirectory() as tmp_dir:
             with patch(
-                "scripts.audit_supabase_parsing.assess_warning_with_gemini",
+                "scripts.audit_supabase_parsing.assess_warnings_with_gemini",
             ) as mock_assess:
                 report = run_audit(
                     mode="propose_corrections", client=client,
@@ -1447,8 +1458,9 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertEqual(report["status"], "succeeded")
 
     # 42. Change A: the FIRST 429's retryDelay is honored exactly once — the
-    # same record is retried after sleeping the API-given delay, and a
-    # successful retry keeps the run green (status succeeded).
+    # same batch is retried after sleeping the API-given delay, and a
+    # successful retry keeps the run green (status succeeded). AI_BATCH_SIZE
+    # is pinned to 1 so record-level timing is observable.
     @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
     @patch("urllib.request.urlopen")
     def test_429_retry_delay_honored_once_then_recovers(self, mock_urlopen):
@@ -1468,26 +1480,29 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         }
         calls = {"n": 0}
 
-        def fake_assess(**kwargs):
+        def fake_batch(**kwargs):
             calls["n"] += 1
             if calls["n"] == 2:
                 raise GeminiRateLimited(
                     "429 RESOURCE_EXHAUSTED: quota exceeded", retry_delay=7.0
                 )
-            return [dict(proposal)]
+            canon = kwargs["records_issues"][0][0]["canonical_id"]
+            return {canon: [dict(proposal)]}
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             with patch(
-                "scripts.audit_supabase_parsing.assess_warning_with_gemini",
-                side_effect=fake_assess,
-            ) as mock_assess, patch(
+                "scripts.audit_supabase_parsing.assess_warnings_with_gemini",
+                side_effect=fake_batch,
+            ) as mock_assess, patch.object(
+                audit_supabase_parsing, "AI_BATCH_SIZE", 1
+            ), patch(
                 "scripts.audit_supabase_parsing.time"
             ) as mock_time:
                 report = run_audit(
                     mode="propose_corrections", client=client,
                     report_dir=tmp_dir,
                 )
-        # 3 records + exactly 1 retry of the 429'd record
+        # 3 records + exactly 1 retry of the 429'd batch
         self.assertEqual(mock_assess.call_count, 4)
         self.assertEqual(mock_time.sleep.call_count, 1)
         self.assertAlmostEqual(mock_time.sleep.call_args[0][0], 7.0, places=3)
@@ -1518,7 +1533,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         }
         calls = {"n": 0}
 
-        def fake_assess(**kwargs):
+        def fake_batch(**kwargs):
             calls["n"] += 1
             if calls["n"] == 2:
                 raise GeminiRateLimited(
@@ -1526,13 +1541,16 @@ class TestSupabaseParsingAudit(unittest.TestCase):
                 )
             if calls["n"] == 3:
                 raise GeminiRateLimited("429 RESOURCE_EXHAUSTED again")
-            return [dict(proposal)]
+            canon = kwargs["records_issues"][0][0]["canonical_id"]
+            return {canon: [dict(proposal)]}
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             with patch(
-                "scripts.audit_supabase_parsing.assess_warning_with_gemini",
-                side_effect=fake_assess,
-            ) as mock_assess, patch(
+                "scripts.audit_supabase_parsing.assess_warnings_with_gemini",
+                side_effect=fake_batch,
+            ) as mock_assess, patch.object(
+                audit_supabase_parsing, "AI_BATCH_SIZE", 1
+            ), patch(
                 "scripts.audit_supabase_parsing.time"
             ) as mock_time:
                 report = run_audit(
@@ -1673,6 +1691,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
     # but the run is honest: status partial, scan_complete True with
     # incomplete_reason='gemini_unavailable', the failed record marked
     # needs_review and never passed, and summary.json carries the reason.
+    # AI_BATCH_SIZE is pinned to 1 so the failure hits exactly one record.
     @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
     @patch("urllib.request.urlopen")
     def test_gemini_unavailable_record_marks_partial_and_needs_review(
@@ -1693,16 +1712,19 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             "raw_evidence": "GULF OF MEXICO",
         }
 
-        def fake_assess(**kwargs):
-            if kwargs.get("record", {}).get("canonical_id") == "NAVAREA IV 102/26":
+        def fake_batch(**kwargs):
+            rec = kwargs["records_issues"][0][0]
+            if rec.get("canonical_id") == "NAVAREA IV 102/26":
                 raise GeminiUnavailable("503 Service Unavailable")
-            return [dict(proposal)]
+            return {rec["canonical_id"]: [dict(proposal)]}
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             with patch(
-                "scripts.audit_supabase_parsing.assess_warning_with_gemini",
-                side_effect=fake_assess,
-            ) as mock_assess:
+                "scripts.audit_supabase_parsing.assess_warnings_with_gemini",
+                side_effect=fake_batch,
+            ) as mock_assess, patch.object(
+                audit_supabase_parsing, "AI_BATCH_SIZE", 1
+            ):
                 report = run_audit(
                     mode="propose_corrections", client=client,
                     report_dir=tmp_dir,
@@ -1736,8 +1758,10 @@ class TestSupabaseParsingAudit(unittest.TestCase):
 
     # 48. Change D: failures and issue_summary are populated from existing
     # data only — real counts, no invented numbers, no fake success. Both
-    # records fail with a hard 503 (no SDK): the failure log, the
-    # ai_unassessed list and the per-code issue aggregation all reconcile.
+    # records are assessed in ONE batch whose single REST call fails with a
+    # hard 503 (no SDK): the failure log carries ONE note for the batch
+    # request, both records land in ai_unassessed, and the per-code issue
+    # aggregation reconciles.
     @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
     @patch("urllib.request.urlopen")
     def test_failures_and_issue_summary_populated_from_existing_data(
@@ -1746,8 +1770,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         verify_resp = self._verify_model_response()
         mock_urlopen.side_effect = [
             verify_resp,  # model verification (fail-closed gate)
-            RuntimeError("503 Service Unavailable"),  # record 1 REST call
-            RuntimeError("503 Service Unavailable"),  # record 2 REST call
+            RuntimeError("503 Service Unavailable"),  # the ONE batch REST call
         ]
         rows = [self._rate_record(i) for i in range(2)]
         client = MockSupabaseClient({
@@ -1767,9 +1790,10 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertEqual(report["coverage"]["incomplete_reason"],
                          "gemini_unavailable")
         # failures: real reasons from the Gemini failure log + real count
+        # (one batch request -> one failure note; both records unassessed)
         self.assertEqual(
             report["failures"]["ai"],
-            {"RuntimeError: 503 Service Unavailable": 2},
+            {"RuntimeError: 503 Service Unavailable": 1},
         )
         self.assertEqual(report["failures"]["ai_unassessed_count"], 2)
         self.assertEqual(report["ai_failures"],
@@ -1787,6 +1811,261 @@ class TestSupabaseParsingAudit(unittest.TestCase):
                 expected_by_code.get(iss["code"], 0) + 1
             )
         self.assertEqual(report["issue_summary"]["by_code"], expected_by_code)
+
+    # 49. Batching: 45 AI-fixable records are grouped into batches of at
+    # most AI_BATCH_SIZE (default 20) -> exactly 3 Gemini calls covering
+    # 20/20/5 records, every record assessed exactly once, run stays green.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    @patch("urllib.request.urlopen")
+    def test_ai_assessment_batched_by_batch_size(self, mock_urlopen):
+        mock_urlopen.return_value = self._verify_model_response()
+        rows = [self._rate_record(i) for i in range(45)]
+        client = MockSupabaseClient({
+            "nav_warnings": rows,
+            "nav_warning_geometries": [],
+            "parsing_audit_runs": [],
+            "parsing_correction_proposals": [],
+        })
+        batch_sizes = []
+
+        def fake_batch(**kwargs):
+            batch = kwargs["records_issues"]
+            batch_sizes.append(len(batch))
+            out = {}
+            for rec, _ in batch:
+                out[rec["canonical_id"]] = [{
+                    "canonical_id": rec["canonical_id"],
+                    "field_name": "unplotted_reason",
+                    "proposed_value": None,
+                    "raw_evidence": "GULF OF MEXICO",
+                }]
+            return out
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch(
+                "scripts.audit_supabase_parsing.assess_warnings_with_gemini",
+                side_effect=fake_batch,
+            ) as mock_assess:
+                report = run_audit(
+                    mode="propose_corrections", client=client,
+                    report_dir=tmp_dir,
+                )
+        self.assertEqual(batch_sizes, [20, 20, 5])
+        self.assertEqual(mock_assess.call_count, 3)
+        self.assertEqual(report["proposal_count"], 45)
+        self.assertEqual(report["ai_unassessed"], [])
+        self.assertEqual(report["status"], "succeeded")
+        self.assertIsNone(report["coverage"]["incomplete_reason"])
+
+    # 50. Batching respects the record cap: 45 records with
+    # --max-ai-records 25 -> batches of 20 then 5, then the cap line; the
+    # remaining 20 records are ai_unassessed (ai_cap_reached) and the run
+    # still reports exactly 25 records assessed.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    @patch("urllib.request.urlopen")
+    def test_batching_respects_max_ai_records_cap(self, mock_urlopen):
+        mock_urlopen.return_value = self._verify_model_response()
+        rows = [self._rate_record(i) for i in range(45)]
+        client = MockSupabaseClient({
+            "nav_warnings": rows,
+            "nav_warning_geometries": [],
+            "parsing_audit_runs": [],
+            "parsing_correction_proposals": [],
+        })
+        batch_sizes = []
+
+        def fake_batch(**kwargs):
+            batch = kwargs["records_issues"]
+            batch_sizes.append(len(batch))
+            return {}
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch(
+                "scripts.audit_supabase_parsing.assess_warnings_with_gemini",
+                side_effect=fake_batch,
+            ) as mock_assess:
+                report = run_audit(
+                    mode="propose_corrections", client=client,
+                    report_dir=tmp_dir, max_ai_records=25,
+                )
+        # The cap bounds each batch: 20, then the remaining 5 of the cap
+        self.assertEqual(batch_sizes, [20, 5])
+        self.assertEqual(mock_assess.call_count, 2)
+        cap_lines = [l for l in report["limitations"] if "AI cap reached" in l]
+        self.assertEqual(len(cap_lines), 1)
+        self.assertIn("25 records assessed", cap_lines[0])
+        self.assertEqual(len(report["ai_unassessed"]), 20)
+        self.assertTrue(all(e["reason"] == "ai_cap_reached"
+                            for e in report["ai_unassessed"]))
+        # The cap is a deliberate bound: the run stays green
+        self.assertEqual(report["status"], "succeeded")
+        self.assertIsNone(report["coverage"]["incomplete_reason"])
+
+    # 51. Batching safety: an item whose raw_evidence only appears in
+    # ANOTHER record's raw text is dropped (cross-record grounding never
+    # survives batching), while the correctly-grounded item for the other
+    # record is kept.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    @patch("urllib.request.urlopen")
+    def test_batch_cross_record_evidence_dropped(self, mock_urlopen):
+        rec_a = dict(self.sample_active_warning)
+        rec_a["canonical_id"] = "NAVAREA IV 201/26"
+        rec_b = dict(self.sample_active_warning)
+        rec_b["canonical_id"] = "NAVAREA IV 202/26"
+        rec_b["raw_text"] = "KATTEGAT. SUBSEA HAZARD AT 57-12.0 011-30.0. WIDE BERTH."
+        llm_output = json.dumps([
+            {
+                # Evidence exists only in rec_b's raw text: dropped for rec_a
+                "canonical_id": "NAVAREA IV 201/26",
+                "field_name": "data_quality",
+                "original_value": "EXPLICIT",
+                "proposed_value": "INFERRED",
+                "raw_evidence": "KATTEGAT",
+                "explanation": "evidence quoted from the OTHER record",
+                "confidence": 0.9,
+            },
+            {
+                "canonical_id": "NAVAREA IV 202/26",
+                "field_name": "data_quality",
+                "original_value": "EXPLICIT",
+                "proposed_value": "INFERRED",
+                "raw_evidence": "KATTEGAT",
+                "explanation": "grounded in this record's own text",
+                "confidence": 0.9,
+            },
+        ])
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({
+            "candidates": [{"content": {"parts": [{"text": llm_output}]}}]
+        }).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        audit_supabase_parsing.reset_gemini_failure_log()
+        with patch.dict(sys.modules, {"google": None}):
+            results = audit_supabase_parsing.assess_warnings_with_gemini(
+                records_issues=[(rec_a, []), (rec_b, [])]
+            )
+        self.assertNotIn("NAVAREA IV 201/26", results)
+        self.assertEqual(list(results.keys()), ["NAVAREA IV 202/26"])
+        self.assertEqual(len(results["NAVAREA IV 202/26"]), 1)
+        self.assertEqual(
+            results["NAVAREA IV 202/26"][0]["raw_evidence"], "KATTEGAT"
+        )
+
+    # 52. Batching safety: an item claiming a canonical_id that is not in the
+    # batch is dropped and noted in the Gemini failure log (attribution
+    # failures are loud, never silent passes).
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    @patch("urllib.request.urlopen")
+    def test_batch_item_with_unknown_canonical_id_dropped(self, mock_urlopen):
+        llm_output = json.dumps([{
+            "canonical_id": "NAVAREA IV 999/99",
+            "field_name": "data_quality",
+            "original_value": "EXPLICIT",
+            "proposed_value": "INFERRED",
+            "raw_evidence": "GULF OF MEXICO",
+            "explanation": "claims a record outside the batch",
+            "confidence": 0.9,
+        }])
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({
+            "candidates": [{"content": {"parts": [{"text": llm_output}]}}]
+        }).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        audit_supabase_parsing.reset_gemini_failure_log()
+        with patch.dict(sys.modules, {"google": None}):
+            results = audit_supabase_parsing.assess_warnings_with_gemini(
+                records_issues=[(dict(self.sample_active_warning), [])]
+            )
+        self.assertEqual(results, {})
+        summary = audit_supabase_parsing.gemini_failure_summary()
+        self.assertEqual(
+            summary.get("batch response item with unknown canonical_id dropped"),
+            1,
+        )
+
+    # 53. Batching blast radius: a hard failure (503) on a whole batch
+    # request marks only that batch's records gemini_unavailable; the next
+    # batch still runs, so the run ends partial with honest per-record
+    # needs_review markers for exactly the failed batch.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    @patch("urllib.request.urlopen")
+    def test_batch_failure_marks_batch_needs_review_and_continues(
+        self, mock_urlopen
+    ):
+        mock_urlopen.return_value = self._verify_model_response()
+        rows = [self._rate_record(i) for i in range(3)]
+        client = MockSupabaseClient({
+            "nav_warnings": rows,
+            "nav_warning_geometries": [],
+            "parsing_audit_runs": [],
+            "parsing_correction_proposals": [],
+        })
+        calls = {"n": 0}
+
+        def fake_batch(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise GeminiUnavailable("503 Service Unavailable")
+            out = {}
+            for rec, _ in kwargs["records_issues"]:
+                out[rec["canonical_id"]] = [{
+                    "canonical_id": rec["canonical_id"],
+                    "field_name": "unplotted_reason",
+                    "proposed_value": None,
+                    "raw_evidence": "GULF OF MEXICO",
+                }]
+            return out
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch(
+                "scripts.audit_supabase_parsing.assess_warnings_with_gemini",
+                side_effect=fake_batch,
+            ) as mock_assess, patch.object(
+                audit_supabase_parsing, "AI_BATCH_SIZE", 2
+            ):
+                report = run_audit(
+                    mode="propose_corrections", client=client,
+                    report_dir=tmp_dir,
+                )
+        # batch 1 (records 1-2) failed hard; batch 2 (record 3) succeeded
+        self.assertEqual(mock_assess.call_count, 2)
+        self.assertEqual(report["proposal_count"], 1)
+        self.assertEqual(report["status"], "partial")
+        self.assertEqual(report["coverage"]["incomplete_reason"],
+                         "gemini_unavailable")
+        self.assertEqual(
+            [e["canonical_id"] for e in report["ai_unassessed"]],
+            ["NAVAREA IV 101/26", "NAVAREA IV 102/26"],
+        )
+        self.assertTrue(all(e["reason"] == "gemini_unavailable"
+                            for e in report["ai_unassessed"]))
+        self.assertTrue(all(e["needs_review"]
+                            for e in report["ai_unassessed"]))
+
+    # 54. AUDIT_AI_BATCH_SIZE resolves safely at import time: empty or
+    # unparseable values fall back to the default 20, and a value below 1
+    # is floored to 1 — a bad env var can never crash the script.
+    def test_empty_or_invalid_batch_size_env_imports_cleanly(self):
+        import subprocess
+        for env_value, expected in (("", 20), ("banana", 20), ("0", 1)):
+            env = dict(os.environ, AUDIT_AI_BATCH_SIZE=env_value)
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "from scripts import audit_supabase_parsing as m; "
+                 "assert m.AI_BATCH_SIZE == %d, m.AI_BATCH_SIZE" % expected],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                f"AUDIT_AI_BATCH_SIZE={env_value!r}: {result.stderr}",
+            )
 
 
 if __name__ == "__main__":
