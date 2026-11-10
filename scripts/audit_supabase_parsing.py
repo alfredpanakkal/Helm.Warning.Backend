@@ -77,8 +77,8 @@ class GeometryFetchError(RuntimeError):
     """Raised when a geometry batch fetch fails.
 
     Audit 2026-11-07: PostgREST rejected select=st_asgeojson(geom_postgis)
-    with PGRST200 for every batch (Supabase keeps PostGIS in the 'extensions'
-    schema), and the old per-batch except swallowed it — every warning was
+    with PGRST200 for every batch (PostgREST parses function-call syntax as
+    an embedded resource), and the old per-batch except swallowed it — every warning was
     silently reported as TIER_A_ZERO_GEOMETRIES (700+ false errors). A failed
     geometry fetch must abort the run, never produce a geometry-blind report.
     """
