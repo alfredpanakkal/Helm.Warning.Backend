@@ -9,8 +9,9 @@
 -- (select=...,geom_geojson).
 --
 -- The stored column is geography(Geometry, 4326) NOT NULL; PostGIS lives in
--- the 'extensions' schema on Supabase, so the body is schema-qualified and the
--- function pins its search_path (same hardening applied to is_admin()).
+-- the 'public' schema on this project's Supabase (live check 2026-11-10), so
+-- the body is schema-qualified and the function pins its search_path (same
+-- hardening applied to is_admin()).
 --
 -- Grants: EXECUTE is revoked from public/anon/authenticated (new functions
 -- default to EXECUTE for PUBLIC) and granted to service_role only. The audit
@@ -25,9 +26,9 @@ create or replace function public.geom_geojson(g public.nav_warning_geometries)
 returns jsonb
 language sql
 stable
-set search_path = extensions, pg_catalog
+set search_path = public, pg_catalog
 as $$
-    select extensions.st_asgeojson(g.geom_postgis)::jsonb
+    select public.st_asgeojson(g.geom_postgis)::jsonb
 $$;
 
 revoke all on function public.geom_geojson(public.nav_warning_geometries)
