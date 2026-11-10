@@ -1033,6 +1033,22 @@ def assess_warning_with_gemini(
     return validated_proposals
 
 
+def _ai_unassessed_entry(record: Dict[str, Any], reason: str) -> Dict[str, Any]:
+    """A record the AI pass could not assess — always needs_review.
+
+    An unassessed record is never counted as passed: it stays visible in
+    report['ai_unassessed'] (warning ids, reason, needs_review=True) so a
+    human can re-run or hand-review it (change C, audit 2026-11-10).
+    """
+    return {
+        "warning_id": record.get("id"),
+        "canonical_id": record.get("canonical_id"),
+        "navarea": record.get("navarea"),
+        "reason": reason,
+        "needs_review": True,
+    }
+
+
 def create_correction_proposals(
     client: Any,
     run_id: str,
@@ -1409,6 +1425,7 @@ def run_audit(
         "failures": {},
         "issue_summary": {},
         "limitations": [],
+        "ai_unassessed": [],
     }
 
     try:
@@ -1500,6 +1517,8 @@ def run_audit(
             # 4. Gemini Propose Corrections (if mode is propose_corrections)
             all_proposals: List[Dict[str, Any]] = []
             ai_stopped = False
+            ai_failed = False
+            ai_unassessed: List[Dict[str, Any]] = []
             if mode == "propose_corrections":
                 reset_gemini_failure_log()
                 # Rate control (audit 2026-11-07): quota is per Google Cloud
@@ -1515,17 +1534,25 @@ def run_audit(
                 # only a further 429 stops the pass for good.
                 ai_calls = 0
                 ai_429_retried = False
-                for rec, rec_issues in records_with_issues:
-                    ai_issues = [
-                        i for i in rec_issues
-                        if i.get("field") in ALLOWED_PROPOSAL_FIELDS
-                    ]
-                    if not ai_issues:
-                        continue
+                # Change C (audit 2026-11-10): records that could not be
+                # AI-assessed (quota stop, hard failure, cap) are collected
+                # in ai_unassessed with needs_review=True — an unassessed
+                # record is never treated as passed.
+                ai_candidates = [
+                    (rec, [i for i in rec_issues
+                           if i.get("field") in ALLOWED_PROPOSAL_FIELDS])
+                    for rec, rec_issues in records_with_issues
+                ]
+                ai_candidates = [(rec, iss) for rec, iss in ai_candidates if iss]
+                for idx, (rec, ai_issues) in enumerate(ai_candidates):
                     if ai_calls >= max_ai_records:
                         report["limitations"].append(
                             f"AI cap reached: {max_ai_records} records assessed, remainder skipped."
                         )
+                        for skipped, _ in ai_candidates[idx:]:
+                            ai_unassessed.append(
+                                _ai_unassessed_entry(skipped, "ai_cap_reached")
+                            )
                         break
                     ai_calls += 1
                     try:
@@ -1553,15 +1580,27 @@ def run_audit(
                                     model_name=selected_model,
                                     issues=ai_issues
                                 )
-                            except GeminiRateLimited:
+                            except (GeminiRateLimited, GeminiUnavailable):
                                 retried_proposals = None
                         if retried_proposals is None:
                             report["limitations"].append(
                                 f"Stopped on Gemini 429 after {ai_calls} records: {exc}"
                             )
                             ai_stopped = True
+                            for skipped, _ in ai_candidates[idx:]:
+                                ai_unassessed.append(
+                                    _ai_unassessed_entry(skipped, "gemini_quota")
+                                )
                             break
                         all_proposals.extend(retried_proposals)
+                        continue
+                    except GeminiUnavailable:
+                        # No Gemini response for this record: keep it marked
+                        # needs_review and let the remaining records run.
+                        ai_failed = True
+                        ai_unassessed.append(
+                            _ai_unassessed_entry(rec, "gemini_unavailable")
+                        )
                         continue
                     all_proposals.extend(proposals)
 
@@ -1591,10 +1630,20 @@ def run_audit(
                     report["proposal_count"] = len(all_proposals)
 
             report["proposals"] = all_proposals
-            # A 429 stop means the AI assessment is incomplete even when the
-            # scan itself finished; never report a green 'succeeded'.
+            report["ai_unassessed"] = ai_unassessed
+            # Change C: any AI failure (429 stop after the single retryDelay
+            # retry, or a per-record GeminiUnavailable) makes the AI pass
+            # incomplete — status partial and coverage.incomplete_reason set,
+            # so a partial run can no longer coexist with scan_complete=True
+            # and reason=None. Unassessed records stay needs_review, never
+            # passed.
+            ai_incomplete = ai_stopped or ai_failed
+            if ai_incomplete and report["coverage"].get("incomplete_reason") is None:
+                report["coverage"]["incomplete_reason"] = (
+                    "gemini_quota" if ai_stopped else "gemini_unavailable"
+                )
             report["status"] = (
-                "succeeded" if (complete and not ai_stopped) else "partial"
+                "succeeded" if (complete and not ai_incomplete) else "partial"
             )
 
     except Exception as exc:

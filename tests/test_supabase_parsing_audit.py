@@ -1150,6 +1150,15 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertEqual(report["examined_count"], 5)
         self.assertEqual(report["issue_count"], 15)
         self.assertEqual(report["status"], "succeeded")
+        # Change C: cap-skipped records are ai-unassessed and needs_review
+        # (the cap is a deliberate bound, so the status stays succeeded —
+        # but the skipped records are never silently treated as passed).
+        self.assertEqual(len(report["ai_unassessed"]), 3)
+        self.assertTrue(all(e["reason"] == "ai_cap_reached"
+                            for e in report["ai_unassessed"]))
+        self.assertTrue(all(e["needs_review"]
+                            for e in report["ai_unassessed"]))
+        self.assertIsNone(report["coverage"]["incomplete_reason"])
 
     # 32. Records whose only issues are on non-AI-fixable fields (dates,
     # status, geometry) never burn a Gemini call.
@@ -1240,6 +1249,15 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertEqual(report["status"], "partial")
         self.assertTrue(any("Stopped on Gemini 429 after 3 records" in l
                             for l in report["limitations"]))
+        # Change C: partial + scan_complete=True must now carry a NAMED
+        # reason, and the record the AI never assessed stays needs_review.
+        self.assertTrue(report["scan_complete"])
+        self.assertEqual(report["coverage"]["incomplete_reason"], "gemini_quota")
+        self.assertEqual(len(report["ai_unassessed"]), 1)
+        self.assertEqual(report["ai_unassessed"][0]["canonical_id"],
+                         "NAVAREA IV 103/26")
+        self.assertEqual(report["ai_unassessed"][0]["reason"], "gemini_quota")
+        self.assertTrue(report["ai_unassessed"][0]["needs_review"])
 
     # 35. An SDK 429 must NOT fall through to the REST fallback (a failing run
     # would otherwise make 2 calls per record against an exhausted quota).
@@ -1644,6 +1662,72 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             )
         mock_urlopen.assert_not_called()
         self.assertEqual(proposals, [])
+
+    # 47. Change C: a per-record GeminiUnavailable (e.g. 503 on both
+    # transports) does NOT abort the pass — remaining records are assessed,
+    # but the run is honest: status partial, scan_complete True with
+    # incomplete_reason='gemini_unavailable', the failed record marked
+    # needs_review and never passed, and summary.json carries the reason.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    @patch("urllib.request.urlopen")
+    def test_gemini_unavailable_record_marks_partial_and_needs_review(
+        self, mock_urlopen
+    ):
+        mock_urlopen.return_value = self._verify_model_response()
+        rows = [self._rate_record(i) for i in range(3)]
+        client = MockSupabaseClient({
+            "nav_warnings": rows,
+            "nav_warning_geometries": [],
+            "parsing_audit_runs": [],
+            "parsing_correction_proposals": [],
+        })
+        proposal = {
+            "canonical_id": "NAVAREA IV 101/26",
+            "field_name": "unplotted_reason",
+            "proposed_value": None,
+            "raw_evidence": "GULF OF MEXICO",
+        }
+
+        def fake_assess(**kwargs):
+            if kwargs.get("record", {}).get("canonical_id") == "NAVAREA IV 102/26":
+                raise GeminiUnavailable("503 Service Unavailable")
+            return [dict(proposal)]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch(
+                "scripts.audit_supabase_parsing.assess_warning_with_gemini",
+                side_effect=fake_assess,
+            ) as mock_assess:
+                report = run_audit(
+                    mode="propose_corrections", client=client,
+                    report_dir=tmp_dir,
+                )
+            with open(os.path.join(tmp_dir, "summary.json"),
+                      encoding="utf-8") as fh:
+                summary = json.load(fh)
+        # The pass kept going: all 3 records attempted, 2 proposals kept
+        self.assertEqual(mock_assess.call_count, 3)
+        self.assertEqual(len(report["proposals"]), 2)
+        self.assertEqual(report["proposal_count"], 2)
+        # Honest status: partial even though the scan itself completed
+        self.assertTrue(report["scan_complete"])
+        self.assertEqual(report["status"], "partial")
+        self.assertEqual(report["coverage"]["incomplete_reason"],
+                         "gemini_unavailable")
+        # The failed record is needs_review, never passed: no proposal exists
+        # for it and it is listed in ai_unassessed.
+        self.assertEqual([e["canonical_id"] for e in report["ai_unassessed"]],
+                         ["NAVAREA IV 102/26"])
+        self.assertEqual(report["ai_unassessed"][0]["reason"],
+                         "gemini_unavailable")
+        self.assertTrue(report["ai_unassessed"][0]["needs_review"])
+        self.assertFalse(any(
+            p["canonical_id"] == "NAVAREA IV 102/26"
+            for p in report["proposals"]
+        ))
+        # summary.json (what the workflow gate reads) carries the reason
+        self.assertEqual(summary["incomplete_reason"], "gemini_unavailable")
+        self.assertEqual(summary["status"], "partial")
 
 
 if __name__ == "__main__":
