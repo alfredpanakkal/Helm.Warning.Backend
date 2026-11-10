@@ -1454,6 +1454,11 @@ def run_audit(
 
     except Exception as exc:
         report["status"] = "failed"
+        # A fatal error (e.g. a geometry fetch abort) must never coexist with
+        # scan_complete=True: the coverage pass above may have marked the
+        # warning scan complete before the geometry step aborted. The workflow
+        # gate keys off scan_complete, so a failed run cannot claim it.
+        report["scan_complete"] = False
         report["error"] = str(exc)
         print(f"[error] Audit run encountered fatal error: {exc}", file=sys.stderr)
 
