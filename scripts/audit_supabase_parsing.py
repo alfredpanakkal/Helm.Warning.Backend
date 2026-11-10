@@ -1419,8 +1419,9 @@ def run_audit(
         "proposals": [],
         "apply_summary": {},
         # --- v2 sections (Phase 2 WP2 coverage / WP3 failures /
-        # WP4 issue_summary + limitations). Empty in WP1; later work
-        # packages populate them. Additive only: v1 keys are frozen.
+        # WP4 issue_summary + limitations). Populated at the end of
+        # run_audit from data the run itself collected. Additive only:
+        # v1 keys are frozen.
         "coverage": {},
         "failures": {},
         "issue_summary": {},
@@ -1519,8 +1520,11 @@ def run_audit(
             ai_stopped = False
             ai_failed = False
             ai_unassessed: List[Dict[str, Any]] = []
+            # Per-run failure accounting (change D, audit 2026-11-10): both
+            # scan modes start from a clean Gemini failure log so
+            # report['failures']['ai'] reflects THIS run only.
+            reset_gemini_failure_log()
             if mode == "propose_corrections":
-                reset_gemini_failure_log()
                 # Rate control (audit 2026-11-07): quota is per Google Cloud
                 # project and shared with every sync job using the same
                 # GEMINI_API_KEY. Only records with at least one AI-fixable
@@ -1645,6 +1649,26 @@ def run_audit(
             report["status"] = (
                 "succeeded" if (complete and not ai_incomplete) else "partial"
             )
+
+            # Change D: populate the v2 failure-accounting and issue-summary
+            # sections from data this run already collected — real counts
+            # only, no invented numbers, no fake success (audit 2026-11-10).
+            failures_section: Dict[str, Any] = {"ai": gemini_failure_summary()}
+            if fetch_err:
+                failures_section["fetch_error"] = fetch_err
+            if mode == "propose_corrections":
+                failures_section["ai_unassessed_count"] = len(ai_unassessed)
+            report["failures"] = failures_section
+
+            issue_by_code: Dict[str, int] = {}
+            for iss in all_issues:
+                code = str(iss.get("code") or "UNKNOWN")
+                issue_by_code[code] = issue_by_code.get(code, 0) + 1
+            report["issue_summary"] = {
+                "total": len(all_issues),
+                "records_with_issues": len(records_with_issues),
+                "by_code": issue_by_code,
+            }
 
     except Exception as exc:
         report["status"] = "failed"

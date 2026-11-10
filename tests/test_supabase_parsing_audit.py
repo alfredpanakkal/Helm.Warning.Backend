@@ -954,12 +954,17 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertEqual(res["report_version"], 2)
         # New sections exist and are empty at first (populated by WP2-WP4)
         self.assertIn("coverage", res)
-        # WP2 populates coverage; failures/issue_summary stay empty until WP3/WP4.
+        # WP2 populates coverage.
         self.assertEqual(res["coverage"]["scan_status"], "complete")
+        # Change D: failures/issue_summary are now populated from data the
+        # run already collected — {} only when nothing actually failed.
         self.assertIn("failures", res)
-        self.assertEqual(res["failures"], {})
+        self.assertEqual(res["failures"], {"ai": {}})
         self.assertIn("issue_summary", res)
-        self.assertEqual(res["issue_summary"], {})
+        self.assertEqual(res["issue_summary"]["total"], res["issue_count"])
+        self.assertEqual(sum(res["issue_summary"]["by_code"].values()),
+                         res["issue_count"])
+        self.assertIn("records_with_issues", res["issue_summary"])
         self.assertIn("limitations", res)
         self.assertEqual(res["limitations"], [])
 
@@ -1728,6 +1733,60 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         # summary.json (what the workflow gate reads) carries the reason
         self.assertEqual(summary["incomplete_reason"], "gemini_unavailable")
         self.assertEqual(summary["status"], "partial")
+
+    # 48. Change D: failures and issue_summary are populated from existing
+    # data only — real counts, no invented numbers, no fake success. Both
+    # records fail with a hard 503 (no SDK): the failure log, the
+    # ai_unassessed list and the per-code issue aggregation all reconcile.
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"})
+    @patch("urllib.request.urlopen")
+    def test_failures_and_issue_summary_populated_from_existing_data(
+        self, mock_urlopen
+    ):
+        verify_resp = self._verify_model_response()
+        mock_urlopen.side_effect = [
+            verify_resp,  # model verification (fail-closed gate)
+            RuntimeError("503 Service Unavailable"),  # record 1 REST call
+            RuntimeError("503 Service Unavailable"),  # record 2 REST call
+        ]
+        rows = [self._rate_record(i) for i in range(2)]
+        client = MockSupabaseClient({
+            "nav_warnings": rows,
+            "nav_warning_geometries": [],
+            "parsing_audit_runs": [],
+            "parsing_correction_proposals": [],
+        })
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch.dict(sys.modules, {"google": None}):
+            report = run_audit(
+                mode="propose_corrections", client=client,
+                report_dir=tmp_dir,
+            )
+        # Honest status for a fully failed AI pass
+        self.assertEqual(report["status"], "partial")
+        self.assertEqual(report["coverage"]["incomplete_reason"],
+                         "gemini_unavailable")
+        # failures: real reasons from the Gemini failure log + real count
+        self.assertEqual(
+            report["failures"]["ai"],
+            {"RuntimeError: 503 Service Unavailable": 2},
+        )
+        self.assertEqual(report["failures"]["ai_unassessed_count"], 2)
+        self.assertEqual(report["ai_failures"],
+                         report["failures"]["ai"])
+        self.assertEqual(len(report["ai_unassessed"]), 2)
+        self.assertTrue(all(e["needs_review"] for e in report["ai_unassessed"]))
+        self.assertEqual(report["proposal_count"], 0)
+        # issue_summary: aggregated from the deterministic issues list
+        self.assertEqual(report["issue_summary"]["total"],
+                         report["issue_count"])
+        self.assertEqual(report["issue_summary"]["records_with_issues"], 2)
+        expected_by_code = {}
+        for iss in report["issues"]:
+            expected_by_code[iss["code"]] = (
+                expected_by_code.get(iss["code"], 0) + 1
+            )
+        self.assertEqual(report["issue_summary"]["by_code"], expected_by_code)
 
 
 if __name__ == "__main__":
