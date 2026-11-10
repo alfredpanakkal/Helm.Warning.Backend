@@ -49,13 +49,16 @@ from shared.utils import parse_coordinates, repair_coordinate_token
 DEFAULT_MODEL = "gemini-3.8-flash"
 
 # Columns fetched from nav_warning_geometries. The live table stores geometry as
-# the PostGIS `geometry` column `geom_postgis` (verified 2026-10-28 via
+# the PostGIS `geography` column `geom_postgis` (verified 2026-10-28 via
 # information_schema: there is NO `geojson` or `geom_geojson` column), so the
-# GeoJSON payload is requested as a PostgREST computed column:
-#   st_asgeojson(geom_postgis)  ->  returned under the key "st_asgeojson".
+# GeoJSON payload is exposed as a PostgREST computed column
+# (migrations/20261110_geom_geojson_computed_column.sql):
+#   geom_geojson  ->  GeoJSON object under the key "geom_geojson".
+# Function-call syntax like st_asgeojson(geom_postgis) trips PGRST200 in
+# PostgREST and must never appear in the select.
 GEOMETRY_SELECT_COLS = (
     "warning_id, zone_label, feature_type, buffer_nm, corridor_half_width_nm, "
-    "st_asgeojson(geom_postgis)"
+    "geom_geojson"
 )
 
 # Keys under which a GeoJSON payload may appear in a fetched geometry row.
@@ -74,8 +77,8 @@ class GeometryFetchError(RuntimeError):
     """Raised when a geometry batch fetch fails.
 
     Audit 2026-11-07: PostgREST rejected select=st_asgeojson(geom_postgis)
-    with PGRST200 for every batch (Supabase keeps PostGIS in the 'extensions'
-    schema), and the old per-batch except swallowed it — every warning was
+    with PGRST200 for every batch (PostgREST parses function-call syntax as
+    an embedded resource), and the old per-batch except swallowed it — every warning was
     silently reported as TIER_A_ZERO_GEOMETRIES (700+ false errors). A failed
     geometry fetch must abort the run, never produce a geometry-blind report.
     """
@@ -221,7 +224,6 @@ def fetch_geometries_for_warnings(
         return {}
 
     geoms_by_wid: Dict[str, List[Dict[str, Any]]] = {wid: [] for wid in warning_ids}
-    geojson_key_checked = False
 
     for i in range(0, len(warning_ids), batch_size):
         chunk = warning_ids[i:i + batch_size]
@@ -233,12 +235,13 @@ def fetch_geometries_for_warnings(
                 .execute()
             )
             rows = res.data or []
-            # Fail-loudly schema check (first fetched row only): every row must
-            # carry a GeoJSON payload key, otherwise all geometry checks would
-            # silently no-op for the rest of the run.
-            if rows and not geojson_key_checked:
-                geojson_key_checked = True
-                if not any(k in rows[0] for k in GEOJSON_KEYS):
+            # Fail-loudly schema check: EVERY fetched row must carry a GeoJSON
+            # payload key. (A key present with a null value is legal here: a
+            # null payload is FLAGGED per-row by the validator, never skipped.)
+            # Otherwise all geometry checks would silently no-op for the rest
+            # of the run.
+            for g in rows:
+                if not any(k in g for k in GEOJSON_KEYS):
                     raise GeometrySchemaError(
                         "Fetched nav_warning_geometries rows carry none of the GeoJSON keys "
                         + str(GEOJSON_KEYS)
@@ -260,11 +263,12 @@ def fetch_geometries_for_warnings(
             # issuing a geometry-blind report.
             if "PGRST200" in str(exc):
                 raise GeometryFetchError(
-                    "PostgREST cannot resolve the st_asgeojson computed column "
-                    "(PGRST200): Supabase keeps PostGIS in the 'extensions' schema, "
-                    "so select=st_asgeojson(geom_postgis) finds no public function. "
-                    "Apply migrations/20261107_st_asgeojson_public_wrapper.sql to "
-                    f"expose public.st_asgeojson(geometry). Original error: {exc}"
+                    "PostgREST cannot resolve the geom_geojson computed column "
+                    "(PGRST200): the geometry select must use the PostgREST "
+                    "computed column public.geom_geojson(nav_warning_geometries), "
+                    "NOT function-call syntax like st_asgeojson(geom_postgis). "
+                    "Apply migrations/20261110_geom_geojson_computed_column.sql to "
+                    f"expose it (service_role only). Original error: {exc}"
                 ) from exc
             raise GeometryFetchError(
                 f"Geometry batch fetch failed at offset {i}: "
@@ -489,6 +493,20 @@ def validate_warning_geometry(
                 geojson_blob = json.loads(geojson_blob)
             except Exception:
                 geojson_blob = None
+
+        if geojson_blob is None:
+            # Null or missing geometry payload is FLAGGED, never skipped,
+            # never defaulted: no clamping, no reprojection, no coordinate
+            # edits. Invalid geometry goes to review, not repair.
+            issues.append({
+                "code": "MISSING_GEOMETRY_PAYLOAD",
+                "field": f"geometries[{idx}].geojson",
+                "severity": "ERROR",
+                "message": "Geometry row carries no GeoJSON payload (null or missing geom_geojson). "
+                           "Flagged for review; not repaired.",
+                "current_value": None,
+            })
+            continue
 
         if isinstance(geojson_blob, dict):
             gtype = geojson_blob.get("type")
@@ -1436,6 +1454,11 @@ def run_audit(
 
     except Exception as exc:
         report["status"] = "failed"
+        # A fatal error (e.g. a geometry fetch abort) must never coexist with
+        # scan_complete=True: the coverage pass above may have marked the
+        # warning scan complete before the geometry step aborted. The workflow
+        # gate keys off scan_complete, so a failed run cannot claim it.
+        report["scan_complete"] = False
         report["error"] = str(exc)
         print(f"[error] Audit run encountered fatal error: {exc}", file=sys.stderr)
 
