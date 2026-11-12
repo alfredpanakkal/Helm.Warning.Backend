@@ -6,21 +6,30 @@ records with verified geometry. Zero-coordinate records can never reach A."""
 from __future__ import annotations
 from typing import Any
 import logging
+import math
 
-from shared.models import DataQuality, ParsingMethod, TriageTier
+from shared.models import (
+    DataQuality, ParsingMethod, TriageTier, TIER_C_QA_FLAGS,
+    UNPLOTTED_REASONS, qa_flags_require_review, unplotted_reason_from_qa_flags,
+    normalize_unplotted_reason,
+)
 from shared.logging import get_logger
 
 logger = get_logger("triage")
 
-C_TIER_BLOCKERS = {
-    "MISSING_HEM", "PARTIAL_TRUNCATED_MISSING_COORDS", "AI_VALIDATION_FAILED",
-    "ORPHAN_FRAGMENT", "MINUTES_OUT_OF_RANGE", "SECONDS_OUT_OF_RANGE",
-    "LAT_OUT_OF_RANGE", "LON_OUT_OF_RANGE", "AXIS_HEMISPHERE_MISMATCH",
-    "EMPTY_STUB", "DUAL_ORIGIN_SECTOR_UNRESOLVED", "VALIDATION_FAILED", "EMPTY_TOKEN",
-}
+C_TIER_BLOCKERS = TIER_C_QA_FLAGS
+C_TIER_UNPLOTTED = UNPLOTTED_REASONS
 
-C_TIER_UNPLOTTED = {"missing_hemisphere", "truncated_clause", "empty_stub",
-                    "orphan_fragment", "meta_list", "validation_failed", "no_valid_geometry"}
+
+def _valid_lat_lon(lat: Any, lon: Any) -> bool:
+    try:
+        lat_value, lon_value = float(lat), float(lon)
+    except (TypeError, ValueError):
+        return False
+    return (
+        math.isfinite(lat_value) and math.isfinite(lon_value)
+        and -90 <= lat_value <= 90 and -180 <= lon_value <= 180
+    )
 
 
 def assign_final_triage(rec: Any) -> None:
@@ -39,9 +48,21 @@ def assign_final_triage(rec: Any) -> None:
         elif quality == DataQuality.INFERRED and getattr(rec, "data_quality", DataQuality.EXPLICIT) == DataQuality.EXPLICIT:
             rec.data_quality = DataQuality.INFERRED
 
-    has_valid_geometry = bool(
-        coords or getattr(rec, "vertices_lonlat", None) or getattr(rec, "latitude", None) is not None
+    has_valid_geometry = any(
+        _valid_lat_lon(getattr(coord, "lat", None), getattr(coord, "lon", None))
+        for coord in coords
     )
+    if not has_valid_geometry:
+        vertices = getattr(rec, "vertices_lonlat", None) or []
+        has_valid_geometry = any(
+            isinstance(vertex, (list, tuple)) and len(vertex) >= 2
+            and _valid_lat_lon(vertex[1], vertex[0])
+            for vertex in vertices
+        )
+    if not has_valid_geometry:
+        has_valid_geometry = _valid_lat_lon(
+            getattr(rec, "latitude", None), getattr(rec, "longitude", None)
+        )
 
     # 2. Hard blocks -> Tier C (persist with unplotted_reason, never render).
     qa_flags = getattr(rec, "qa_flags", []) or getattr(rec, "flags", []) or []
@@ -55,14 +76,21 @@ def assign_final_triage(rec: Any) -> None:
     ):
         rec.triage_tier = TriageTier.C
         if not getattr(rec, "unplotted_reason", None):
-            rec.unplotted_reason = "no_valid_geometry"
+            rec.unplotted_reason = (
+                unplotted_reason_from_qa_flags(qa_flags) or "no_valid_geometry"
+            )
+        else:
+            rec.unplotted_reason = normalize_unplotted_reason(
+                rec.unplotted_reason, qa_flags
+            )
     else:
-        # 3. Inferred / repaired / filtered / AI -> Tier B (human review queue).
+        # 3. Inferred / repaired / filtered / AI / superseded -> Tier B.
         data_quality = getattr(rec, "data_quality", DataQuality.EXPLICIT)
         parsing_method = getattr(rec, "parsing_method", ParsingMethod.RULE)
         applicable_vessel_filter = getattr(rec, "applicable_vessel_filter", None)
         duplicate_of_id = getattr(rec, "duplicate_of_id", None)
         has_repairs = any(getattr(c, "repairs", []) for c in coords)
+        status = getattr(rec, "status", "active")
 
         if (
             data_quality in (DataQuality.INFERRED, DataQuality.AMBIGUOUS)
@@ -70,7 +98,9 @@ def assign_final_triage(rec: Any) -> None:
             or has_repairs
             or applicable_vessel_filter is not None
             or duplicate_of_id is not None
-            or len(qa_flags) > 0
+            or qa_flags_require_review(qa_flags)
+            or status == "superseded"
+            or getattr(rec, "unplotted_reason", None) is not None
         ):
             rec.triage_tier = TriageTier.B
         else:
