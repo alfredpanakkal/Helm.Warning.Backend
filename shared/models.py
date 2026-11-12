@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
+import math
 import re
 from typing import Optional, Any, Dict, List
 
@@ -324,8 +325,8 @@ def geojson_type_to_feature_type(geojson_type: Optional[str]) -> str:
 
 def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Builds GeoJSON geometry child records suitable for public.nav_warning_geometries.
-    Outputs: list of dicts with keys: zone_label, feature_type, buffer_nm, geojson
-    feature_type MUST use the DB CHECK-constraint vocabulary (POINT/LINE/POLYGON).
+    Outputs geometry rows with source-stated buffer, corridor, and sweep metadata.
+    feature_type MUST use the database CHECK-constraint vocabulary.
 
     Per-feature "properties.zone_label" (e.g. NAVAREA XII sub-area labels
     A./B./C.) overrides the record-level label so each sub-area persists as
@@ -339,18 +340,25 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
         geom_type = geojson_obj.get("type")
         if not geom_type:
             return
+
+        props = props if isinstance(props, dict) else {}
+
+        # 1. Resolve and validate buffer_nm FIRST (handling explicit 0.0)
+        raw_buffer = props.get("buffer_nm")
+        if raw_buffer is None:
+            raw_buffer = buffer_val
         try:
-            buffer_nm = float(buffer_val or 0.0)
+            buffer_nm = float(raw_buffer if raw_buffer is not None else 0.0)
         except (TypeError, ValueError):
             buffer_nm = 0.0
+        if not math.isfinite(buffer_nm) or buffer_nm < 0:
+            buffer_nm = 0.0
+
         if geom_type == "MultiPoint":
             # Discrete locations (e.g. 'IN VICINITY OF' wellhead lists):
             # persist one POINT geometry row per location instead of a
             # single row holding a MultiPoint (which would tempt
-            # renderers to connect or hull the points). The radius is
-            # whatever the source states (properties.buffer_nm) or 0:
-            # a safety radius the source never stated is invented data
-            # (e.g. NAVAREA I 230/26 states 500 METRES, not 1 NM).
+            # renderers to connect or hull the points).
             coords = geojson_obj.get("coordinates") or []
             for idx, c in enumerate(coords):
                 try:
@@ -364,19 +372,47 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "geojson": {"type": "Point", "coordinates": [lon_v, lat_v]},
                 })
             return
+
+        # 2. Resolve and validate feature_type against geom_type
+        raw_ftype = props.get("feature_type") or record.get("feature_type")
+        if raw_ftype:
+            raw_ftype = str(raw_ftype).strip().upper()
+
+        if raw_ftype == "SWEEP_ARC":
+            feature_type = "SWEEP_ARC" if geom_type == "Polygon" else geojson_type_to_feature_type(geom_type)
+        elif raw_ftype == "BOUNDING_BOX":
+            feature_type = "BOUNDING_BOX" if geom_type in ("Polygon", "MultiPolygon") else geojson_type_to_feature_type(geom_type)
+        elif raw_ftype == "CORRIDOR":
+            feature_type = "CORRIDOR" if geom_type in ("LineString", "MultiLineString") else geojson_type_to_feature_type(geom_type)
+        elif raw_ftype == "POINT":
+            feature_type = "POINT" if geom_type in ("Point", "MultiPoint") else geojson_type_to_feature_type(geom_type)
+        elif raw_ftype == "LINE":
+            feature_type = "LINE" if geom_type in ("LineString", "MultiLineString") else geojson_type_to_feature_type(geom_type)
+        elif raw_ftype == "POLYGON":
+            feature_type = "POLYGON" if geom_type in ("Polygon", "MultiPolygon") else geojson_type_to_feature_type(geom_type)
+        elif buffer_nm > 0 and geom_type in ("LineString", "MultiLineString"):
+            feature_type = "CORRIDOR"
+        elif geom_type == "Polygon" and props.get("sweep_radius_nm") is not None:
+            feature_type = "SWEEP_ARC"
+        elif geom_type == "Polygon" and (props.get("is_bounding_box") or record.get("archetype") == "bounding_box"):
+            feature_type = "BOUNDING_BOX"
+        else:
+            feature_type = geojson_type_to_feature_type(geom_type)
+
         payload = {
             "zone_label": label,
-            "feature_type": geojson_type_to_feature_type(geom_type),
+            "feature_type": feature_type,
             "buffer_nm": buffer_nm,
             "geojson": geojson_obj,
         }
-        # Sweep-arc metadata (NAVAREA II 358/26 firing-exercise sectors):
-        # the fan polygon is the drawable geometry; the source-stated
-        # radius/bearings ride along so nav_warning_geometries' sweep_*
-        # columns can be populated by the upsert RPC (unknown payload
-        # keys are simply ignored when the RPC does not read them).
-        props = props if isinstance(props, dict) else {}
-        for key in ("sweep_radius_nm", "sweep_start_azimuth", "sweep_end_azimuth"):
+        # Sweep-arc metadata (NAVAREA II 358/26 firing-exercise sectors)
+        for key in (
+            "corridor_half_width_nm",
+            "corridor_clearance_nm",
+            "sweep_radius_nm",
+            "sweep_start_azimuth",
+            "sweep_end_azimuth",
+        ):
             if props.get(key) is not None:
                 payload[key] = props[key]
         geometries.append(payload)
@@ -411,7 +447,19 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
             if geometries:
                 return geometries
         elif sp_type in ("Point", "Polygon", "LineString", "MultiPoint", "MultiPolygon", "MultiLineString"):
-            _append_geometry(spatial, record.get("title") or "Spatial Feature", 0.0)
+            props = spatial.get("properties") if isinstance(spatial.get("properties"), dict) else {}
+            if not props:
+                props = {}
+                for k in (
+                    "feature_type", "buffer_nm", "corridor_half_width_nm",
+                    "corridor_clearance_nm", "sweep_radius_nm", "sweep_start_azimuth", "sweep_end_azimuth",
+                ):
+                    if spatial.get(k) is not None:
+                        props[k] = spatial.get(k)
+                    elif record.get(k) is not None:
+                        props[k] = record.get(k)
+            buf = props.get("buffer_nm", record.get("buffer_nm", 0.0))
+            _append_geometry(spatial, record.get("title") or "Spatial Feature", buf, props)
             return geometries
 
     # Fallback to lat/lon if available
