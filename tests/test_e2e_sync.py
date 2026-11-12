@@ -166,6 +166,18 @@ class TestE2ESync(unittest.TestCase):
             {"p_payload": {"master": master, "geometries": geoms}}
         )
 
+    def test_rpc_failure_does_not_attempt_non_atomic_master_write(self):
+        mock_supabase = MagicMock()
+        mock_supabase.rpc.side_effect = RuntimeError("RPC unavailable")
+
+        master = {"canonical_id": "NAVAREA I 042/26", "title": "Test Warning"}
+        geoms = [{"zone_label": "Zone A", "geojson": {"type": "Point", "coordinates": [0, 0]}}]
+
+        success = upsert_warning_atomic(mock_supabase, master, geoms)
+
+        self.assertFalse(success)
+        mock_supabase.table.assert_not_called()
+
     def test_fail_fast_missing_credentials(self):
         from shared.sync_engine import get_supabase_client
         with patch.dict(os.environ, {"SUPABASE_URL": "", "SUPABASE_KEY": "", "ALLOW_DRY_RUN": ""}):
