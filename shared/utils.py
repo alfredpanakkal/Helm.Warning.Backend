@@ -575,8 +575,6 @@ RE_NEW_FORMER = re.compile(
 RE_RELOCATION_INTENT = re.compile(
     r"\b(?:RELOCATED|MOVED)\s+FROM\b|"
     r"\b(?:FORMER|PREVIOUS)\s+POSITION\b|"
-    r"\b(?:NEW|PRESENT)\s+POSITION\b|"
-    r"\bESTABLISHED\s+(?:IN\s+)?(?:NEW\s+)?POSITION\b|"
     r"\bDISCONTINUED\s+(?:IN\s+)?POSITION\b",
     re.IGNORECASE
 )
@@ -1098,6 +1096,7 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
                         lon_b, lat_b = points[1]
                         lat_s, lat_n = sorted((lat_a, lat_b))
                         if abs(lon_a - lon_b) > 180.0:
+                            primary_lon = -180.0
                             east_lon, west_lon = max(lon_a, lon_b), min(lon_a, lon_b)
                             east_ring = [[east_lon, lat_s], [180.0, lat_s], [180.0, lat_n], [east_lon, lat_n], [east_lon, lat_s]]
                             west_ring = [[-180.0, lat_s], [west_lon, lat_s], [west_lon, lat_n], [-180.0, lat_n], [-180.0, lat_s]]
