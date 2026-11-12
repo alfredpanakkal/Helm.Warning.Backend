@@ -63,6 +63,29 @@ CREATE OR REPLACE VIEW public.nav_warnings_active_spatial AS
     AND w.triage_tier = 'A';
 
 
+-- Tier-B review includes superseded warnings: the lifecycle status remains
+-- visible to operators, while the review view retains the full QA/audit fields.
+CREATE OR REPLACE VIEW public.nav_warnings_review_queue AS
+  SELECT
+    w.id AS warning_id,
+    w.canonical_id,
+    w.navarea,
+    w.title,
+    w.status,
+    w.triage_tier,
+    w.data_quality,
+    w.parsing_method,
+    w.qa_flags,
+    w.unplotted_reason,
+    w.raw_text,
+    w.span_edits,
+    w.issued_at,
+    w.created_at
+  FROM public.nav_warnings w
+  WHERE w.triage_tier = 'B'
+    AND w.status IN ('active', 'superseded')
+  ORDER BY w.issued_at DESC NULLS LAST;
+
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION public.upsert_nav_warning(p_payload jsonb)
