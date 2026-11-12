@@ -169,6 +169,26 @@ tidal/cartographic references (Ordnance Datum Newlyn, Ordnance Survey), and civi
 unexploded ordnance. UXO now requires specific naval munitions / unexploded weapon context (`UNEXPLODED
 ORDNANCE`, `SEA MINE`, `TORPEDO`, `WARHEAD`, `DEPTH CHARGE`, `EOD`, bomb disposal). Lives in `shared/utils.py`.
 
+### Advanced geometry, sector sweep generalization, corridor swaths, and relocations (Phase B2)
+**Why:** Navigational warnings include directional sector arcs (e.g. firing exercises, danger sectors),
+cable/pipe-laying safety corridors, and station relocations. Previously:
+1. Sector sweeps only recognized a single phrasing variant, did not handle clockwise wraparound spanning North
+($340^\circ \to 020^\circ$), and risked building world-spanning shapes on antimeridian crossings. We generalized
+parsing to 5 standard IMO/WWNWS phrasing variations, enforce clockwise arc calculation $\Delta = (end - start) \bmod 360$,
+fail closed to Point on zero-width sectors or antimeridian jumps, and handle full-circle ($000 \to 360$) rings.
+2. Route clearances ("WIDE BERTH OF 2 NM", "SAFETY CLEARANCE OF 500 METRES") formerly deformed the underlying
+route or were ignored. The corridor swath parser preserves raw route track coordinates unaltered, validates
+distance units (rejecting bare ambiguous 'M'), and populates `buffer_nm` with `feature_type = 'CORRIDOR'`.
+3. Relocation notices ("RELOCATED FROM ... TO ...", "ESTABLISHED IN NEW POSITION ... FORMER DISCONTINUED") formerly
+risked averaging old and new positions into a meaningless centroid or connecting them. Coordinates are now
+extracted strictly within explicit `FROM`/`FORMER` and `TO`/`NEW` clauses regardless of text order, emitting a GeoJSON
+`FeatureCollection` with two distinct `POINT` features (`"New Established Position"` and `"Former Position (Relocated)"`
+with `is_ghost: True`), while pinning master record coordinates strictly to the new station.
+4. Feature properties (`feature_type`, `buffer_nm`, `sweep_*`) are preserved per-feature across universal/regional
+parsers and `build_geometry_payloads()`, with strict validation against GeoJSON geometry types (`SWEEP_ARC`/`BOUNDING_BOX`
+-> Polygon, `CORRIDOR` -> LineString, `POINT` -> Point).
+Lives in `shared/utils.py`, `shared/models.py`, `scripts/navarea_universal_parser.py`.
+
 ---
 
 ## 3. Adding a new decision to this log

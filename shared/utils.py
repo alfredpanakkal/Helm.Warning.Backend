@@ -334,75 +334,269 @@ RE_SWEEP_BEARINGS = re.compile(
     r"BETWEEN\s+(\d{1,3}(?:\.\d+)?)\s+AND\s+(\d{1,3}(?:\.\d+)?)\s+DEG(?:REES?)?\b",
     re.IGNORECASE)
 _SWEEP_UNIT_TO_NM = {
-    "NM": 1.0, "N M": 1.0, "N.M": 1.0,
+    "NM": 1.0, "N M": 1.0, "N.M": 1.0, "N.M.": 1.0,
     "NAUTICAL MILE": 1.0, "NAUTICAL MILES": 1.0,
     "MILE": 1.0, "MILES": 1.0,
     "METRE": 1.0 / 1852.0, "METRES": 1.0 / 1852.0,
     "METER": 1.0 / 1852.0, "METERS": 1.0 / 1852.0,
     "KM": 1.0 / 1.852,
+    "KILOMETRE": 1.0 / 1.852, "KILOMETRES": 1.0 / 1.852,
+    "KILOMETER": 1.0 / 1.852, "KILOMETERS": 1.0 / 1.852,
 }
+
+# Sector sweep phrasing regexes covering standard IMO/WWNWS variations:
+# 1. WITHIN <radius> <unit> OF [POS] BETWEEN <a> AND <b> [DEGREES]
+RE_SWEEP_WITHIN = re.compile(
+    r"\bWITHIN\s+(\d+(?:\.\d+)?)\s*(N\.?\s*M\.?|NM|NAUTICAL\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM|KILOMET(?:RES?|ERS?))\s+OF\b"
+    r".*?\bBETWEEN\s+(\d{1,3}(?:\.\d+)?)\s+AND\s+(\d{1,3}(?:\.\d+)?)\s*(?:DEG(?:REES?)?)?\b",
+    re.IGNORECASE | re.DOTALL
+)
+# 2. BETWEEN [BEARINGS] <a> AND <b> [DEGREES] OUT TO <radius> <unit>
+RE_SWEEP_BETWEEN_OUT_TO = re.compile(
+    r"\bBETWEEN\s+(?:BEARINGS?\s+)?(\d{1,3}(?:\.\d+)?)\s+AND\s+(\d{1,3}(?:\.\d+)?)\s*(?:DEG(?:REES?)?)?\s+"
+    r"OUT\s+TO\s+(\d+(?:\.\d+)?)\s*(N\.?\s*M\.?|NM|NAUTICAL\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM|KILOMET(?:RES?|ERS?))\b",
+    re.IGNORECASE
+)
+# 3. SECTOR BOUNDED BY <a> AND <b> [DEGREES] RADIUS <radius> <unit>
+RE_SWEEP_SECTOR_RADIUS = re.compile(
+    r"\bSECTOR\s+BOUNDED\s+BY\s+(\d{1,3}(?:\.\d+)?)\s+AND\s+(\d{1,3}(?:\.\d+)?)\s*(?:DEG(?:REES?)?)?\s+"
+    r"RADIUS\s+(\d+(?:\.\d+)?)\s*(N\.?\s*M\.?|NM|NAUTICAL\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM|KILOMET(?:RES?|ERS?))\b",
+    re.IGNORECASE
+)
+# 4. SECTOR OF A CIRCLE RADIUS <radius> <unit> BETWEEN <a> AND <b> [DEGREES]
+RE_SWEEP_CIRCLE_RADIUS = re.compile(
+    r"\bSECTOR\s+OF\s+A\s+CIRCLE\s+RADIUS\s+(\d+(?:\.\d+)?)\s*(N\.?\s*M\.?|NM|NAUTICAL\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM|KILOMET(?:RES?|ERS?))\s+"
+    r"BETWEEN\s+(\d{1,3}(?:\.\d+)?)\s+AND\s+(\d{1,3}(?:\.\d+)?)\s*(?:DEG(?:REES?)?)?\b",
+    re.IGNORECASE
+)
+# 5. SECTOR EXTENDING <radius> <unit> BETWEEN [BEARINGS] <a> AND <b>
+RE_SWEEP_EXTENDING = re.compile(
+    r"\bSECTOR\s+EXTENDING\s+(\d+(?:\.\d+)?)\s*(N\.?\s*M\.?|NM|NAUTICAL\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM|KILOMET(?:RES?|ERS?))\s+"
+    r"BETWEEN\s+(?:BEARINGS?\s+)?(\d{1,3}(?:\.\d+)?)\s+AND\s+(\d{1,3}(?:\.\d+)?)\s*(?:DEG(?:REES?)?)?\b",
+    re.IGNORECASE
+)
+
+
+def _extract_sweep_params(raw_text: str) -> Optional[tuple[float, str, float, float]]:
+    """Extracts (radius, unit_str, start_az, end_az) across recognized sector sweep variants.
+    Returns None if no unambiguous parameters are matched."""
+    if not raw_text:
+        return None
+    for pattern, order in (
+        (RE_SWEEP_WITHIN, ("rad", "unit", "start", "end")),
+        (RE_SWEEP_BETWEEN_OUT_TO, ("start", "end", "rad", "unit")),
+        (RE_SWEEP_SECTOR_RADIUS, ("start", "end", "rad", "unit")),
+        (RE_SWEEP_CIRCLE_RADIUS, ("rad", "unit", "start", "end")),
+        (RE_SWEEP_EXTENDING, ("rad", "unit", "start", "end")),
+    ):
+        m = pattern.search(raw_text)
+        if m:
+            g = m.groups()
+            try:
+                if order == ("rad", "unit", "start", "end"):
+                    return float(g[0]), g[1], float(g[2]), float(g[3])
+                else:
+                    return float(g[2]), g[3], float(g[0]), float(g[1])
+            except (ValueError, IndexError):
+                continue
+    return None
 
 
 def _sector_from_sweep_wording(raw_text: str, center) -> Optional[dict]:
     """
-    Builds a sector (sweep-arc) polygon fan for 'WITHIN <radius> OF ...
-    BETWEEN <a> AND <b> DEGREES' wording around ONE centre position
-    (NAVAREA II 358/26 firing-exercise shape). The fan is a drawable
-    Polygon; the source-stated radius/bearings ride on the returned dict
-    so nav_warning_geometries' sweep_* columns can be populated.
-    Returns {"spatial", "sweep_radius_nm", "sweep_start_azimuth",
-    "sweep_end_azimuth"} or None (fail-closed: any missing or invalid
-    element keeps the plain Point geometry).
+    Builds a sector (sweep-arc) polygon fan for recognized sector sweep wording
+    around ONE explicit centre position (NAVAREA II 358/26 firing-exercise shape).
+    The fan is a drawable Polygon; the source-stated radius/bearings ride on the
+    returned dict so nav_warning_geometries' sweep_* columns can be populated.
+    Returns {"spatial", "feature_type": "SWEEP_ARC", "sweep_radius_nm",
+    "sweep_start_azimuth", "sweep_end_azimuth"} or None (fail-closed: missing or
+    invalid element, zero-width sector, or antimeridian crossing keeps the plain Point).
     """
-    if not raw_text or not center:
+    from shared.geometry_classifier import ring_is_simple
+
+    if not raw_text or not center or len(center) != 2:
         return None
-    rm = RE_SWEEP_RADIUS.search(raw_text)
-    bm = RE_SWEEP_BEARINGS.search(raw_text)
-    if not rm or not bm:
+    lon_c_deg, lat_c_deg = center[0], center[1]
+    if not (-180.0 <= lon_c_deg <= 180.0 and -90.0 <= lat_c_deg <= 90.0):
         return None
-    try:
-        radius = float(rm.group(1))
-        start = float(bm.group(1))
-        end = float(bm.group(2))
-    except ValueError:
+
+    params = _extract_sweep_params(raw_text)
+    if not params:
         return None
-    if radius <= 0:
+    radius, unit_str, start, end = params
+    if radius <= 0 or not math.isfinite(radius):
         return None
-    unit_key = re.sub(r"[.\s]+", " ", rm.group(2)).strip().upper()
+
+    unit_key = re.sub(r"[.\s]+", " ", unit_str).strip().upper()
     factor = _SWEEP_UNIT_TO_NM.get(unit_key)
     if factor is None:
         return None
     radius_nm = round(radius * factor, 3)
-    if not (0 <= start < 360 and 0 <= end <= 360):
-        return None
-    arc_end = end
-    if arc_end <= start:
-        arc_end += 360.0  # wraps north ('BETWEEN 350 AND 10 DEGREES')
-    span = arc_end - start
-    if span <= 0 or span > 360:
+
+    if not (0 <= start <= 360 and 0 <= end <= 360):
         return None
 
-    lat_c = math.radians(center[1])
-    lon_c = math.radians(center[0])
+    # Full-circle vs zero-width handling (Review Constraint 6)
+    if start in (0, 360) and end in (0, 360) and start != end:
+        span = 360.0
+    elif start == end:
+        # Zero-width sector: fail closed to POINT
+        return None
+    else:
+        span = (end - start) % 360.0
+        if span == 0.0:
+            return None
+
+    lat_c = math.radians(lat_c_deg)
+    lon_c = math.radians(lon_c_deg)
     d = radius_nm / 3437.75  # nautical miles per radian (180*60/pi)
     steps = max(2, math.ceil(span / 10.0))
-    ring = [[round(center[0], 6), round(center[1], 6)]]
-    for i in range(steps + 1):
-        b = math.radians(start + span * i / steps)
-        lat_p = math.asin(math.sin(lat_c) * math.cos(d)
-                          + math.cos(lat_c) * math.sin(d) * math.cos(b))
-        lon_p = lon_c + math.atan2(
-            math.sin(b) * math.sin(d) * math.cos(lat_c),
-            math.cos(d) - math.sin(lat_c) * math.sin(lat_p))
-        ring.append([round(math.degrees(lon_p), 6),
-                     round(math.degrees(lat_p), 6)])
-    ring.append([round(center[0], 6), round(center[1], 6)])
+
+    if span == 360.0:
+        # Full circle circumference ring
+        ring = []
+        for i in range(steps + 1):
+            b = math.radians(start + span * i / steps)
+            lat_p = math.asin(math.sin(lat_c) * math.cos(d)
+                              + math.cos(lat_c) * math.sin(d) * math.cos(b))
+            lon_p = lon_c + math.atan2(
+                math.sin(b) * math.sin(d) * math.cos(lat_c),
+                math.cos(d) - math.sin(lat_c) * math.sin(lat_p))
+            lat_deg = math.degrees(lat_p)
+            lon_deg = ((math.degrees(lon_p) + 180.0) % 360.0) - 180.0
+            ring.append([round(lon_deg, 6), round(lat_deg, 6)])
+    else:
+        # Sector fan (centre -> arc -> centre)
+        ring = [[round(lon_c_deg, 6), round(lat_c_deg, 6)]]
+        for i in range(steps + 1):
+            b = math.radians(start + span * i / steps)
+            lat_p = math.asin(math.sin(lat_c) * math.cos(d)
+                              + math.cos(lat_c) * math.sin(d) * math.cos(b))
+            lon_p = lon_c + math.atan2(
+                math.sin(b) * math.sin(d) * math.cos(lat_c),
+                math.cos(d) - math.sin(lat_c) * math.sin(lat_p))
+            lat_deg = math.degrees(lat_p)
+            lon_deg = ((math.degrees(lon_p) + 180.0) % 360.0) - 180.0
+            ring.append([round(lon_deg, 6), round(lat_deg, 6)])
+        ring.append([round(lon_c_deg, 6), round(lat_c_deg, 6)])
+
+    # Antimeridian topology guard (Review Constraint 1):
+    # A single polygon ring crossing 180/-180 meridian produces an invalid world-spanning shape.
+    # Fail closed to safe Point(center).
+    for k in range(len(ring) - 1):
+        if abs(ring[k][0] - ring[k + 1][0]) > 180.0:
+            return None
+
+    if len(ring) < 4 or not ring_is_simple(ring):
+        return None
+
     return {
         "spatial": {"type": "Polygon", "coordinates": [ring]},
+        "feature_type": "SWEEP_ARC",
         "sweep_radius_nm": radius_nm,
         "sweep_start_azimuth": round(start, 3),
         "sweep_end_azimuth": round(end, 3),
     }
+
+
+# --- corridor clearance & wide berth parsing (Phase B2) -----------------------
+RE_CORRIDOR_CLEARANCE = re.compile(
+    r"\b(?:WIDE\s+BERTH\s+OF|SAFETY\s+CLEARANCE\s+OF|KEEP\s+CLEAR\s+BY)\s+"
+    r"(\d+(?:\.\d+)?)\s*(N\.?\s*M\.?|N\.M|NM|NAUTICAL\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM|KILOMET(?:RES?|ERS?))\b"
+    r"|\b(\d+(?:\.\d+)?)\s*(N\.?\s*M\.?|N\.M|NM|NAUTICAL\s+MILES?|MET(?:RES?|ERS?)|KM|KILOMET(?:RES?|ERS?))\s+SAFETY\s+ZONE\b",
+    re.IGNORECASE
+)
+
+
+def parse_corridor_clearance(raw_text: str) -> Optional[float]:
+    """Extracts requested safety clearance or wide berth in Nautical Miles.
+    Rejects bare or ambiguous units (bare 'M'). Returns finite float > 0 or None."""
+    if not raw_text:
+        return None
+    m = RE_CORRIDOR_CLEARANCE.search(raw_text)
+    if not m:
+        return None
+    if m.group(1) and m.group(2):
+        val_s, unit_s = m.group(1), m.group(2)
+    elif m.group(3) and m.group(4):
+        val_s, unit_s = m.group(3), m.group(4)
+    else:
+        return None
+    try:
+        val = float(val_s)
+    except ValueError:
+        return None
+    if not math.isfinite(val) or val <= 0:
+        return None
+    unit = re.sub(r"[.\s]+", " ", unit_s).strip().upper()
+    if unit in ("NM", "N M", "NAUTICAL MILE", "NAUTICAL MILES"):
+        return round(val, 3)
+    if unit in ("MILE", "MILES"):
+        # Qualified miles in clearance context
+        return round(val, 3)
+    if unit in ("METRE", "METRES", "METER", "METERS"):
+        return round(val / 1852.0, 3)
+    if unit in ("KM", "KILOMETRE", "KILOMETRES", "KILOMETER", "KILOMETERS"):
+        return round(val / 1.852, 3)
+    return None
+
+
+# --- relocation & displacement parsing (Phase B2) -----------------------------
+RE_RELOCATED_FROM_TO = re.compile(
+    r"\b(?:RELOCATED|MOVED)\s+FROM\b(?P<from_clause>.*?)\bTO\b(?P<to_clause>.*)",
+    re.IGNORECASE | re.DOTALL
+)
+RE_FORMER_NEW = re.compile(
+    r"\b(?:FORMER\s+POSITION|DISCONTINUED\s+(?:IN\s+)?POSITION|PREVIOUS\s+POSITION)\b(?P<former_clause>.*?)"
+    r"\b(?:NEW\s+POSITION|ESTABLISHED\s+(?:IN\s+)?POSITION|PRESENT\s+POSITION)\b(?P<new_clause>.*)",
+    re.IGNORECASE | re.DOTALL
+)
+RE_NEW_FORMER = re.compile(
+    r"\b(?:NEW\s+POSITION|ESTABLISHED\s+(?:IN\s+)?POSITION|PRESENT\s+POSITION)\b(?P<new_clause>.*?)"
+    r"\b(?:FORMER\s+POSITION|DISCONTINUED\s+(?:IN\s+)?POSITION|PREVIOUS\s+POSITION)\b(?P<former_clause>.*)",
+    re.IGNORECASE | re.DOTALL
+)
+
+
+def _extract_relocation_positions(raw_text: str) -> Optional[tuple[list[float], list[float]]]:
+    """Extracts (former_point, new_point) by explicitly parsing coordinates within
+    the respective FROM/FORMER and TO/NEW text clauses.
+    Never infers former/new order from bare list order.
+    Returns ([lon_former, lat_former], [lon_new, lat_new]) or None if ambiguous."""
+    if not raw_text:
+        return None
+
+    # 1. Check RELOCATED FROM <pos> TO <pos>
+    m1 = RE_RELOCATED_FROM_TO.search(raw_text)
+    if m1:
+        f_pairs = _extract_coord_pairs(m1.group("from_clause"))
+        t_pairs = _extract_coord_pairs(m1.group("to_clause"))
+        if len(f_pairs) == 1 and len(t_pairs) == 1:
+            former_pt = [f_pairs[0][2], f_pairs[0][1]]  # [lon, lat]
+            new_pt = [t_pairs[0][2], t_pairs[0][1]]
+            return former_pt, new_pt
+
+    # 2. Check FORMER POSITION <pos> ... NEW POSITION <pos>
+    m2 = RE_FORMER_NEW.search(raw_text)
+    if m2:
+        f_pairs = _extract_coord_pairs(m2.group("former_clause"))
+        t_pairs = _extract_coord_pairs(m2.group("new_clause"))
+        if len(f_pairs) == 1 and len(t_pairs) == 1:
+            former_pt = [f_pairs[0][2], f_pairs[0][1]]
+            new_pt = [t_pairs[0][2], t_pairs[0][1]]
+            return former_pt, new_pt
+
+    # 3. Check NEW POSITION <pos> ... FORMER POSITION <pos> (reversed text order)
+    m3 = RE_NEW_FORMER.search(raw_text)
+    if m3:
+        t_pairs = _extract_coord_pairs(m3.group("new_clause"))
+        f_pairs = _extract_coord_pairs(m3.group("former_clause"))
+        if len(f_pairs) == 1 and len(t_pairs) == 1:
+            former_pt = [f_pairs[0][2], f_pairs[0][1]]
+            new_pt = [t_pairs[0][2], t_pairs[0][1]]
+            return former_pt, new_pt
+
+    return None
 
 
 def _bbox_from_axis_tokens(raw_text: str):
@@ -764,6 +958,7 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
                 # radius/bearings ride on the report so the geometry child
                 # rows can populate the sweep_* columns.
                 spatial = sector["spatial"]
+                spatial["feature_type"] = "SWEEP_ARC"
                 basis = "keyword:sweep_sector"
                 quality = "EXPLICIT"
                 sweep_meta = {
@@ -771,98 +966,182 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
                     "sweep_start_azimuth": sector["sweep_start_azimuth"],
                     "sweep_end_azimuth": sector["sweep_end_azimuth"],
                 }
+                spatial.update(sweep_meta)
             else:
                 spatial = {"type": "Point", "coordinates": points[0]}
                 basis = "explicit:single_position"
+                clearance_nm = parse_corridor_clearance(text)
+                if clearance_nm is not None and clearance_nm > 0:
+                    spatial["buffer_nm"] = clearance_nm
+                    spatial["feature_type"] = "POINT"
+                else:
+                    spatial["buffer_nm"] = 0.0
+                    spatial["feature_type"] = "POINT"
         else:
-            # Centroid calculation for multi-point, polygon, and linestring
-            primary_lat = round(sum(p[1] for p in points) / len(points), 6)
-            primary_lon = round(sum(p[0] for p in points) / len(points), 6)
-            archetype, basis, cls_flags = classify_geometry_archetype_detailed(
-                text, points, context_text)
-            for f in cls_flags:
-                if f not in flags:
-                    flags.append(f)
+            relocation = None
+            if len(points) == 2:
+                relocation = _extract_relocation_positions(text)
 
-            if archetype == "multipoint":
-                # Discrete scattered locations (e.g. 'IN VICINITY OF'
-                # wellhead/platform lists, buoy lists): individual
-                # markers, never a connected shape. Prevents the
-                # tangled-polygon bug.
-                spatial = {"type": "MultiPoint", "coordinates": points}
-            elif archetype == "bounding_box":
-                if count_mismatch:
-                    spatial = {"type": "MultiPoint", "coordinates": points}
-                    basis = "fallback:count_mismatch"
-                else:
-                    # 'AREA BOUNDED WITHIN': two opposite corners define
-                    # the rectangle — expand into a proper closed ring
-                    # rather than a 2-point corridor LineString.
-                    lon_a, lat_a = points[0]
-                    lon_b, lat_b = points[1]
-                    spatial = {"type": "Polygon", "coordinates": [[
-                        [lon_a, lat_a], [lon_b, lat_a], [lon_b, lat_b],
-                        [lon_a, lat_b], [lon_a, lat_a],
-                    ]]}
-            elif archetype == "linestring":
-                # Sequential track/route/trackline: open path, never
-                # auto-closed. A source that repeats the first vertex at
-                # the end (IV 153/26's closed listing) describes a ring:
-                # drop the duplicated closing vertex so the line stays open.
-                if len(points) > 1 and points[0] == points[-1]:
-                    points = points[:-1]
-                spatial = {"type": "LineString", "coordinates": points}
-            elif len(points) == 2:
-                spatial = {"type": "LineString", "coordinates": points}
-                if basis is None:
-                    basis = "fallback:two_point_line"
-            elif len(points) == 3 and basis is None:
-                # THREE unlabelled open positions can never close into
-                # a declared ring: a LineString would invent a path
-                # (A5). Discrete markers + review flag. Larger
-                # unlabelled lists fall through to the ring guard: a
-                # 5-position list is geometrically indistinguishable
-                # from a genuine 5-corner area (XII 151/26 sub-area B),
-                # so only the ring topology can decide.
-                if "AMBIGUOUS_FALLBACK" not in flags:
-                    flags.append("AMBIGUOUS_FALLBACK")
-                spatial = {"type": "MultiPoint", "coordinates": points}
-                basis = "fallback:unlabelled_points"
+            if relocation is not None:
+                former_pt, new_pt = relocation
+                # Primary coordinates strictly pinned to NEW position (never centroid / former position)
+                primary_lat = new_pt[1]
+                primary_lon = new_pt[0]
+                spatial = {
+                    "type": "FeatureCollection",
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "geometry": {"type": "Point", "coordinates": new_pt},
+                            "properties": {
+                                "zone_label": "New Established Position",
+                                "feature_type": "POINT",
+                                "is_active": True,
+                            },
+                        },
+                        {
+                            "type": "Feature",
+                            "geometry": {"type": "Point", "coordinates": former_pt},
+                            "properties": {
+                                "zone_label": "Former Position (Relocated)",
+                                "feature_type": "POINT",
+                                "is_ghost": True,
+                                "relocated_to": new_pt,
+                            },
+                        },
+                    ],
+                }
+                basis = "explicit:relocation"
+                quality = "EXPLICIT"
+                if "has_relocated_station" not in flags:
+                    flags.append("has_relocated_station")
             else:
-                # Legacy default for bounded areas / unknown multi-vertex
-                # arrays: closed polygon ring — but only if the ring is a
-                # valid, non-self-intersecting boundary (>= 3 unique
-                # vertices) AND the completeness check passed.
-                ring = points if points[0] == points[-1] else points + [points[0]]
-                unique_vertices = {tuple(p) for p in ring}
-                ring_ok = len(unique_vertices) >= 3 and ring_is_simple(ring)
-                if ring_ok and not count_mismatch:
-                    spatial = {"type": "Polygon", "coordinates": [ring]}
-                    if basis is None:
-                        basis = "fallback:legacy_polygon"
-                elif count_mismatch:
-                    # Refused positions present: never close the
-                    # remainder into a ring (A1 completeness check).
-                    if "AMBIGUOUS_FALLBACK" not in flags:
-                        flags.append("AMBIGUOUS_FALLBACK")
+                # Centroid calculation for multi-point, polygon, and linestring
+                primary_lat = round(sum(p[1] for p in points) / len(points), 6)
+                primary_lon = round(sum(p[0] for p in points) / len(points), 6)
+                archetype, basis, cls_flags = classify_geometry_archetype_detailed(
+                    text, points, context_text)
+                for f in cls_flags:
+                    if f not in flags:
+                        flags.append(f)
+
+                if archetype == "multipoint":
+                    # Discrete scattered locations (e.g. 'IN VICINITY OF'
+                    # wellhead/platform lists, buoy lists): individual
+                    # markers, never a connected shape. Prevents the
+                    # tangled-polygon bug.
                     spatial = {"type": "MultiPoint", "coordinates": points}
-                    basis = "fallback:count_mismatch"
-                elif basis is None:
-                    # Bowtie/crooked order with NO keyword evidence:
-                    # discrete markers + review flag, never a
-                    # fabricated shape or path (A5).
-                    if "AMBIGUOUS_FALLBACK" not in flags:
-                        flags.append("AMBIGUOUS_FALLBACK")
-                    spatial = {"type": "MultiPoint", "coordinates": points}
-                    basis = "fallback:bowtie"
-                else:
-                    # Keyword-declared boundary enumeration ('LINES
-                    # JOINING' / bounded-area wording) in crooked list
-                    # order: keep the legacy OPEN PATH. The memo
-                    # pipelines (IV/XII ring-to-trackline contract:
-                    # 206/26 iceberg limits, 862/24) rely on never
-                    # receiving marker clouds for declared tracks.
+                    spatial["feature_type"] = "POINT"
+                    clearance_nm = parse_corridor_clearance(text)
+                    if clearance_nm is not None and clearance_nm > 0:
+                        spatial["buffer_nm"] = clearance_nm
+                    else:
+                        spatial["buffer_nm"] = 0.0
+                elif archetype == "bounding_box":
+                    if count_mismatch:
+                        spatial = {"type": "MultiPoint", "coordinates": points}
+                        spatial["feature_type"] = "POINT"
+                        basis = "fallback:count_mismatch"
+                    else:
+                        # 'AREA BOUNDED WITHIN': two opposite corners define
+                        # the rectangle — expand into a proper closed ring
+                        # rather than a 2-point corridor LineString.
+                        lon_a, lat_a = points[0]
+                        lon_b, lat_b = points[1]
+                        spatial = {"type": "Polygon", "coordinates": [[
+                            [lon_a, lat_a], [lon_b, lat_a], [lon_b, lat_b],
+                            [lon_a, lat_b], [lon_a, lat_a],
+                        ]]}
+                        spatial["feature_type"] = "BOUNDING_BOX"
+                        spatial["buffer_nm"] = 0.0
+                elif archetype == "linestring":
+                    # Sequential track/route/trackline: open path, never
+                    # auto-closed. A source that repeats the first vertex at
+                    # the end (IV 153/26's closed listing) describes a ring:
+                    # drop the duplicated closing vertex so the line stays open.
+                    if len(points) > 1 and points[0] == points[-1]:
+                        points = points[:-1]
                     spatial = {"type": "LineString", "coordinates": points}
+                    clearance_nm = parse_corridor_clearance(text)
+                    if clearance_nm is not None and clearance_nm > 0:
+                        spatial["buffer_nm"] = clearance_nm
+                        spatial["feature_type"] = "CORRIDOR"
+                    else:
+                        spatial["buffer_nm"] = 0.0
+                        spatial["feature_type"] = "LINE"
+                elif len(points) == 2:
+                    spatial = {"type": "LineString", "coordinates": points}
+                    if basis is None:
+                        basis = "fallback:two_point_line"
+                    clearance_nm = parse_corridor_clearance(text)
+                    if clearance_nm is not None and clearance_nm > 0:
+                        spatial["buffer_nm"] = clearance_nm
+                        spatial["feature_type"] = "CORRIDOR"
+                    else:
+                        spatial["buffer_nm"] = 0.0
+                        spatial["feature_type"] = "LINE"
+                elif len(points) == 3 and basis is None:
+                    # THREE unlabelled open positions can never close into
+                    # a declared ring: a LineString would invent a path
+                    # (A5). Discrete markers + review flag. Larger
+                    # unlabelled lists fall through to the ring guard: a
+                    # 5-position list is geometrically indistinguishable
+                    # from a genuine 5-corner area (XII 151/26 sub-area B),
+                    # so only the ring topology can decide.
+                    if "AMBIGUOUS_FALLBACK" not in flags:
+                        flags.append("AMBIGUOUS_FALLBACK")
+                    spatial = {"type": "MultiPoint", "coordinates": points}
+                    spatial["feature_type"] = "POINT"
+                    spatial["buffer_nm"] = 0.0
+                    basis = "fallback:unlabelled_points"
+                else:
+                    # Legacy default for bounded areas / unknown multi-vertex
+                    # arrays: closed polygon ring — but only if the ring is a
+                    # valid, non-self-intersecting boundary (>= 3 unique
+                    # vertices) AND the completeness check passed.
+                    ring = points if points[0] == points[-1] else points + [points[0]]
+                    unique_vertices = {tuple(p) for p in ring}
+                    ring_ok = len(unique_vertices) >= 3 and ring_is_simple(ring)
+                    if ring_ok and not count_mismatch:
+                        spatial = {"type": "Polygon", "coordinates": [ring]}
+                        spatial["feature_type"] = "POLYGON"
+                        spatial["buffer_nm"] = 0.0
+                        if basis is None:
+                            basis = "fallback:legacy_polygon"
+                    elif count_mismatch:
+                        # Refused positions present: never close the
+                        # remainder into a ring (A1 completeness check).
+                        if "AMBIGUOUS_FALLBACK" not in flags:
+                            flags.append("AMBIGUOUS_FALLBACK")
+                        spatial = {"type": "MultiPoint", "coordinates": points}
+                        spatial["feature_type"] = "POINT"
+                        spatial["buffer_nm"] = 0.0
+                        basis = "fallback:count_mismatch"
+                    elif basis is None:
+                        # Bowtie/crooked order with NO keyword evidence:
+                        # discrete markers + review flag, never a
+                        # fabricated shape or path (A5).
+                        if "AMBIGUOUS_FALLBACK" not in flags:
+                            flags.append("AMBIGUOUS_FALLBACK")
+                        spatial = {"type": "MultiPoint", "coordinates": points}
+                        spatial["feature_type"] = "POINT"
+                        spatial["buffer_nm"] = 0.0
+                        basis = "fallback:bowtie"
+                    else:
+                        # Keyword-declared boundary enumeration ('LINES
+                        # JOINING' / bounded-area wording) in crooked list
+                        # order: keep the legacy OPEN PATH. The memo
+                        # pipelines (IV/XII ring-to-trackline contract:
+                        # 206/26 iceberg limits, 862/24) rely on never
+                        # receiving marker clouds for declared tracks.
+                        spatial = {"type": "LineString", "coordinates": points}
+                        clearance_nm = parse_corridor_clearance(text)
+                        if clearance_nm is not None and clearance_nm > 0:
+                            spatial["buffer_nm"] = clearance_nm
+                            spatial["feature_type"] = "CORRIDOR"
+                        else:
+                            spatial["buffer_nm"] = 0.0
+                            spatial["feature_type"] = "LINE"
 
             if basis:
                 if basis.startswith("keyword:") or basis.startswith("explicit:"):
@@ -880,9 +1159,13 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
         # nothing.
         bbox_spatial, bbox_lat, bbox_lon = _bbox_from_axis_tokens(text)
         if bbox_spatial:
+            bbox_spatial["feature_type"] = "BOUNDING_BOX"
+            bbox_spatial["buffer_nm"] = 0.0
             return [], bbox_lat, bbox_lon, bbox_spatial, {
                 "flags": [], "basis": "keyword:bounding_box",
                 "data_quality": "EXPLICIT", "accepted": [], "rejected": [],
+                "feature_type": "BOUNDING_BOX",
+                "buffer_nm": 0.0,
             }
         if RE_LOOSE_HEM_TOKEN.search(text):
             flags.append("COORD_COUNT_MISMATCH")
@@ -894,6 +1177,11 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
         "accepted": accepted,
         "rejected": rejected,
     }
+    if spatial and isinstance(spatial, dict):
+        if spatial.get("feature_type"):
+            report["feature_type"] = spatial["feature_type"]
+        if spatial.get("buffer_nm") is not None:
+            report["buffer_nm"] = spatial["buffer_nm"]
     if sweep_meta:
         # Sweep-arc metadata for the geometry child rows (see
         # _sector_from_sweep_wording); None keys never appear.
@@ -979,6 +1267,19 @@ def parse_block_geometries(raw_text: str):
         ):
             data_quality = clause_quality
         if spatial:
+            # Preserve per-feature metadata inside properties dictionary
+            if isinstance(spatial, dict) and spatial.get("type") != "FeatureCollection":
+                props = spatial.setdefault("properties", {})
+                if report.get("feature_type"):
+                    props["feature_type"] = report["feature_type"]
+                    spatial.setdefault("feature_type", report["feature_type"])
+                if report.get("buffer_nm") is not None:
+                    props["buffer_nm"] = report["buffer_nm"]
+                    spatial.setdefault("buffer_nm", report["buffer_nm"])
+                for k in ("sweep_radius_nm", "sweep_start_azimuth", "sweep_end_azimuth"):
+                    if report.get(k) is not None:
+                        props[k] = report[k]
+                        spatial.setdefault(k, report[k])
             geoms.append((label, spatial, lat, lon))
 
     return geoms, coords_text, qa_flags, data_quality

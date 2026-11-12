@@ -87,7 +87,7 @@ class TestSweepSector(unittest.TestCase):
         payloads = build_geometry_payloads(warn)
         self.assertEqual(len(payloads), 1)
         payload = payloads[0]
-        self.assertEqual(payload["feature_type"], "POLYGON")
+        self.assertEqual(payload["feature_type"], "SWEEP_ARC")
         self.assertEqual(payload["sweep_radius_nm"], 20.0)
         self.assertEqual(payload["sweep_start_azimuth"], 270.0)
         self.assertEqual(payload["sweep_end_azimuth"], 360.0)

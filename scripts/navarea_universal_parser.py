@@ -623,7 +623,7 @@ def parse_warning(block, cfg, now_utc=None):
     clauses = _segment_clauses(body)
 
     geoms = []
-    geom_sweeps = []
+    geom_metas = []
     qa_flags = []
     _dq_order = {"EXPLICIT": 0, "INFERRED": 1, "AMBIGUOUS": 2}
     data_quality = None
@@ -644,18 +644,23 @@ def parse_warning(block, cfg, now_utc=None):
             or _dq_order[clause_quality] > _dq_order[data_quality]
         ):
             data_quality = clause_quality
-        sweep = None
+        meta = {}
         if (report.get("sweep_radius_nm") is not None
                 and report.get("sweep_start_azimuth") is not None
                 and report.get("sweep_end_azimuth") is not None):
-            sweep = {
+            meta.update({
                 "sweep_radius_nm": report["sweep_radius_nm"],
                 "sweep_start_azimuth": report["sweep_start_azimuth"],
                 "sweep_end_azimuth": report["sweep_end_azimuth"],
-            }
+            })
+        if report.get("feature_type"):
+            meta["feature_type"] = report["feature_type"]
+        if report.get("buffer_nm") is not None:
+            meta["buffer_nm"] = report["buffer_nm"]
+
         if spatial:
             geoms.append((clause["label"], spatial, lat, lon))
-            geom_sweeps.append(sweep)
+            geom_metas.append(meta)
     if not geoms:
         spatial_fc = None
         lat = lon = None
@@ -669,11 +674,15 @@ def parse_warning(block, cfg, now_utc=None):
         # position. Lettered sub-areas that yield areas (XI 475/26
         # A/B/C polygons) are unaffected (not all Points).
         coords = [g[1]["coordinates"] for g in geoms]
+        fc_props = {"zone_label": _zone_label([g[0] for g in geoms])}
+        buf = next((m.get("buffer_nm") for m in geom_metas if m.get("buffer_nm")), None)
+        if buf is not None:
+            fc_props["buffer_nm"] = buf
         spatial_fc = {
             "type": "FeatureCollection",
             "features": [{
                 "type": "Feature",
-                "properties": {"zone_label": _zone_label([g[0] for g in geoms])},
+                "properties": fc_props,
                 "geometry": {"type": "MultiPoint", "coordinates": coords},
             }],
         }
@@ -684,29 +693,45 @@ def parse_warning(block, cfg, now_utc=None):
         geom_labels = [g[0] for g in geoms]
     elif len(geoms) == 1:
         label, spatial, lat, lon = geoms[0]
-        props = {"sub_area": label, "zone_label": _zone_label([label])}
-        if geom_sweeps and geom_sweeps[0]:
-            props.update(geom_sweeps[0])
-        spatial_fc = {
-            "type": "FeatureCollection",
-            "features": [{
-                "type": "Feature",
-                "properties": props,
-                "geometry": spatial,
-            }],
-        }
+        meta = geom_metas[0] if geom_metas else {}
+        if isinstance(spatial, dict) and spatial.get("type") == "FeatureCollection":
+            spatial_fc = spatial
+            for feat in spatial_fc.get("features", []):
+                if isinstance(feat, dict):
+                    f_props = feat.setdefault("properties", {})
+                    f_props.setdefault("sub_area", label)
+                    f_props.setdefault("zone_label", _zone_label([label]))
+        else:
+            props = {"sub_area": label, "zone_label": _zone_label([label])}
+            props.update(meta)
+            spatial_fc = {
+                "type": "FeatureCollection",
+                "features": [{
+                    "type": "Feature",
+                    "properties": props,
+                    "geometry": spatial,
+                }],
+            }
         geom_labels = [label]
     else:
         features = []
         for i, g in enumerate(geoms):
-            props = {"sub_area": g[0], "zone_label": _zone_label([g[0]])}
-            if i < len(geom_sweeps) and geom_sweeps[i]:
-                props.update(geom_sweeps[i])
-            features.append({
-                "type": "Feature",
-                "properties": props,
-                "geometry": g[1],
-            })
+            meta = geom_metas[i] if i < len(geom_metas) else {}
+            if isinstance(g[1], dict) and g[1].get("type") == "FeatureCollection":
+                for feat in g[1].get("features", []):
+                    if isinstance(feat, dict):
+                        f_props = feat.setdefault("properties", {})
+                        f_props.setdefault("sub_area", g[0])
+                        f_props.setdefault("zone_label", _zone_label([g[0]]))
+                        features.append(feat)
+            else:
+                props = {"sub_area": g[0], "zone_label": _zone_label([g[0]])}
+                props.update(meta)
+                features.append({
+                    "type": "Feature",
+                    "properties": props,
+                    "geometry": g[1],
+                })
         spatial_fc = {"type": "FeatureCollection", "features": features}
         lat, lon = geoms[0][2], geoms[0][3]
         geom_labels = [g[0] for g in geoms]
