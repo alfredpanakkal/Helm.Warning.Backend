@@ -10,7 +10,7 @@ ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from shared.models import build_master_payload
+from shared.models import build_master_payload, qa_flags_require_review
 from scripts.navarea_8_sync import _supersede_cross_refs as supersede_viii
 from scripts.navarea_iv_sync import _supersede_cross_refs as supersede_iv
 from scripts.navarea_xii_sync import _supersede_cross_refs as supersede_xii
@@ -98,6 +98,45 @@ class TestTierAPayloadInvariant(unittest.TestCase):
         master = build_master_payload(record)
         self.assertEqual(master["triage_tier"], "C")
         self.assertEqual(master["unplotted_reason"], "no_valid_geometry")
+
+    def test_review_required_qa_flag_demotes_geometry_to_tier_b(self):
+        master = build_master_payload(
+            self._record(qa_flags=["COORD_COUNT_MISMATCH"])
+        )
+        self.assertEqual(master["triage_tier"], "B")
+
+    def test_geometry_basis_flag_remains_informational(self):
+        master = build_master_payload(
+            self._record(qa_flags=["geometry_basis:keyword:rig"])
+        )
+        self.assertEqual(master["triage_tier"], "A")
+
+
+class TestQaFlagReviewPolicy(unittest.TestCase):
+    def test_empty_flags_do_not_require_review(self):
+        self.assertFalse(qa_flags_require_review([]))
+
+    def test_geometry_basis_flags_are_informational(self):
+        self.assertFalse(
+            qa_flags_require_review(["geometry_basis:keyword:rig"])
+        )
+
+    def test_non_geometry_basis_flags_require_review(self):
+        for flag in (
+            "COORD_COUNT_MISMATCH",
+            "geometry_preserved_previous_run",
+            "verified_by_admin",
+        ):
+            with self.subTest(flag=flag):
+                self.assertTrue(qa_flags_require_review([flag]))
+
+    def test_mixed_flags_require_review(self):
+        self.assertTrue(
+            qa_flags_require_review([
+                "geometry_basis:keyword:rig",
+                "COORD_COUNT_MISMATCH",
+            ])
+        )
 
 
 class TestSupersedeLifecycleInvariant(unittest.TestCase):
