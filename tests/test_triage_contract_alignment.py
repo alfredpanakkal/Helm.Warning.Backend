@@ -1,6 +1,7 @@
 """Phase B4 regression tests for Python triage and database publication contracts."""
 
 import unittest
+from pathlib import Path
 
 from shared.models import (
     CoordinateProvenance,
@@ -261,6 +262,29 @@ class TestDatabaseConstraintAlignment(unittest.TestCase):
     def test_non_a_rows_are_not_subject_to_tier_a_check(self):
         for tier in ("B", "C"):
             self.assertTrue(db_tier_a_check({"triage_tier": tier}))
+
+
+
+class TestMigrationContract(unittest.TestCase):
+    def test_migration_persists_and_exposes_geometry_metadata(self):
+        migration = (
+            Path(__file__).resolve().parents[1]
+            / "migrations"
+            / "20261112_triage_contract_alignment.sql"
+        ).read_text(encoding="utf-8")
+        for contract in (
+            "corridor_clearance_nm DOUBLE PRECISION",
+            "g.corridor_clearance_nm",
+            "g.sweep_radius_nm",
+            "g.sweep_start_azimuth",
+            "g.sweep_end_azimuth",
+            "g.zone_label",
+            "g->>'corridor_clearance_nm'",
+            "chk_tier_a_qa_flags",
+        ):
+            self.assertIn(contract, migration)
+        self.assertIn("SET triage_tier = 'B'", migration)
+        self.assertNotIn("SET triage_tier = 'A'", migration)
 
 
 if __name__ == "__main__":
