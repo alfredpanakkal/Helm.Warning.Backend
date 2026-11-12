@@ -17,9 +17,6 @@ from shared.logging import get_logger
 
 logger = get_logger("triage")
 
-C_TIER_BLOCKERS = TIER_C_QA_FLAGS
-C_TIER_UNPLOTTED = UNPLOTTED_REASONS
-
 
 def _valid_lat_lon(lat: Any, lon: Any) -> bool:
     try:
