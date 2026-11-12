@@ -466,11 +466,22 @@ def build_master_payload(record: Dict[str, Any]) -> Dict[str, Any]:
     area_text = record.get("area_text") or record.get("general_area") or record.get("subarea") or record.get("issued_text")
     status = record.get("status") or "active"
 
-    # Determine triage tier
+    # Determine triage tier. Mirror chk_tier_a_invariants in the database:
+    # Tier A requires explicit data, rule parsing, no unplotted reason, and a
+    # status other than superseded. Geometry is also required for auto-plotting.
     geoms = build_geometry_payloads(record)
-    default_tier = "A" if geoms else "C"
-    triage_tier = record.get("triage_tier") or default_tier
+    data_quality = record.get("data_quality", "EXPLICIT")
+    parsing_method = record.get("parsing_method", "RULE")
     unplotted_reason = record.get("unplotted_reason")
+    tier_a_eligible = (
+        bool(geoms)
+        and data_quality == "EXPLICIT"
+        and unplotted_reason is None
+        and parsing_method == "RULE"
+        and status != "superseded"
+    )
+    requested_tier = record.get("triage_tier")
+
     if not geoms:
         triage_tier = "C"
         if not unplotted_reason:
@@ -485,6 +496,13 @@ def build_master_payload(record: Dict[str, Any]) -> Dict[str, Any]:
                 unplotted_reason = "validation_failed"
             else:
                 unplotted_reason = "no_valid_geometry"
+    elif requested_tier:
+        triage_tier = requested_tier
+        if triage_tier == "A" and not tier_a_eligible:
+            # Keep geometry-bearing but ineligible records visible for review.
+            triage_tier = "B"
+    else:
+        triage_tier = "A" if tier_a_eligible else "B"
 
     valid_from = parse_safe_iso_timestamp(record.get("valid_from") or record.get("publication_time") or record.get("issued_text"))
     valid_to = parse_safe_iso_timestamp(record.get("valid_to") or record.get("cancellation_date"))
@@ -497,8 +515,8 @@ def build_master_payload(record: Dict[str, Any]) -> Dict[str, Any]:
         "categories": cleaned_cats,
         "status": status,
         "triage_tier": triage_tier,
-        "data_quality": record.get("data_quality", "EXPLICIT"),
-        "parsing_method": record.get("parsing_method", "RULE"),
+        "data_quality": data_quality,
+        "parsing_method": parsing_method,
         "qa_flags": record.get("qa_flags", []),
         "unplotted_reason": unplotted_reason,
         "valid_from": valid_from,
