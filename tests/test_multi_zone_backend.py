@@ -17,9 +17,14 @@ from unittest.mock import patch
 
 from shared.navarea_universal_text import subarea_marks
 from shared.utils import parse_block_geometries
-from shared.models import build_geometry_payloads, TriageTier
+from shared.models import (
+    build_geometry_payloads, build_master_payload, TriageTier,
+    CoordinateProvenance, DataQuality,
+)
 from shared.triage import assign_final_triage
 from scripts.navarea_1_parser import parse_warning
+from scripts.navarea_8_parser import _segment_clauses as segment_navarea_viii
+from scripts.navarea_universal_parser import _segment_clauses as segment_universal
 
 
 class TestGroupAMarkers(unittest.TestCase):
@@ -295,6 +300,92 @@ class TestGroupGPayloadsAndTriage(unittest.TestCase):
         )
         assign_final_triage(rec)
         self.assertEqual(rec.triage_tier, TriageTier.B)
+
+    def test_all_incomplete_zones_persist_as_tier_c_with_coordinate_provenance(self):
+        raw_block = (
+            "PIPELINE OPERATIONS. IN AREAS BOUNDED BY:\\n"
+            "(A) 20-12.00N 075-10.00E\\n"
+            "(B) 21-12.00N 076-10.00E, 21-15.00N 076-10.00E"
+        )
+        _, nav_warning, spatial = parse_warning(raw_block, "NAVAREA I 998/26")
+
+        # The adapter must not invent a fallback point when every bounded
+        # sub-area is incomplete.
+        self.assertIsNone(spatial)
+        self.assertIsNone(nav_warning["spatial"])
+        self.assertIsNone(nav_warning["latitude"])
+        self.assertIsNone(nav_warning["longitude"])
+        self.assertTrue(nav_warning["coordinates"])
+        self.assertIn("has_incomplete_zone", nav_warning["qa_flags"])
+        self.assertEqual(build_geometry_payloads(nav_warning), [])
+
+        # Model the downstream provenance-bearing triage record. Coordinate
+        # provenance is retained for audit, but it is not operational geometry.
+        rec = SimpleNamespace(
+            data_quality=DataQuality.AMBIGUOUS,
+            qa_flags=nav_warning["qa_flags"],
+            latitude=None,
+            longitude=None,
+            coordinates=[
+                CoordinateProvenance(
+                    raw_token="20-12.00N 075-10.00E",
+                    lat=20.2,
+                    lon=75.1666667,
+                ),
+                CoordinateProvenance(
+                    raw_token="21-12.00N 076-10.00E",
+                    lat=21.2,
+                    lon=76.1666667,
+                ),
+                CoordinateProvenance(
+                    raw_token="21-15.00N 076-10.00E",
+                    lat=21.25,
+                    lon=76.1666667,
+                ),
+            ],
+            triage_tier=None,
+            unplotted_reason=None,
+        )
+        assign_final_triage(rec)
+        # Coordinate provenance alone may produce an intermediate review
+        # classification; the master payload is the final geometry gate.
+        self.assertEqual(rec.triage_tier, TriageTier.B)
+
+        master_record = {
+            **nav_warning,
+            "data_quality": rec.data_quality.value,
+            "qa_flags": rec.qa_flags,
+            "triage_tier": rec.triage_tier.value,
+            "unplotted_reason": rec.unplotted_reason,
+            "parsing_method": "RULE",
+        }
+        master = build_master_payload(master_record)
+        self.assertEqual(master["triage_tier"], "C")
+        self.assertEqual(master["unplotted_reason"], "no_valid_geometry")
+        self.assertEqual(build_geometry_payloads(master_record), [])
+
+
+class TestGroupVIIIAndUniversalSegmentation(unittest.TestCase):
+    """Regional adapter coverage for inline punctuation variants."""
+
+    def _assert_colon_markers_split(self, segmenter):
+        body = (
+            "OFFSHORE OPERATIONS IN AREAS BOUNDED BY:\\n"
+            "(A): 20-12.00N 075-10.00E, 20-15.00N 075-10.00E\\n"
+            "(B): 21-12.00N 076-10.00E, 21-15.00N 076-10.00E"
+        )
+        clauses = segmenter(body)
+        zones = [c for c in clauses if c["label"] in ("A", "B")]
+        self.assertEqual([c["label"] for c in zones], ["A", "B"])
+        self.assertIn("20-12.00N", zones[0]["text"])
+        self.assertIn("21-12.00N", zones[1]["text"])
+        self.assertTrue(all(c.get("context") == "OFFSHORE OPERATIONS IN AREAS BOUNDED BY:" for c in zones))
+
+    def test_navarea_viii_colon_markers(self):
+        self._assert_colon_markers_split(segment_navarea_viii)
+
+    def test_universal_parser_colon_markers(self):
+        self._assert_colon_markers_split(segment_universal)
 
 
 class TestGroupHRegionalRegression(unittest.TestCase):
