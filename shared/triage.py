@@ -9,7 +9,7 @@ import logging
 import math
 
 from shared.models import (
-    DataQuality, ParsingMethod, TriageTier, TIER_C_QA_FLAGS,
+    DataQuality, ParsingMethod, TriageTier, TIER_REVIEW_QA_FLAGS,
     UNPLOTTED_REASONS, qa_flags_require_review, unplotted_reason_from_qa_flags,
     normalize_unplotted_reason,
 )
@@ -72,23 +72,15 @@ def assign_final_triage(rec: Any) -> None:
     if unplotted_reason is not None:
         rec.unplotted_reason = unplotted_reason
 
-    if (
-        getattr(rec, "data_quality", DataQuality.EXPLICIT) == DataQuality.INVALID
-        or any(flag in C_TIER_BLOCKERS for flag in qa_flags)
-        or unplotted_reason in C_TIER_UNPLOTTED
-        or not has_valid_geometry
-    ):
+    if not has_valid_geometry:
         rec.triage_tier = TriageTier.C
         if not getattr(rec, "unplotted_reason", None):
             rec.unplotted_reason = (
                 unplotted_reason_from_qa_flags(qa_flags) or "no_valid_geometry"
             )
-        else:
-            rec.unplotted_reason = normalize_unplotted_reason(
-                rec.unplotted_reason, qa_flags
-            )
     else:
-        # 3. Inferred / repaired / filtered / AI / superseded -> Tier B.
+        # Any geometry-bearing partial failure, repair, AI parse, or lifecycle
+        # exception remains visible for review; it cannot enter Tier A.
         data_quality = getattr(rec, "data_quality", DataQuality.EXPLICIT)
         parsing_method = getattr(rec, "parsing_method", ParsingMethod.RULE)
         applicable_vessel_filter = getattr(rec, "applicable_vessel_filter", None)
@@ -97,18 +89,18 @@ def assign_final_triage(rec: Any) -> None:
         status = getattr(rec, "status", "active")
 
         if (
-            data_quality in (DataQuality.INFERRED, DataQuality.AMBIGUOUS)
+            data_quality != DataQuality.EXPLICIT
             or parsing_method != ParsingMethod.RULE
             or has_repairs
             or applicable_vessel_filter is not None
             or duplicate_of_id is not None
             or qa_flags_require_review(qa_flags)
             or status == "superseded"
-            or getattr(rec, "unplotted_reason", None) is not None
+            or unplotted_reason is not None
         ):
             rec.triage_tier = TriageTier.B
         else:
-            # 4. Explicit + rule-parsed + clean + geometry -> Tier A.
+            # Explicit + rule-parsed + clean + valid geometry -> Tier A.
             rec.triage_tier = TriageTier.A
 
     # Structured Audit Logging of decision
