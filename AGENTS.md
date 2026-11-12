@@ -9,3 +9,13 @@ See [agent.md](agent.md) for the complete, authoritative knowledge base covering
 - Test execution commands and contributor safety guardrails.
 
 See [docs/DECISION_LOG.md](docs/DECISION_LOG.md) for *why* each safety rule exists (incident-rooted decision log) and where each validator sits from scrape to publication. When a PR adds or changes a safety rule, append its reason there in the same PR.
+
+
+## B4 publication contract and Production rollout
+
+- Tier A is restricted to clean explicit RULE-parsed operational geometry, non-superseded status, and no `has_incomplete_zone` / `has_repairs` QA flags.
+- Geometry-bearing warnings that fail Tier-A conditions belong in Tier B; Tier C is only for warnings with no valid operational geometry and requires a valid `unplotted_reason`.
+- Preserve existing child geometry when a replacement parse yields no accepted geometry; route the warning to Tier B and retain the preservation QA flag until a healthy replacement is accepted.
+- Preserve corridor and sweep metadata through the RPC and active spatial view. The review queue includes active and superseded Tier-B warnings.
+- Production B4 migration and read-only schema verification are recorded in [`docs/PRODUCTION_ROLLOUT.md`](docs/PRODUCTION_ROLLOUT.md). Do not rerun migrations blindly or bypass write guards.
+- The NAVAREA XIX post-merge workflow currently has a failed run with zero jobs; inspect/fix its workflow definition and verify a successful rerun before declaring the ingestion fleet healthy.
