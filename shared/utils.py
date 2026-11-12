@@ -297,7 +297,7 @@ def _is_valid_latlon(lat_deg: Any, lat_min: Any, lon_deg: Any, lon_min: Any) -> 
 RE_AXIS_LAT = re.compile(
     r"(?<![\d.])(\d{1,2})-(\d{2}(?:\.\d+)?)\s*([NS])(?![\d.])", re.IGNORECASE)
 RE_AXIS_LON = re.compile(
-    r"(?<![\d.])(\d{1,3})-(\d{2}(?:\.\d+)?)\s*([EW])(?![\d.])", re.IGNORECASE)
+    r"(?<![\d.])(\d{1,3})-(\d{2}(?:\.\d+)?)\s*([EW])(?!\d)", re.IGNORECASE)
 
 # Explicit two-axis range wording: '<lat> TO <lat> AND <lon> TO <lon>'
 # (AUSCOAST 'IN AN AREA BOUNDED BY 34-24.10 S TO 34-53.60 S AND
@@ -310,8 +310,8 @@ RE_AXIS_LAT_RANGE = re.compile(
     r"\s+TO\s+(?<![\d.])(\d{1,2})-(\d{2}(?:\.\d+)?)\s*([NS])(?![\d.])",
     re.IGNORECASE)
 RE_AXIS_LON_RANGE = re.compile(
-    r"(?<![\d.])(\d{1,3})-(\d{2}(?:\.\d+)?)\s*([EW])(?![\d.])"
-    r"\s+TO\s+(?<![\d.])(\d{1,3})-(\d{2}(?:\.\d+)?)\s*([EW])(?![\d.])",
+    r"(?<![\d.])(\d{1,3})-(\d{2}(?:\.\d+)?)\s*([EW])(?!\d)"
+    r"\s+TO\s+(?<![\d.])(\d{1,3})-(\d{2}(?:\.\d+)?)\s*([EW])(?!\d)",
     re.IGNORECASE)
 # Bounded-area phrase gate for the bbox helper: VIII's 'AREA BOUNDED
 # WITHIN' plus AUSCOAST's 'AREA BOUNDED BY' (the BY form is trusted
