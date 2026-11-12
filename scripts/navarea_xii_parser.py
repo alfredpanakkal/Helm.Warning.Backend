@@ -38,7 +38,7 @@ from shared.navarea_xii_text import (
     extract_cross_refs,
     ring_to_trackline,
 )
-from shared.utils import parse_coordinates, classify_hazard_categories
+from shared.utils import parse_coordinates, classify_hazard_categories, classify_hazard
 from shared.models import (extract_issue_dtg, issue_dtg_is_future, issue_dtg_has_conflict)
 from scripts.navarea_universal_parser import _extract_validity_dates
 
@@ -186,7 +186,7 @@ def parse_warning(block, now_utc=None):
         "coordinates": None,  # master no longer carries flat coords (20261020 schema)
         "latitude": lat,
         "longitude": lon,
-        "category": categories[0] if categories else "general",
+        "category": classify_hazard(raw_text),
         "categories": categories,
         "status": "active",
         "raw_text": raw_text,

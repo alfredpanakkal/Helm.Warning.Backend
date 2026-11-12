@@ -75,7 +75,7 @@ def parse_warning(raw_block, reference_header):
         spatial = {"type": "FeatureCollection", "features": features}
         lat, lon = geoms[0][2], geoms[0][3]
     categories = classify_hazard_categories(raw_block)
-    hazard = categories[0] if categories else "general"
+    hazard = classify_hazard(raw_block)
     checksum = hashlib.sha256(raw_block.encode('utf-8')).hexdigest()
     raw_message = {
         "warning_id": warning_id,

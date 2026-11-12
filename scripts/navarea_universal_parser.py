@@ -51,7 +51,7 @@ except ImportError:  # PR-A hotfix: Gemini layer not deployed — stay usable.
     parse_bulletin_with_fallback = None
 
 from shared.utils import (
-    parse_coordinates, parse_coordinates_detailed, classify_hazard_categories,
+    parse_coordinates, parse_coordinates_detailed, classify_hazard_categories, classify_hazard,
 )
 from shared.navarea_universal_text import (
     UNIVERSAL_REGIONS, NAVAREA_NAMES, regions_in_text,
@@ -759,7 +759,7 @@ def parse_warning(block, cfg, now_utc=None):
         "coordinates": None,
         "latitude": lat,
         "longitude": lon,
-        "category": categories[0] if categories else "general",
+        "category": classify_hazard(raw_text),
         "categories": categories,
         "status": "active",
         "raw_text": raw_text,

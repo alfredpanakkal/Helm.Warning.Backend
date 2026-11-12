@@ -37,7 +37,7 @@ if ROOT_DIR not in sys.path:
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 
-from shared.utils import parse_coordinates, classify_hazard_categories
+from shared.utils import parse_coordinates, classify_hazard_categories, classify_hazard
 from shared.models import (extract_issue_dtg, issue_dtg_is_future, issue_dtg_has_conflict)
 from scripts.navarea_universal_parser import _extract_validity_dates
 from shared.navarea_universal_text import subarea_marks
@@ -264,7 +264,7 @@ def parse_warning(block, now_utc=None):
         "coordinates": None,  # master no longer carries flat coords (20261020 schema)
         "latitude": lat,
         "longitude": lon,
-        "category": categories[0] if categories else "general",
+        "category": classify_hazard(raw_text),
         "categories": categories,
         "status": "active",
         "raw_text": raw_text,

@@ -144,6 +144,31 @@ can be populated. Lives in `shared/utils.py` (`_sector_from_sweep_wording`),
 `scripts/navarea_universal_parser.py` (property propagation),
 `shared/models.py` (`build_geometry_payloads`).
 
+### Hazard keywords need context; completion only strips operations (PR #103 follow-up)
+**Why:** substring keyword matching filed 'ORIGINAL' as rig, 'PROVIDED' as ROV ops, every
+container vessel as drifting, every generic obstruction as a wreck, a distance of '2 CABLES' as a
+seabed cable, and any 'ANCHOR' instruction as marine ops. The completion guard also deleted whole
+active warnings ('DGPS STATION DISCONTINUED', 'LIGHT BUOY DISCONTINUED'), and one floodlight
+mention suppressed an unlit buoy elsewhere in the bulletin. Matching is now contextual, the
+completion guard strips only sentences whose subject is an operation, floodlights are handled
+per sentence, and `categories` lists canonical categories first with legacy aliases after
+(`categories[0]` is always canonical). Empty or unmatched text returns
+`['general_chart', 'general']`; cancel/completion-only notices stay `['general']`;
+`classify_hazard()` still returns the legacy alias. Lives in `shared/utils.py`; NAVAREA VIII
+`category` now goes through `classify_hazard()` like every other parser.
+
+### Complete 16-category legacy alias mapping and contextual UXO guard (PR #103 correction)
+**Why:** `classify_hazard()` contracts to always return one of the 7 legacy categories (`electronic`,
+`military`, `aton`, `subsea`, `drifting`, `offshore`, `general`). Previously, categories without an
+explicit entry in `LEGACY_CATEGORY_ALIASES` (`sar`, `security`, `weather`, `ice`, `restricted`) leaked
+their canonical token through `classify_hazard()`, breaking downstream consumers expecting the legacy
+vocabulary. The table now explicitly covers all 16 canonical categories with a fail-closed `"general"`
+fallback. Additionally, the UXO detector formerly matched bare `EXPLOSIVE` and `ORDNANCE` substrings,
+falsely classifying dangerous goods cargo (Class 1 explosives), designated explosive anchorages/berths,
+tidal/cartographic references (Ordnance Datum Newlyn, Ordnance Survey), and civil marine blasting as
+unexploded ordnance. UXO now requires specific naval munitions / unexploded weapon context (`UNEXPLODED
+ORDNANCE`, `SEA MINE`, `TORPEDO`, `WARHEAD`, `DEPTH CHARGE`, `EOD`, bomb disposal). Lives in `shared/utils.py`.
+
 ---
 
 ## 3. Adding a new decision to this log

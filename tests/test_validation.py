@@ -97,7 +97,9 @@ class TestValidationFramework(unittest.TestCase):
 
         # Electronic jamming
         gnss_text = "GPS GNSS INTERFERENCE OBSERVED IN EAST SEA"
-        self.assertEqual(classify_hazard_categories(gnss_text), ["electronic"])
+        cats_gnss = classify_hazard_categories(gnss_text)
+        self.assertIn("electronic", cats_gnss)
+        self.assertEqual(cats_gnss[0], "service_status")
 
         # Fallback to general
         general_text = "HYDROGRAPHIC SURVEY COMPLETED. CHARTS UPDATED."
