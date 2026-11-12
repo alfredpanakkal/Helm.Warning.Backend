@@ -25,6 +25,34 @@ BEGIN
 END;
 $legacy_region$;
 
+-- The current frontend sync payload supplies navareas/parser metadata in
+-- different fields and does not send the backend-only singular navarea or
+-- parser_id columns. Keep them optional so a SourceRegistryItem upsert works
+-- against both the legacy and fresh-table variants.
+DO $backend_optional$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'sources_registry'
+          AND column_name = 'navarea'
+    ) THEN
+        ALTER TABLE public.sources_registry
+            ALTER COLUMN navarea DROP NOT NULL;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'sources_registry'
+          AND column_name = 'parser_id'
+    ) THEN
+        ALTER TABLE public.sources_registry
+            ALTER COLUMN parser_id DROP NOT NULL;
+    END IF;
+END;
+$backend_optional$;
+
 -- Current frontend SourceRegistryItem fields (JSONB for structured values).
 ALTER TABLE public.sources_registry
     ADD COLUMN IF NOT EXISTS publisher_id text,
