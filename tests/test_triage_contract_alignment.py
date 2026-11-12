@@ -124,6 +124,16 @@ class TestTierBInvariants(unittest.TestCase):
         assign_final_triage(rec)
         self.assertEqual(rec.triage_tier, TriageTier.B)
 
+    def test_partial_validation_failure_with_valid_geometry_routes_to_b(self):
+        rec = triage_record(qa_flags=["VALIDATION_FAILED"])
+        assign_final_triage(rec)
+        self.assertEqual(rec.triage_tier, TriageTier.B)
+
+    def test_has_repairs_flag_with_valid_geometry_routes_to_b(self):
+        rec = triage_record(qa_flags=["has_repairs"])
+        assign_final_triage(rec)
+        self.assertEqual(rec.triage_tier, TriageTier.B)
+
     def test_repaired_coordinate_routes_to_b(self):
         rec = triage_record()
         rec.coordinates[0].repairs = ["rule18"]
@@ -153,6 +163,17 @@ class TestTierCInvariants(unittest.TestCase):
         self.assertEqual(master["triage_tier"], "C")
         self.assertEqual(master["unplotted_reason"], "no_valid_geometry")
 
+    def test_record_triage_maps_missing_hemisphere_without_geometry(self):
+        rec = triage_record(qa_flags=["MISSING_HEM"], coordinates=[])
+        assign_final_triage(rec)
+        self.assertEqual(rec.triage_tier, TriageTier.C)
+        self.assertEqual(rec.unplotted_reason, "missing_hemisphere")
+
+    def test_geometry_bearing_missing_hemisphere_is_review_not_quarantine(self):
+        rec = triage_record(qa_flags=["MISSING_HEM"])
+        assign_final_triage(rec)
+        self.assertEqual(rec.triage_tier, TriageTier.B)
+
     def test_missing_hemisphere_routes_to_c_with_specific_reason(self):
         master = build_master_payload(
             point_record(
@@ -166,6 +187,7 @@ class TestTierCInvariants(unittest.TestCase):
     def test_invalid_polygon_routes_to_c_with_validation_reason(self):
         master = build_master_payload(
             point_record(
+                spatial=None, latitude=None, longitude=None,
                 qa_flags=["VALIDATION_FAILED"],
             )
         )
