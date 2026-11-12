@@ -38,13 +38,6 @@ UNPLOTTED_REASONS = {
     "duplicate_of", "validation_failed", "no_valid_geometry",
 }
 
-TIER_REVIEW_QA_FLAGS = {
-    "MISSING_HEM", "PARTIAL_TRUNCATED_MISSING_COORDS", "AI_VALIDATION_FAILED",
-    "ORPHAN_FRAGMENT", "MINUTES_OUT_OF_RANGE", "SECONDS_OUT_OF_RANGE",
-    "LAT_OUT_OF_RANGE", "LON_OUT_OF_RANGE", "AXIS_HEMISPHERE_MISMATCH",
-    "EMPTY_STUB", "DUAL_ORIGIN_SECTOR_UNRESOLVED", "VALIDATION_FAILED", "EMPTY_TOKEN",
-}
-
 
 def qa_flags_require_review(qa_flags: List[str]) -> bool:
     """Informational geometry-basis flags do not by themselves require review."""
@@ -558,8 +551,6 @@ def build_master_payload(record: Dict[str, Any]) -> Dict[str, Any]:
     parsing_method = record.get("parsing_method", "RULE")
     qa_flags = record.get("qa_flags") or []
     unplotted_reason = normalize_unplotted_reason(record.get("unplotted_reason"), qa_flags)
-    has_review_flag = any(flag in TIER_REVIEW_QA_FLAGS for flag in qa_flags)
-
     if not geoms:
         triage_tier = "C"
         if unplotted_reason is None:
@@ -572,7 +563,6 @@ def build_master_payload(record: Dict[str, Any]) -> Dict[str, Any]:
             and unplotted_reason is None
             and parsing_method == "RULE"
             and status != "superseded"
-            and not has_review_flag
             and not qa_flags_require_review(qa_flags)
         )
         triage_tier = "B" if requested_tier == "B" or not tier_a_eligible else "A"
