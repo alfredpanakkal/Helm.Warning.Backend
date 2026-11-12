@@ -11,14 +11,6 @@ on:
       - 'tests/test_navarea_ii.py'
       - 'requirements.txt'
       - '.github/workflows/navarea_ii.yml'
-  pull_request:
-    branches:
-      - main
-    paths:
-      - 'scrapers/navarea_ii.py'
-      - 'tests/test_navarea_ii.py'
-      - 'requirements.txt'
-      - '.github/workflows/navarea_ii.yml'
   workflow_dispatch:
 
 concurrency:

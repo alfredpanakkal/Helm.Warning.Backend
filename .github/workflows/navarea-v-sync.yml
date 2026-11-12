@@ -7,9 +7,6 @@ name: NAVAREA V Ingestion Pipeline
 # workflow_dispatch run. Also excluded from the sync-all orchestrator
 # (scripts/run_all.py). PR dry-runs kept for CI signal.
 on:
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
 
 concurrency:
@@ -21,7 +18,6 @@ concurrency:
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   ingest-navarea-v-warnings:
@@ -98,26 +94,6 @@ jobs:
           fi
           echo "Output files verified successfully."
 
-      - name: Report failure on PR
-        if: failure() && github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          {
-            echo "❌ **ingest-navarea-v-warnings failed** on ${{ github.sha }}"
-            echo ""
-            echo '~~~'
-            for f in v_tests.log v_ingest.log; do
-              if [ -f "$f" ]; then
-                echo "--- $f (tail 200) ---"
-                tail -n 200 "$f"
-                echo ""
-              fi
-            done
-            echo '~~~'
-          } > comment_v.md
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file comment_v.md
       - name: Upload Output Artifacts
         uses: actions/upload-artifact@v4
         if: always()

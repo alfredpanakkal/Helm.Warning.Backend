@@ -12,9 +12,6 @@ on:
       - 'shared/utils.py'
       - 'requirements.txt'
       - '.github/workflows/baltic-sync.yml'
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
 
 concurrency:
