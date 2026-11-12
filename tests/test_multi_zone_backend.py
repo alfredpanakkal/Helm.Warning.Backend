@@ -347,9 +347,10 @@ class TestGroupGPayloadsAndTriage(unittest.TestCase):
             unplotted_reason=None,
         )
         assign_final_triage(rec)
-        # Coordinate provenance alone may produce an intermediate review
-        # classification; the master payload is the final geometry gate.
-        self.assertEqual(rec.triage_tier, TriageTier.B)
+        # Retained coordinate provenance is not operational geometry
+        # when every bounded zone was quarantined.
+        self.assertEqual(rec.triage_tier, TriageTier.C)
+        self.assertEqual(rec.unplotted_reason, "no_valid_geometry")
 
         master_record = {
             **nav_warning,
