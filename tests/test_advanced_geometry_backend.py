@@ -130,7 +130,8 @@ class TestCorridorSwaths(unittest.TestCase):
         coords, lat, lon, spatial, report = parse_coordinates_detailed(text)
         self.assertEqual(spatial["type"], "LineString")
         self.assertEqual(report["feature_type"], "CORRIDOR")
-        self.assertEqual(report["buffer_nm"], 2.0)
+        self.assertEqual(report["buffer_nm"], 0.0)
+        self.assertEqual(report["corridor_half_width_nm"], 2.0)
         # Raw route coordinates are strictly preserved (no artificial buffer deformation)
         self.assertEqual(spatial["coordinates"], [[60.0, 10.0], [60.5, 10.5]])
 
@@ -142,7 +143,8 @@ class TestCorridorSwaths(unittest.TestCase):
         coords, lat, lon, spatial, report = parse_coordinates_detailed(text)
         self.assertEqual(spatial["type"], "LineString")
         self.assertEqual(report["feature_type"], "CORRIDOR")
-        self.assertEqual(report["buffer_nm"], round(500 / 1852.0, 3))
+        self.assertEqual(report["buffer_nm"], 0.0)
+        self.assertEqual(report["corridor_half_width_nm"], round(500 / 1852.0, 3))
 
     def test_route_with_km_clearance(self):
         text = (
@@ -152,7 +154,8 @@ class TestCorridorSwaths(unittest.TestCase):
         coords, lat, lon, spatial, report = parse_coordinates_detailed(text)
         self.assertEqual(spatial["type"], "LineString")
         self.assertEqual(report["feature_type"], "CORRIDOR")
-        self.assertEqual(report["buffer_nm"], round(3.0 / 1.852, 3))
+        self.assertEqual(report["buffer_nm"], 0.0)
+        self.assertEqual(report["corridor_half_width_nm"], round(3.0 / 1.852, 3))
 
     def test_point_safety_zone(self):
         text = "DRILLING RIG AT 18-30.0N 072-00.0E. 500 METRES SAFETY ZONE IN FORCE."
@@ -168,6 +171,13 @@ class TestCorridorSwaths(unittest.TestCase):
         coords, lat, lon, spatial, report = parse_coordinates_detailed(text)
         self.assertEqual(report["feature_type"], "LINE")
         self.assertEqual(report["buffer_nm"], 0.0)
+
+    def test_explicit_statute_miles_convert_to_nautical_miles(self):
+        text = (
+            "CABLE OPERATIONS ALONG LINE 10-00.0N 060-00.0E TO 10-30.0N 060-30.0E. "
+            "WIDE BERTH OF 2 STATUTE MILES."
+        )
+        self.assertEqual(parse_corridor_clearance(text), round(2 * 0.868976, 3))
 
     def test_route_without_berth_is_line(self):
         text = "VESSEL TRANSIT ALONG LINE 10-00.0N 060-00.0E TO 10-30.0N 060-30.0E."
@@ -219,6 +229,21 @@ class TestRelocations(unittest.TestCase):
         self.assertEqual(lat, 15.166667)
         self.assertEqual(lon, 55.166667)
 
+    def test_ambiguous_relocation_never_falls_back_to_point_or_centroid(self):
+        cases = (
+            "LIGHT BUOY RELOCATED FROM 12-30.0N 045-15.0E.",
+            "LIGHT BUOY RELOCATED FROM 12-30.0N 045-15.0E TO POSITION UNKNOWN.",
+            "LIGHT BUOY RELOCATED FROM 12-30.0N 045-15.0E AND 12-31.0N 045-16.0E TO 12-35.0N 045-20.0E.",
+        )
+        for text in cases:
+            with self.subTest(text=text):
+                coords, lat, lon, spatial, report = parse_coordinates_detailed(text)
+                self.assertIsNone(spatial)
+                self.assertIsNone(lat)
+                self.assertIsNone(lon)
+                self.assertIn("AMBIGUOUS_RELOCATION", report["flags"])
+                self.assertEqual(report["data_quality"], "AMBIGUOUS")
+
     def test_relocation_child_payloads_do_not_claim_ghost_columns(self):
         text = "LIGHT BUOY NO 4 RELOCATED FROM 12-30.0N 045-15.0E TO 12-35.0N 045-20.0E."
         coords, lat, lon, spatial, report = parse_coordinates_detailed(text)
@@ -254,6 +279,28 @@ class TestBoundingBoxes(unittest.TestCase):
         self.assertEqual(report["feature_type"], "BOUNDING_BOX")
         self.assertEqual(report["basis"], "keyword:bounding_box")
 
+    def test_axis_range_crossing_antimeridian_is_split(self):
+        text = (
+            "AREA BOUNDED WITHIN 10-00.0N TO 11-00.0N AND "
+            "179-00.0E TO 179-00.0W. HYDROGRAPHIC SURVEY."
+        )
+        coords, lat, lon, spatial, report = parse_coordinates_detailed(text)
+        self.assertEqual(spatial["type"], "MultiPolygon")
+        self.assertEqual(report["feature_type"], "BOUNDING_BOX")
+        self.assertEqual(len(spatial["coordinates"]), 2)
+        self.assertEqual(lon, -180.0)
+        self.assertTrue(all(
+            abs(a[0] - b[0]) <= 180.0
+            for polygon in spatial["coordinates"]
+            for ring in polygon
+            for a, b in zip(ring, ring[1:])
+        ))
+        payloads = build_geometry_payloads({"title": "Dateline", "spatial": {
+            "type": "Feature", "properties": {"feature_type": "BOUNDING_BOX"},
+            "geometry": spatial,
+        }})
+        self.assertEqual(payloads[0]["feature_type"], "BOUNDING_BOX")
+
     def test_two_corner_bounding_box_archetype(self):
         text = (
             "AREA BOUNDED WITHIN\n"
@@ -283,12 +330,14 @@ class TestEndToEndPipeline(unittest.TestCase):
         feat = warn["spatial"]["features"][0]
         self.assertEqual(feat["geometry"]["type"], "LineString")
         self.assertEqual(feat["properties"]["feature_type"], "CORRIDOR")
-        self.assertEqual(feat["properties"]["buffer_nm"], 1.5)
+        self.assertEqual(feat["properties"]["buffer_nm"], 0.0)
+        self.assertEqual(feat["properties"]["corridor_half_width_nm"], 1.5)
 
         payloads = build_geometry_payloads(warn)
         self.assertEqual(len(payloads), 1)
         self.assertEqual(payloads[0]["feature_type"], "CORRIDOR")
-        self.assertEqual(payloads[0]["buffer_nm"], 1.5)
+        self.assertEqual(payloads[0]["buffer_nm"], 0.0)
+        self.assertEqual(payloads[0]["corridor_half_width_nm"], 1.5)
 
     def test_universal_parser_preserves_subarea_sweeps_without_cross_contamination(self):
         bulletin = (
