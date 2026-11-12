@@ -51,6 +51,15 @@ class TestSweepSector(unittest.TestCase):
         # 20 deg span -> steps = max(2, 2) = 2 -> centre + 3 arc + closure
         self.assertEqual(len(spatial["coordinates"][0]), 5)
 
+    def test_statute_mile_sweep_radius_converts_to_nautical_miles(self):
+        text = (
+            "FIRING EXERCISE WITHIN 1 STATUTE MILE OF "
+            "31-00.00N 015-00.00W BETWEEN 350 AND 10 DEGREES."
+        )
+        coords, lat, lon, spatial, report = parse_coordinates_detailed(text)
+        self.assertEqual(spatial["type"], "Polygon")
+        self.assertEqual(report["sweep_radius_nm"], 0.869)
+
     def test_circle_without_bearings_stays_point(self):
         text = "DANGEROUS WRECK WITHIN 5 MILES OF POSITION 34-00.00S 150-00.00E"
         coords, lat, lon, spatial, report = parse_coordinates_detailed(text)
