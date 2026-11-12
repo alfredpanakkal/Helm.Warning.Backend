@@ -65,7 +65,8 @@ DEFAULT_MODEL = "gemini-3.8-flash"
 # PostgREST and must never appear in the select.
 GEOMETRY_SELECT_COLS = (
     "warning_id, zone_label, feature_type, buffer_nm, corridor_half_width_nm, "
-    "geom_geojson"
+    "corridor_clearance_nm, sweep_radius_nm, sweep_start_azimuth, "
+    "sweep_end_azimuth, geom_geojson"
 )
 
 # Keys under which a GeoJSON payload may appear in a fetched geometry row.
