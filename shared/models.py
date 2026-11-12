@@ -408,6 +408,7 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
         # Sweep-arc metadata (NAVAREA II 358/26 firing-exercise sectors)
         for key in (
             "corridor_half_width_nm",
+            "corridor_clearance_nm",
             "sweep_radius_nm",
             "sweep_start_azimuth",
             "sweep_end_azimuth",
@@ -451,7 +452,7 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
                 props = {}
                 for k in (
                     "feature_type", "buffer_nm", "corridor_half_width_nm",
-                    "sweep_radius_nm", "sweep_start_azimuth", "sweep_end_azimuth",
+                    "corridor_clearance_nm", "sweep_radius_nm", "sweep_start_azimuth", "sweep_end_azimuth",
                 ):
                     if spatial.get(k) is not None:
                         props[k] = spatial.get(k)
