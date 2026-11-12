@@ -9,7 +9,7 @@ import logging
 import math
 
 from shared.models import (
-    DataQuality, ParsingMethod, TriageTier,
+    DataQuality, ParsingMethod, TriageTier, build_geometry_payloads,
     qa_flags_require_review, unplotted_reason_from_qa_flags,
     normalize_unplotted_reason,
 )
@@ -45,24 +45,35 @@ def assign_final_triage(rec: Any) -> None:
         elif quality == DataQuality.INFERRED and getattr(rec, "data_quality", DataQuality.EXPLICIT) == DataQuality.EXPLICIT:
             rec.data_quality = DataQuality.INFERRED
 
-    has_valid_geometry = any(
+    qa_flags = getattr(rec, "qa_flags", []) or getattr(rec, "flags", []) or []
+    has_valid_coordinates = any(
         _valid_lat_lon(getattr(coord, "lat", None), getattr(coord, "lon", None))
         for coord in coords
     )
-    if not has_valid_geometry:
-        vertices = getattr(rec, "vertices_lonlat", None) or []
-        has_valid_geometry = any(
-            isinstance(vertex, (list, tuple)) and len(vertex) >= 2
-            and _valid_lat_lon(vertex[1], vertex[0])
-            for vertex in vertices
-        )
-    if not has_valid_geometry:
-        has_valid_geometry = _valid_lat_lon(
-            getattr(rec, "latitude", None), getattr(rec, "longitude", None)
-        )
+    vertices = getattr(rec, "vertices_lonlat", None) or []
+    has_valid_vertices = any(
+        isinstance(vertex, (list, tuple)) and len(vertex) >= 2
+        and _valid_lat_lon(vertex[1], vertex[0])
+        for vertex in vertices
+    )
+    has_valid_master_position = _valid_lat_lon(
+        getattr(rec, "latitude", None), getattr(rec, "longitude", None)
+    )
+    spatial = getattr(rec, "spatial", None)
+    has_spatial_geometry = bool(
+        build_geometry_payloads({"spatial": spatial})
+    ) if spatial else False
+
+    # Coordinate provenance is audit evidence, not operational geometry when
+    # every labelled zone was quarantined by the multi-zone parser.
+    has_valid_geometry = (
+        has_spatial_geometry
+        or has_valid_vertices
+        or has_valid_master_position
+        or (has_valid_coordinates and "has_incomplete_zone" not in qa_flags)
+    )
 
     # 2. Quarantine only when no valid operational coordinate geometry remains.
-    qa_flags = getattr(rec, "qa_flags", []) or getattr(rec, "flags", []) or []
     unplotted_reason = normalize_unplotted_reason(
         getattr(rec, "unplotted_reason", None), qa_flags
     )
