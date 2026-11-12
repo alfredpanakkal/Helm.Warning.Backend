@@ -7,7 +7,7 @@
 # Helm.Warning.Backend — NAVAREA Maritime Safety Information Pipeline
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Tests: ~600 CI-Green](https://img.shields.io/badge/Tests-~600_CI_Green-brightgreen.svg)](#-running-tests)
+[![Tests: 960 Passed, 3 Skipped](https://img.shields.io/badge/Tests-960_passed%2C_3_skipped-brightgreen.svg)](#-running-tests)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![Database: PostGIS 3.x](https://img.shields.io/badge/Database-PostGIS_3.x-336791.svg?logo=postgresql&logoColor=white)](https://postgis.net/)
 [![Architecture: Master--Child RPC](https://img.shields.io/badge/Architecture-Master--Child_RPC-orange.svg)](#-data-safety-and-synchronization)
@@ -124,11 +124,11 @@ Your maritime app journey began with vessel trackers, culminating in the first N
 
 ### Phase 7 · Five New Coordinators + Geometry & Data-Quality Audit Wave (Oct 27–30)
 **Oct 27–28** — Five new ingestion pipelines built and merged: **NAVAREA III** (IHM Spain XML snapshot), **NAVAREA V** (CHM Brazil JSON behind a Cloudflare wall, fetched via a curl_cffi → StealthyFetcher → Fetcher → requests ladder), **NAVAREA VII** (SANHO static HTML), **NAVAREA IX** (NHO Pakistan per-row documents, with a per-run request cap, loud skips and pre-2025 archiving), and **NAVAREA X** (AMSA Australia, including **AUSCOAST areas A–H** ingested as area-scoped pseudo-regions filed under NAVAREA X).
-**Oct 28–30** — A read-only DB audit drove a merged fix wave: geometry-correctness gaps A1–A7 and coverage-gap coordinate syntaxes (PRs #63–#64); fail-closed validity-date extraction (F1, PR #66); evidence-based CANCEL cross-reference resolution gated behind `SYNC_APPLY_CANCEL_REFS` (F2, PR #67); hazard-classifier negative guards for cancel/retraction wording (F4, PR #68); `navarea` column normalization to bare coordinator codes plus a one-time backfill migration (F3, PRs #69/#72); title sentence cut, source-letter zone labels and NAVAREA IX UTF-8 decode (F5/F7/F9, PR #70). Rig lists now always plot as points and no buffer radius is ever invented. Suite grew to ~600 tests, CI green.
+**Oct 28–30** — A read-only DB audit drove a merged fix wave: geometry-correctness gaps A1–A7 and coverage-gap coordinate syntaxes (PRs #63–#64); fail-closed validity-date extraction (F1, PR #66); evidence-based CANCEL cross-reference resolution gated behind `SYNC_APPLY_CANCEL_REFS` (F2, PR #67); hazard-classifier negative guards for cancel/retraction wording (F4, PR #68); `navarea` column normalization to bare coordinator codes plus a one-time backfill migration (F3, PRs #69/#72); title sentence cut, source-letter zone labels and NAVAREA IX UTF-8 decode (F5/F7/F9, PR #70). Rig lists now always plot as points and no buffer radius is ever invented. Suite grew to 960 passing tests with 3 skipped in the merged B4 CI run.
 
 ---
 
-**In one sentence:** One idea (Jun) → one scraper (Sep 18) → standalone repos (Oct 9) → unified backend (Oct 16) → 7 regions + safety layer (Oct 22) → Enterprise Parsing Audit & AI Correction (Oct 26) → safety-hardened audit engine & first fully green CI (Oct 27) → 12 sources + geometry & data-quality audit wave (Oct 30).
+**In one sentence:** One idea (Jun) → one scraper (Sep 18) → standalone repos (Oct 9) → unified backend (Oct 16) → 7 regions + safety layer (Oct 22) → Enterprise Parsing Audit & AI Correction (Oct 26) → safety-hardened audit engine & first fully green CI (Oct 27) → 12 sources + geometry & data-quality audit wave (Oct 30) → B2–B4 advanced geometry, multi-zone triage and publication-contract alignment (Nov 11–12).
 
 ---
 
@@ -455,15 +455,20 @@ The synchronization engine in [`shared/sync_engine.py`](shared/sync_engine.py) a
 Every transition updates `status_changed_at` and `status_basis` to maintain full auditability.
 
 ### 3. Geometry-Preserving Atomic Upserts (`upsert_nav_warning` RPC)
-The PostgreSQL stored procedure [`migrations/20261023_lifecycle_safety.sql`](migrations/20261023_lifecycle_safety.sql) executes with `SECURITY DEFINER`:
-- Master metadata and child geometries are updated inside an atomic transaction.
-- **Geometry Preservation**: If a subsequent re-parse yields no valid geometry, but the warning previously had valid geometry in the database, the **previous geometry is preserved** and Tier A status is retained. A `geometry_preserved_previous_run` flag is added to `qa_flags` for operator review, preventing transient parsing failures from erasing active hazard boundaries.
+The current PostgreSQL contract is implemented by [`migrations/20261112_triage_contract_alignment.sql`](migrations/20261112_triage_contract_alignment.sql), extending the lifecycle-safe upsert introduced in [`migrations/20261023_lifecycle_safety.sql`](migrations/20261023_lifecycle_safety.sql). The RPC executes with `SECURITY DEFINER SET search_path = public, pg_temp`:
+- Master metadata and child geometries are updated atomically.
+- Replacement geometries are accepted before old child rows are deleted.
+- If replacement geometry is empty or rejected while prior geometry exists, the previous geometry is preserved, the warning is routed to Tier B, and `geometry_preserved_previous_run` is added to `qa_flags`.
+- A later healthy replacement replaces old geometry and removes the preservation flag.
+- If neither new nor prior valid geometry exists, a would-be Tier-A record is demoted to Tier C with `no_valid_geometry`.
 
 ### 4. The H02 Triage Precedence Gate (Tiers A, B, C)
-All extracted warnings pass through the H02 safety gate in [`shared/triage.py`](shared/triage.py):
-- **Tier A (Auto-Plot)**: Explicit rule-parsed geometry, zero repairs, clean coordinates within bounds, no QA flags. Rendered directly on navigational charts.
-- **Tier B (Review Queue)**: Coordinates repaired via Rules 18/19/20/93, vessel-specific filtering notices, or AI-grounded proposals. Displayed with a warning badge and queued for operator sign-off.
-- **Tier C (Quarantine)**: Missing hemispheres, out-of-bounds coordinates, or truncated text. Suppressed from navigation displays and recorded with an `unplotted_reason`.
+Record-level triage and master-payload construction enforce the same publication contract:
+- **Tier A (Auto-Plot)**: clean explicit RULE-parsed operational geometry; not superseded; no blocking `has_incomplete_zone` or `has_repairs` QA flags. Informational `geometry_basis:*` flags alone do not block Tier A. Published through `public.nav_warnings_active_spatial`.
+- **Tier B (Review Queue)**: valid operational geometry exists, but one or more Tier-A conditions fail. This includes inferred, repaired, AI-parsed, incomplete/partially invalid, superseded, or otherwise flagged warnings. The review queue includes Tier-B rows with status `active` or `superseded`.
+- **Tier C (Quarantine)**: no valid operational geometry survives. A database-allowed `unplotted_reason` is mandatory; these records are excluded from active spatial publication.
+
+Do not demote a warning to Tier C solely because one zone is incomplete when valid companion geometry survives; retain valid geometry and route the warning to Tier B. B4 also persists `corridor_clearance_nm` and exposes corridor/sweep metadata through the active spatial view.
 
 ### 5. Verbatim Source Preservation & Immutable Audit Trail
 - **Raw Messages**: Scraped text is stored verbatim in `public.raw_messages` along with its source ID, timestamp, and SHA-256 checksum.
@@ -698,13 +703,22 @@ Contributions are welcome! Please adhere to the following conventions:
 
 ## ✅ Documentation Verification
 
-- **Last Inspected & Verified**: November 9, 2026
+- **Last Inspected & Verified**: November 12, 2026
 - **Verified Working Scrapers**: 12 sources (Baltic, NAVAREA I, II, III, IV, V, VII, VIII, IX, X incl. AUSCOAST A–H, XI, XII)
 - **Active Automation Workflows**: 19 GitHub Actions workflows in `.github/workflows/` (13 regional syncs incl. Baltic & NAVAREA XIX, master all-sync, manual-ingest, DTG backfill, parsing audit, supabase backup, tests)
-- **Pending Operational Step**: apply `migrations/20261030_navarea_label_backfill.sql` to live Supabase (one-time `navarea` label backfill)
+- **Historical migration note**: do not assume `migrations/20261030_navarea_label_backfill.sql` is pending; inspect the live schema and migration history before deciding whether it is needed.
 - **Database Model**: Master-Child PostGIS with `public.upsert_nav_warning` RPC, `ingestion_generations` run ledger, and plain-reference `parsing_audit_runs` & `parsing_correction_proposals` audit schema
-- **Agent Technical Reference**: Authoritative guidelines maintained in [`agent.md`](agent.md) and [`AGENTS.md`](AGENTS.md)
+- **Agent Technical Reference**: Authoritative guidelines maintained in [`agent.md`](agent.md), [`AGENTS.md`](AGENTS.md), and [`.github/copilot-instructions.md`](.github/copilot-instructions.md). See [`docs/PRODUCTION_ROLLOUT.md`](docs/PRODUCTION_ROLLOUT.md) for the verified B4 rollout status.
 
 ---
 
 **Portfolio:** [https://alfredpanakkal.web.app](https://alfredpanakkal.web.app)
+
+
+## B4 Production rollout status (November 12, 2026)
+
+All implementation PRs, including PR #109, are merged to `main` at `0953c6fca00c67c84a6d10d8a2a0b56f444e6e1c`. The maintainer has applied `migrations/20261112_triage_contract_alignment.sql` to Production. Read-only verification confirmed the corridor metadata column, all five active-spatial metadata columns, the expected 14-column review queue, and the `upsert_nav_warning(p_payload jsonb)` SECURITY DEFINER function with `search_path=public, pg_temp`. The Tier-A QA constraint had zero existing violations and was successfully validated.
+
+**Operational status is not fully green yet.** The post-merge Unit tests workflow and the triggered NAVAREA X, IX, XII, III, VII and IV ingestion workflows succeeded on the merge commit. NAVAREA XIX Sync failed on three attempts and reported zero jobs. Static inspection found a likely workflow-definition issue in `.github/workflows/navarea-xix-sync.yml`: the `path`, `retention-days` and `if-no-files-found` inputs appear outside the step's `with:` block. This is a suspected cause, not a confirmed diagnosis from job logs. See [B4 Production rollout record](docs/PRODUCTION_ROLLOUT.md).
+
+Do not rerun the B4 migration. The remaining operational task is to correct and validate the NAVAREA XIX workflow definition, then confirm a successful run and normal scheduled ingestion.

@@ -307,3 +307,19 @@ python3 scripts/audit_supabase_parsing.py --mode apply_approved --proposal-ids "
    - Run `python3 -m unittest discover tests` and confirm test suite counts before completing tasks.
    - Run `compile_applet` and `lint_applet` to verify that frontend and backend build cleanly.
 
+
+
+## B4 triage and Production rollout addendum (2026-11-12)
+
+This addendum is authoritative where earlier sections describe the pre-B4 triage or geometry-preservation behavior.
+
+- **Tier A:** only clean explicit RULE-parsed operational geometry; not superseded; no blocking `has_incomplete_zone` or `has_repairs` QA flags. Published through `public.nav_warnings_active_spatial`.
+- **Tier B:** valid operational geometry exists, but one or more Tier-A conditions fail. This includes repaired, inferred, AI-parsed, incomplete/partially invalid, flagged and superseded warnings. `public.nav_warnings_review_queue` includes Tier-B rows whose status is `active` or `superseded`.
+- **Tier C:** no valid operational geometry survives. A database-allowed `unplotted_reason` is required; these rows are excluded from active spatial publication.
+- Do not demote a warning to Tier C merely because one zone is incomplete if another valid operational geometry survives; retain the valid geometry and route the warning to Tier B.
+- The B4 RPC inserts accepted replacement geometries before deleting old geometry. If replacement geometry is empty or rejected and old geometry exists, preserve the old geometry, add `geometry_preserved_previous_run`, and route the warning to Tier B. A later healthy replacement replaces the old geometry and removes that flag.
+- Corridor clearance and sweep metadata are persisted in `nav_warning_geometries` and exposed by `nav_warnings_active_spatial`.
+
+**Production verification:** the maintainer applied `migrations/20261112_triage_contract_alignment.sql`. Read-only checks confirmed `corridor_clearance_nm`, the active spatial metadata columns, the 14-column review queue, and `upsert_nav_warning(p_payload jsonb)` with SECURITY DEFINER and `search_path=public, pg_temp`. The Tier-A QA guard was validated successfully after a zero-violation check. See [`docs/PRODUCTION_ROLLOUT.md`](docs/PRODUCTION_ROLLOUT.md).
+
+**Outstanding workflow issue:** post-merge Unit tests and the triggered NAVAREA X, IX, XII, III, VII and IV sync workflows succeeded on merge commit `0953c6f`. NAVAREA XIX Sync failed three times with zero jobs. The workflow file currently appears to place artifact `path`, `retention-days` and `if-no-files-found` outside the `with:` mapping. Treat this as a likely workflow YAML/input indentation defect pending a validated correction and successful rerun. Do not claim the entire ingestion fleet is healthy until this is resolved.

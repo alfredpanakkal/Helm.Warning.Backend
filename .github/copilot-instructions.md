@@ -15,3 +15,13 @@ When working on this repository, you MUST follow the architectural contracts and
 7. **Secret Hygiene**: Never log or output `SUPABASE_KEY` or `GEMINI_API_KEY`.
 8. **Test Execution**: Before completing tasks, always run `python3 -m unittest discover tests`.
 
+
+
+## B4 publication and rollout invariants
+
+- Tier A requires clean explicit RULE geometry, non-superseded status, and no `has_incomplete_zone` or `has_repairs` flags.
+- Keep geometry-bearing partial/repaired/inferred/AI-parsed/otherwise flagged warnings in Tier B. Tier C is reserved for no valid operational geometry and requires a valid `unplotted_reason`.
+- Preserve previously accepted geometry when a replacement parse yields no accepted geometry; route the warning to Tier B. Replace old geometry only after valid replacement geometry is accepted.
+- Keep corridor clearance and sweep metadata intact through persistence and active spatial publication; the review queue includes active and superseded Tier-B warnings.
+- Never rerun the B4 Production migration or bypass database write guards. Use `docs/PRODUCTION_ROLLOUT.md` for verified Production schema facts and current rollout status.
+- NAVAREA XIX Sync has failed post-merge with zero jobs. Check its workflow YAML/input indentation and verify a successful rerun before calling ingestion operations fully healthy.
