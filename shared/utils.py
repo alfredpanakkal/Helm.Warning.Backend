@@ -328,7 +328,7 @@ RE_BBOX_PHRASE = re.compile(r"AREAS?\s+BOUNDED\s+(?:WITHIN|BY)")
 # (fail-closed: no invented radius, no invented arc).
 RE_SWEEP_RADIUS = re.compile(
     r"WITHIN\s+(\d+(?:\.\d+)?)\s+"
-    r"(N\.?\s*M\.?|NM|NAUTICAL\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM)\s+OF\b",
+    r"(N\.?\s*M\.?|NM|NAUTICAL\s+MILES?|STATUTE\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM)\s+OF\b",
     re.IGNORECASE)
 RE_SWEEP_BEARINGS = re.compile(
     r"BETWEEN\s+(\d{1,3}(?:\.\d+)?)\s+AND\s+(\d{1,3}(?:\.\d+)?)\s+DEG(?:REES?)?\b",
@@ -337,6 +337,7 @@ _SWEEP_UNIT_TO_NM = {
     "NM": 1.0, "N M": 1.0, "N.M": 1.0, "N.M.": 1.0,
     "NAUTICAL MILE": 1.0, "NAUTICAL MILES": 1.0,
     "MILE": 1.0, "MILES": 1.0,
+    "STATUTE MILE": 0.868976, "STATUTE MILES": 0.868976,
     "METRE": 1.0 / 1852.0, "METRES": 1.0 / 1852.0,
     "METER": 1.0 / 1852.0, "METERS": 1.0 / 1852.0,
     "KM": 1.0 / 1.852,
@@ -347,31 +348,31 @@ _SWEEP_UNIT_TO_NM = {
 # Sector sweep phrasing regexes covering standard IMO/WWNWS variations:
 # 1. WITHIN <radius> <unit> OF [POS] BETWEEN <a> AND <b> [DEGREES]
 RE_SWEEP_WITHIN = re.compile(
-    r"\bWITHIN\s+(\d+(?:\.\d+)?)\s*(N\.?\s*M\.?|NM|NAUTICAL\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM|KILOMET(?:RES?|ERS?))\s+OF\b"
+    r"\bWITHIN\s+(\d+(?:\.\d+)?)\s*(N\.?\s*M\.?|NM|NAUTICAL\s+MILES?|STATUTE\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM|KILOMET(?:RES?|ERS?))\s+OF\b"
     r".*?\bBETWEEN\s+(\d{1,3}(?:\.\d+)?)\s+AND\s+(\d{1,3}(?:\.\d+)?)\s*(?:DEG(?:REES?)?)?\b",
     re.IGNORECASE | re.DOTALL
 )
 # 2. BETWEEN [BEARINGS] <a> AND <b> [DEGREES] OUT TO <radius> <unit>
 RE_SWEEP_BETWEEN_OUT_TO = re.compile(
     r"\bBETWEEN\s+(?:BEARINGS?\s+)?(\d{1,3}(?:\.\d+)?)\s+AND\s+(\d{1,3}(?:\.\d+)?)\s*(?:DEG(?:REES?)?)?\s+"
-    r"OUT\s+TO\s+(\d+(?:\.\d+)?)\s*(N\.?\s*M\.?|NM|NAUTICAL\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM|KILOMET(?:RES?|ERS?))\b",
+    r"OUT\s+TO\s+(\d+(?:\.\d+)?)\s*(N\.?\s*M\.?|NM|NAUTICAL\s+MILES?|STATUTE\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM|KILOMET(?:RES?|ERS?))\b",
     re.IGNORECASE
 )
 # 3. SECTOR BOUNDED BY <a> AND <b> [DEGREES] RADIUS <radius> <unit>
 RE_SWEEP_SECTOR_RADIUS = re.compile(
     r"\bSECTOR\s+BOUNDED\s+BY\s+(\d{1,3}(?:\.\d+)?)\s+AND\s+(\d{1,3}(?:\.\d+)?)\s*(?:DEG(?:REES?)?)?\s+"
-    r"RADIUS\s+(\d+(?:\.\d+)?)\s*(N\.?\s*M\.?|NM|NAUTICAL\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM|KILOMET(?:RES?|ERS?))\b",
+    r"RADIUS\s+(\d+(?:\.\d+)?)\s*(N\.?\s*M\.?|NM|NAUTICAL\s+MILES?|STATUTE\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM|KILOMET(?:RES?|ERS?))\b",
     re.IGNORECASE
 )
 # 4. SECTOR OF A CIRCLE RADIUS <radius> <unit> BETWEEN <a> AND <b> [DEGREES]
 RE_SWEEP_CIRCLE_RADIUS = re.compile(
-    r"\bSECTOR\s+OF\s+A\s+CIRCLE\s+RADIUS\s+(\d+(?:\.\d+)?)\s*(N\.?\s*M\.?|NM|NAUTICAL\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM|KILOMET(?:RES?|ERS?))\s+"
+    r"\bSECTOR\s+OF\s+A\s+CIRCLE\s+RADIUS\s+(\d+(?:\.\d+)?)\s*(N\.?\s*M\.?|NM|NAUTICAL\s+MILES?|STATUTE\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM|KILOMET(?:RES?|ERS?))\s+"
     r"BETWEEN\s+(\d{1,3}(?:\.\d+)?)\s+AND\s+(\d{1,3}(?:\.\d+)?)\s*(?:DEG(?:REES?)?)?\b",
     re.IGNORECASE
 )
 # 5. SECTOR EXTENDING <radius> <unit> BETWEEN [BEARINGS] <a> AND <b>
 RE_SWEEP_EXTENDING = re.compile(
-    r"\bSECTOR\s+EXTENDING\s+(\d+(?:\.\d+)?)\s*(N\.?\s*M\.?|NM|NAUTICAL\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM|KILOMET(?:RES?|ERS?))\s+"
+    r"\bSECTOR\s+EXTENDING\s+(\d+(?:\.\d+)?)\s*(N\.?\s*M\.?|NM|NAUTICAL\s+MILES?|STATUTE\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM|KILOMET(?:RES?|ERS?))\s+"
     r"BETWEEN\s+(?:BEARINGS?\s+)?(\d{1,3}(?:\.\d+)?)\s+AND\s+(\d{1,3}(?:\.\d+)?)\s*(?:DEG(?:REES?)?)?\b",
     re.IGNORECASE
 )
@@ -502,7 +503,7 @@ def _sector_from_sweep_wording(raw_text: str, center) -> Optional[dict]:
 # --- corridor clearance & wide berth parsing (Phase B2) -----------------------
 RE_CORRIDOR_CLEARANCE = re.compile(
     r"\b(?:WIDE\s+BERTH\s+OF|SAFETY\s+CLEARANCE\s+OF|KEEP\s+CLEAR\s+BY)\s+"
-    r"(\d+(?:\.\d+)?)\s*(N\.?\s*M\.?|N\.M|NM|NAUTICAL\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM|KILOMET(?:RES?|ERS?))\b"
+    r"(\d+(?:\.\d+)?)\s*(N\.?\s*M\.?|N\.M|NM|NAUTICAL\s+MILES?|STATUTE\s+MILES?|MILES?|MET(?:RES?|ERS?)|KM|KILOMET(?:RES?|ERS?))\b"
     r"|\b(\d+(?:\.\d+)?)\s*(N\.?\s*M\.?|N\.M|NM|NAUTICAL\s+MILES?|MET(?:RES?|ERS?)|KM|KILOMET(?:RES?|ERS?))\s+SAFETY\s+ZONE\b",
     re.IGNORECASE
 )
@@ -532,8 +533,10 @@ def parse_corridor_clearance(raw_text: str) -> Optional[float]:
     if unit in ("NM", "N M", "NAUTICAL MILE", "NAUTICAL MILES"):
         return round(val, 3)
     if unit in ("MILE", "MILES"):
-        # Qualified miles in clearance context
+        # Unqualified "mile" in maritime warning text follows the nautical-mile convention.
         return round(val, 3)
+    if unit in ("STATUTE MILE", "STATUTE MILES"):
+        return round(val * 0.868976, 3)
     if unit in ("METRE", "METRES", "METER", "METERS"):
         return round(val / 1852.0, 3)
     if unit in ("KM", "KILOMETRE", "KILOMETRES", "KILOMETER", "KILOMETERS"):
@@ -644,13 +647,32 @@ def _bbox_from_axis_tokens(raw_text: str):
     if len(lats) != 2 or len(lons) != 2:
         return None, None, None  # not a clean two-corner range: fail closed
 
-    lat_s, lat_n = sorted(lats)
-    lon_w, lon_e = sorted(lons)
-    ring = [
-        [lon_w, lat_s], [lon_e, lat_s], [lon_e, lat_n], [lon_w, lat_n], [lon_w, lat_s],
-    ]
-    spatial = {"type": "Polygon", "coordinates": [ring]}
-    return spatial, round((lat_s + lat_n) / 2, 6), round((lon_w + lon_e) / 2, 6)
+    lat_range = RE_AXIS_LAT_RANGE.search(raw_text)
+    lon_range = RE_AXIS_LON_RANGE.search(raw_text)
+    if lat_range and lon_range:
+        lg1, lm1, lh1, lg2, lm2, lh2 = lat_range.groups()
+        og1, om1, oh1, og2, om2, oh2 = lon_range.groups()
+        lat_a = convert_to_decimal(lg1, lm1, lh1)
+        lat_b = convert_to_decimal(lg2, lm2, lh2)
+        lon_a = convert_to_decimal(og1, om1, oh1)
+        lon_b = convert_to_decimal(og2, om2, oh2)
+    else:
+        lat_a, lat_b = sorted(lats)
+        lon_a, lon_b = sorted(lons)
+
+    lat_s, lat_n = sorted((lat_a, lat_b))
+    if abs(lon_a - lon_b) > 180.0:
+        east_lon, west_lon = max(lon_a, lon_b), min(lon_a, lon_b)
+        east_ring = [[east_lon, lat_s], [180.0, lat_s], [180.0, lat_n], [east_lon, lat_n], [east_lon, lat_s]]
+        west_ring = [[-180.0, lat_s], [west_lon, lat_s], [west_lon, lat_n], [-180.0, lat_n], [-180.0, lat_s]]
+        spatial = {"type": "MultiPolygon", "coordinates": [[east_ring], [west_ring]]}
+        center_lon = -180.0
+    else:
+        lon_w, lon_e = sorted((lon_a, lon_b))
+        ring = [[lon_w, lat_s], [lon_e, lat_s], [lon_e, lat_n], [lon_w, lat_n], [lon_w, lat_s]]
+        spatial = {"type": "Polygon", "coordinates": [ring]}
+        center_lon = round((lon_w + lon_e) / 2, 6)
+    return spatial, round((lat_s + lat_n) / 2, 6), center_lon
 
 
 # --- Coordinate PAIR extraction (multi-format, priority-ordered) ------------
@@ -1048,10 +1070,18 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
                         # rather than a 2-point corridor LineString.
                         lon_a, lat_a = points[0]
                         lon_b, lat_b = points[1]
-                        spatial = {"type": "Polygon", "coordinates": [[
-                            [lon_a, lat_a], [lon_b, lat_a], [lon_b, lat_b],
-                            [lon_a, lat_b], [lon_a, lat_a],
-                        ]]}
+                        lat_s, lat_n = sorted((lat_a, lat_b))
+                        if abs(lon_a - lon_b) > 180.0:
+                            east_lon, west_lon = max(lon_a, lon_b), min(lon_a, lon_b)
+                            east_ring = [[east_lon, lat_s], [180.0, lat_s], [180.0, lat_n], [east_lon, lat_n], [east_lon, lat_s]]
+                            west_ring = [[-180.0, lat_s], [west_lon, lat_s], [west_lon, lat_n], [-180.0, lat_n], [-180.0, lat_s]]
+                            spatial = {"type": "MultiPolygon", "coordinates": [[east_ring], [west_ring]]}
+                        else:
+                            lon_w, lon_e = sorted((lon_a, lon_b))
+                            spatial = {"type": "Polygon", "coordinates": [[
+                                [lon_w, lat_s], [lon_e, lat_s], [lon_e, lat_n],
+                                [lon_w, lat_n], [lon_w, lat_s],
+                            ]]}
                         spatial["feature_type"] = "BOUNDING_BOX"
                         spatial["buffer_nm"] = 0.0
                 elif archetype == "linestring":
@@ -1064,7 +1094,8 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
                     spatial = {"type": "LineString", "coordinates": points}
                     clearance_nm = parse_corridor_clearance(text)
                     if clearance_nm is not None and clearance_nm > 0:
-                        spatial["buffer_nm"] = clearance_nm
+                        spatial["buffer_nm"] = 0.0
+                        spatial["corridor_half_width_nm"] = clearance_nm
                         spatial["feature_type"] = "CORRIDOR"
                     else:
                         spatial["buffer_nm"] = 0.0
@@ -1075,7 +1106,8 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
                         basis = "fallback:two_point_line"
                     clearance_nm = parse_corridor_clearance(text)
                     if clearance_nm is not None and clearance_nm > 0:
-                        spatial["buffer_nm"] = clearance_nm
+                        spatial["buffer_nm"] = 0.0
+                        spatial["corridor_half_width_nm"] = clearance_nm
                         spatial["feature_type"] = "CORRIDOR"
                     else:
                         spatial["buffer_nm"] = 0.0
@@ -1182,6 +1214,8 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
             report["feature_type"] = spatial["feature_type"]
         if spatial.get("buffer_nm") is not None:
             report["buffer_nm"] = spatial["buffer_nm"]
+        if spatial.get("corridor_half_width_nm") is not None:
+            report["corridor_half_width_nm"] = spatial["corridor_half_width_nm"]
     if sweep_meta:
         # Sweep-arc metadata for the geometry child rows (see
         # _sector_from_sweep_wording); None keys never appear.
