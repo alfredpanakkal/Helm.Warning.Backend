@@ -200,6 +200,17 @@ Lives in `shared/utils.py`, `shared/models.py`, `scripts/navarea_universal_parse
 
 Lives in `shared/utils.py`, `shared/models.py`, `scripts/navarea_universal_parser.py`, `migrations/20261112_geometry_metadata_persistence.sql`, and geometry regression tests.
 
+### Multi-zone warning splitting and coordinate isolation (Phase B3)
+**Why:** Single navigational bulletins frequently bundle multiple distinct operational areas (e.g. NAVAREA VIII 1139/26 with inline (A)..(D) pipeline areas, or NAVAREA XI with lettered training areas A./B./C.). Previously:
+1. `parse_block_geometries()` only segmented line-initial `RE_LETTERED_CLAUSE` (`A. <coord>`), ignoring inline sub-area markers. Notices with `(A) ... (B) ...` or `AREA 1 ... AREA 2 ...` were treated as a single block; their combined coordinates self-intersected into a tangled shape and degraded to a single open LineString.
+2. Marker detection in `subarea_marks()` required whitespace immediately after marker labels, failing on punctuation variants like `(A):` or `AREA A:`. Punctuation tolerance (`[\.:]?`) was added to `RE_PAREN_SUBAREA` and `RE_AREA_LABEL` while strictly preserving coordinate lookaheads and monotonic sequence gates ($\ge 2$ labels of same family). Unverified candidate marker families (`ZONE`, `STAGE`, `PART`, `SUB-AREA`) were deliberately excluded without bulletin evidence to prevent false splits.
+3. `parse_block_geometries()` did not pass the preamble into `parse_coordinates_detailed()`, causing valid sub-area polygons under "IN AREAS BOUNDED BY:" to lose their governing context and fall back to ambiguous classification. Preamble context propagation restores explicit polygon classification across all constituent zones.
+4. If candidate segmentations conflict, the parser fails closed to a single block. Coordinates across discrete zones are strictly isolated with zero cross-contamination.
+5. Incomplete or malformed zones in a multi-zone notice (e.g. Zone B having only 1 or 2 coordinates where a bounded polygon is expected) are excluded from the returned operational geometry list; their extracted coordinate text remains available for audit. The parent receives `has_incomplete_zone` in `qa_flags` and data quality degrades to `AMBIGUOUS`; when valid companion geometry exists, the warning remains in the Tier B human review queue. If every zone is incomplete, no operational geometry is emitted and `build_master_payload()` assigns Tier C with `no_valid_geometry`, even when coordinate provenance is retained for audit. Valid `Polygon` and `MultiPolygon` zones are retained. The existing 4-tuple return contract remains unchanged; no database schema migrations or model payload alterations are introduced.
+6. Inline marker detection accepts exactly one valid marker family per segmentation. If both parenthesized-letter and `AREA` families independently match, segmentation fails closed rather than combining potentially unrelated labels.
+
+Lives in `shared/navarea_universal_text.py`, `shared/utils.py`, and `tests/test_multi_zone_backend.py`.
+
 ---
 
 ## 3. Adding a new decision to this log
