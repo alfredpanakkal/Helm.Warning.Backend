@@ -657,6 +657,8 @@ def parse_warning(block, cfg, now_utc=None):
             meta["feature_type"] = report["feature_type"]
         if report.get("buffer_nm") is not None:
             meta["buffer_nm"] = report["buffer_nm"]
+        if report.get("corridor_half_width_nm") is not None:
+            meta["corridor_half_width_nm"] = report["corridor_half_width_nm"]
 
         if spatial:
             geoms.append((clause["label"], spatial, lat, lon))
