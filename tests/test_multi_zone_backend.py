@@ -52,9 +52,9 @@ class TestGroupAMarkers(unittest.TestCase):
 
     def test_area_number_markers_split_in_shared_parser(self):
         text = (
-            "IN AREAS BOUNDED BY:\\n"
+            "IN AREAS BOUNDED BY:\n"
             "AREA 1 20-12.0N 075-10.0E, 20-15.0N 075-10.0E, "
-            "20-15.0N 075-15.0E, 20-12.0N 075-15.0E\\n"
+            "20-15.0N 075-15.0E, 20-12.0N 075-15.0E\n"
             "AREA 2 21-12.0N 076-10.0E, 21-15.0N 076-10.0E, "
             "21-15.0N 076-15.0E, 21-12.0N 076-15.0E"
         )
@@ -189,7 +189,7 @@ class TestGroupDIncompleteZoneQA(unittest.TestCase):
 
     def test_valid_multipolygon_is_not_quarantined(self):
         text = (
-            "AREA BOUNDED WITHIN:\\n"
+            "AREA BOUNDED WITHIN:\n"
             "(A) 10-00N 170-00E (B) 20-00N 170-00E"
         )
         multi = {
@@ -257,10 +257,10 @@ class TestGroupGPayloadsAndTriage(unittest.TestCase):
 
     def _parse_incomplete_notice(self):
         raw_block = (
-            "PIPELINE OPERATIONS. IN AREAS BOUNDED BY:\\n"
+            "PIPELINE OPERATIONS. IN AREAS BOUNDED BY:\n"
             "(A) 20-12.00N 075-10.00E, 20-15.00N 075-10.00E, "
-            "20-15.00N 075-15.00E, 20-12.00N 075-15.00E\\n"
-            "(B) 21-12.00N 076-10.00E\\n"
+            "20-15.00N 075-15.00E, 20-12.00N 075-15.00E\n"
+            "(B) 21-12.00N 076-10.00E\n"
             "(C) 22-12.00N 077-10.00E, 22-15.00N 077-10.00E, "
             "22-15.00N 077-15.00E, 22-12.00N 077-15.00E"
         )
