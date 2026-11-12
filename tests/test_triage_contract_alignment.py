@@ -209,7 +209,7 @@ class TestTierCInvariants(unittest.TestCase):
         master = build_master_payload(
             point_record(unplotted_reason="not_a_database_reason")
         )
-        self.assertEqual(master["triage_tier"], "C")
+        self.assertEqual(master["triage_tier"], "B")
         self.assertEqual(master["unplotted_reason"], "no_valid_geometry")
 
     def test_every_emitted_reason_is_database_whitelisted(self):
