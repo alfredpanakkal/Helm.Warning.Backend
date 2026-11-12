@@ -31,10 +31,47 @@ class ParsingMethod(str, Enum):
     AI = "AI"
 
 
+# Keep this vocabulary aligned with nav_warnings.unplotted_reason CHECK.
 UNPLOTTED_REASONS = {
-    "missing_hemisphere", "truncated_clause", "empty_stub", "orphan_fragment",
-    "meta_list", "validation_failed", "no_valid_geometry",
+    "no_coordinates", "parse_failure", "meta_list", "text_unavailable",
+    "empty_stub", "cancellation_only", "truncated_clause", "missing_hemisphere",
+    "duplicate_of", "validation_failed", "no_valid_geometry",
 }
+
+TIER_C_QA_FLAGS = {
+    "MISSING_HEM", "PARTIAL_TRUNCATED_MISSING_COORDS", "AI_VALIDATION_FAILED",
+    "ORPHAN_FRAGMENT", "MINUTES_OUT_OF_RANGE", "SECONDS_OUT_OF_RANGE",
+    "LAT_OUT_OF_RANGE", "LON_OUT_OF_RANGE", "AXIS_HEMISPHERE_MISMATCH",
+    "EMPTY_STUB", "DUAL_ORIGIN_SECTOR_UNRESOLVED", "VALIDATION_FAILED", "EMPTY_TOKEN",
+}
+
+
+def qa_flags_require_review(qa_flags: List[str]) -> bool:
+    """Informational geometry-basis flags do not by themselves require review."""
+    return any(
+        str(flag) and not str(flag).startswith("geometry_basis:")
+        for flag in (qa_flags or [])
+    )
+
+
+def unplotted_reason_from_qa_flags(qa_flags: List[str]) -> Optional[str]:
+    """Map parser blockers to the database's canonical quarantine vocabulary."""
+    flags = set(qa_flags or [])
+    if "MISSING_HEM" in flags:
+        return "missing_hemisphere"
+    if "VALIDATION_FAILED" in flags:
+        return "validation_failed"
+    return None
+
+
+def normalize_unplotted_reason(reason: Optional[str], qa_flags: List[str]) -> Optional[str]:
+    """Return a database-allowed reason; unknown legacy values fail closed."""
+    if reason is None:
+        return None
+    if reason in UNPLOTTED_REASONS:
+        return reason
+    return unplotted_reason_from_qa_flags(qa_flags) or "no_valid_geometry"
+
 
 
 # --- shared issue-DTG extractor (Alfred, 2026-11-07) -----------------------
@@ -275,7 +312,7 @@ class TriageRecord:
             "parsing_method": self.parsing_method.value,
             "triage_tier": self.triage_tier.value,
             "qa_flags": self.qa_flags,
-            "unplotted_reason": self.unplotted_reason,
+            "unplotted_reason": normalize_unplotted_reason(self.unplotted_reason, self.qa_flags),
             "duplicate_of_id": self.duplicate_of_id,
             "shoal_depth_m": self.shoal_depth_m,
             "tow_length_m": self.tow_length_m,
@@ -514,43 +551,31 @@ def build_master_payload(record: Dict[str, Any]) -> Dict[str, Any]:
     area_text = record.get("area_text") or record.get("general_area") or record.get("subarea") or record.get("issued_text")
     status = record.get("status") or "active"
 
-    # Determine triage tier. Mirror chk_tier_a_invariants in the database:
-    # Tier A requires explicit data, rule parsing, no unplotted reason, and a
-    # status other than superseded. Geometry is also required for auto-plotting.
+    # Final publication gate. Geometry payloads, not coordinate provenance,
+    # determine whether this warning has an operational shape.
     geoms = build_geometry_payloads(record)
     data_quality = record.get("data_quality", "EXPLICIT")
     parsing_method = record.get("parsing_method", "RULE")
-    unplotted_reason = record.get("unplotted_reason")
-    tier_a_eligible = (
-        bool(geoms)
-        and data_quality == "EXPLICIT"
-        and unplotted_reason is None
-        and parsing_method == "RULE"
-        and status != "superseded"
-    )
-    requested_tier = record.get("triage_tier")
+    qa_flags = record.get("qa_flags") or []
+    unplotted_reason = normalize_unplotted_reason(record.get("unplotted_reason"), qa_flags)
+    has_quarantine_flag = any(flag in TIER_C_QA_FLAGS for flag in qa_flags)
 
-    if not geoms:
+    if not geoms or data_quality == "INVALID" or has_quarantine_flag:
         triage_tier = "C"
-        if not unplotted_reason:
-            # Silent-discard fix: a blanket 'no_valid_geometry' hid the
-            # actual refusal reason. Map the parser's qa flags onto the
-            # schema's unplotted_reason vocabulary; 'no_valid_geometry'
-            # only when the parse was truly silent.
-            qa_flags = record.get("qa_flags") or []
-            if "MISSING_HEM" in qa_flags:
-                unplotted_reason = "missing_hemisphere"
-            elif "VALIDATION_FAILED" in qa_flags:
-                unplotted_reason = "validation_failed"
-            else:
-                unplotted_reason = "no_valid_geometry"
-    elif requested_tier:
-        triage_tier = requested_tier
-        if triage_tier == "A" and not tier_a_eligible:
-            # Keep geometry-bearing but ineligible records visible for review.
-            triage_tier = "B"
+        if unplotted_reason is None:
+            unplotted_reason = unplotted_reason_from_qa_flags(qa_flags) or "no_valid_geometry"
     else:
-        triage_tier = "A" if tier_a_eligible else "B"
+        # A geometry-bearing warning that fails any Tier A condition belongs
+        # in review. Preserve an explicit Tier B request; never promote it.
+        requested_tier = record.get("triage_tier")
+        tier_a_eligible = (
+            data_quality == "EXPLICIT"
+            and unplotted_reason is None
+            and parsing_method == "RULE"
+            and status != "superseded"
+            and not qa_flags_require_review(qa_flags)
+        )
+        triage_tier = "B" if requested_tier == "B" or not tier_a_eligible else "A"
 
     valid_from = parse_safe_iso_timestamp(record.get("valid_from") or record.get("publication_time") or record.get("issued_text"))
     valid_to = parse_safe_iso_timestamp(record.get("valid_to") or record.get("cancellation_date"))
