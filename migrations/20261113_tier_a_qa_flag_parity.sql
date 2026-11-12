@@ -38,7 +38,7 @@ LANGUAGE plpgsql
 SET search_path = pg_catalog, public
 AS $function$
 BEGIN
-    IF NEW.triage_tier <> 'A'
+    IF NEW.triage_tier IS DISTINCT FROM 'A'
        OR NOT public.qa_flags_require_review(NEW.qa_flags) THEN
         RETURN NEW;
     END IF;
