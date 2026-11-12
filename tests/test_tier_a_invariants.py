@@ -2,6 +2,7 @@
 """Regression tests for the database Tier-A invariant at payload and lifecycle boundaries."""
 
 import os
+from pathlib import Path
 import sys
 import unittest
 from types import SimpleNamespace
@@ -113,6 +114,25 @@ class TestTierAPayloadInvariant(unittest.TestCase):
 
 
 class TestQaFlagReviewPolicy(unittest.TestCase):
+    def test_sql_migration_enforces_the_same_informational_prefix(self):
+        migration = (
+            Path(__file__).resolve().parents[1]
+            / "migrations"
+            / "20261113_tier_a_qa_flag_parity.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "CREATE OR REPLACE FUNCTION public.qa_flags_require_review",
+            migration,
+        )
+        self.assertIn("flag.value NOT LIKE 'geometry_basis:%'", migration)
+        self.assertIn(
+            "CREATE TRIGGER trg_tier_a_qa_flag_parity",
+            migration,
+        )
+        self.assertIn("NEW.qa_flags IS DISTINCT FROM OLD.qa_flags", migration)
+        self.assertIn("IF TG_OP = 'INSERT' THEN", migration)
+        self.assertNotIn("UPDATE public.nav_warnings", migration)
+
     def test_empty_flags_do_not_require_review(self):
         self.assertFalse(qa_flags_require_review([]))
 
