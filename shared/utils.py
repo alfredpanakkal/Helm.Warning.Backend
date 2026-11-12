@@ -544,6 +544,19 @@ def parse_corridor_clearance(raw_text: str) -> Optional[float]:
     return None
 
 
+RE_CORRIDOR_HALF_WIDTH = re.compile(
+    r"\b(?:HALF[-\s]+WIDTH|EACH\s+SIDE|ON\s+EITHER\s+SIDE|EITHER\s+SIDE)\b",
+    re.IGNORECASE
+)
+
+
+def parse_corridor_half_width(raw_text: str) -> Optional[float]:
+    """Returns a corridor half-width only when the source explicitly says so."""
+    if not raw_text or not RE_CORRIDOR_HALF_WIDTH.search(raw_text):
+        return None
+    return parse_corridor_clearance(raw_text)
+
+
 # --- relocation & displacement parsing (Phase B2) -----------------------------
 RE_RELOCATED_FROM_TO = re.compile(
     r"\b(?:RELOCATED|MOVED)\s+FROM\b(?P<from_clause>.*?)\bTO\b(?P<to_clause>.*)",
@@ -1108,7 +1121,13 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
                     clearance_nm = parse_corridor_clearance(text)
                     if clearance_nm is not None and clearance_nm > 0:
                         spatial["buffer_nm"] = 0.0
-                        spatial["corridor_half_width_nm"] = clearance_nm
+                        half_width_nm = parse_corridor_half_width(text)
+                        if half_width_nm is not None:
+                            spatial["corridor_half_width_nm"] = half_width_nm
+                        else:
+                            spatial["corridor_clearance_nm"] = clearance_nm
+                            if "corridor_width_semantics_ambiguous" not in flags:
+                                flags.append("corridor_width_semantics_ambiguous")
                         spatial["feature_type"] = "CORRIDOR"
                     else:
                         spatial["buffer_nm"] = 0.0
@@ -1120,7 +1139,13 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
                     clearance_nm = parse_corridor_clearance(text)
                     if clearance_nm is not None and clearance_nm > 0:
                         spatial["buffer_nm"] = 0.0
-                        spatial["corridor_half_width_nm"] = clearance_nm
+                        half_width_nm = parse_corridor_half_width(text)
+                        if half_width_nm is not None:
+                            spatial["corridor_half_width_nm"] = half_width_nm
+                        else:
+                            spatial["corridor_clearance_nm"] = clearance_nm
+                            if "corridor_width_semantics_ambiguous" not in flags:
+                                flags.append("corridor_width_semantics_ambiguous")
                         spatial["feature_type"] = "CORRIDOR"
                     else:
                         spatial["buffer_nm"] = 0.0
@@ -1182,7 +1207,14 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
                         spatial = {"type": "LineString", "coordinates": points}
                         clearance_nm = parse_corridor_clearance(text)
                         if clearance_nm is not None and clearance_nm > 0:
-                            spatial["buffer_nm"] = clearance_nm
+                            spatial["buffer_nm"] = 0.0
+                            half_width_nm = parse_corridor_half_width(text)
+                            if half_width_nm is not None:
+                                spatial["corridor_half_width_nm"] = half_width_nm
+                            else:
+                                spatial["corridor_clearance_nm"] = clearance_nm
+                                if "corridor_width_semantics_ambiguous" not in flags:
+                                    flags.append("corridor_width_semantics_ambiguous")
                             spatial["feature_type"] = "CORRIDOR"
                         else:
                             spatial["buffer_nm"] = 0.0
@@ -1229,6 +1261,8 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
             report["buffer_nm"] = spatial["buffer_nm"]
         if spatial.get("corridor_half_width_nm") is not None:
             report["corridor_half_width_nm"] = spatial["corridor_half_width_nm"]
+        if spatial.get("corridor_clearance_nm") is not None:
+            report["corridor_clearance_nm"] = spatial["corridor_clearance_nm"]
     if sweep_meta:
         # Sweep-arc metadata for the geometry child rows (see
         # _sector_from_sweep_wording); None keys never appear.
