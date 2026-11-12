@@ -106,6 +106,69 @@ class TestTierAInvariants(unittest.TestCase):
         self.assertEqual(payload[0]["feature_type"], "SWEEP_ARC")
         self.assertEqual(build_master_payload(record)["triage_tier"], "A")
 
+    def test_feature_collection_preserves_metadata_per_geometry(self):
+        record = point_record(
+            spatial={
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "geometry": {
+                            "type": "LineString",
+                            "coordinates": [[70, 20], [71, 21]],
+                        },
+                        "properties": {
+                            "zone_label": "Corridor A",
+                            "feature_type": "CORRIDOR",
+                            "buffer_nm": 0,
+                            "corridor_half_width_nm": 1.25,
+                            "corridor_clearance_nm": 2.5,
+                        },
+                    },
+                    {
+                        "type": "Feature",
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[72, 20], [73, 20], [73, 21], [72, 20]]],
+                        },
+                        "properties": {
+                            "zone_label": "Sweep B",
+                            "feature_type": "SWEEP_ARC",
+                            "sweep_radius_nm": 8.0,
+                            "sweep_start_azimuth": 270.0,
+                            "sweep_end_azimuth": 15.0,
+                        },
+                    },
+                ],
+            }
+        )
+        payloads = build_geometry_payloads(record)
+        self.assertEqual([item["zone_label"] for item in payloads], ["Corridor A", "Sweep B"])
+        self.assertEqual(payloads[0]["buffer_nm"], 0.0)
+        self.assertEqual(payloads[0]["corridor_half_width_nm"], 1.25)
+        self.assertEqual(payloads[0]["corridor_clearance_nm"], 2.5)
+        self.assertEqual(payloads[1]["feature_type"], "SWEEP_ARC")
+        self.assertEqual(payloads[1]["sweep_radius_nm"], 8.0)
+        self.assertEqual(payloads[1]["sweep_start_azimuth"], 270.0)
+        self.assertEqual(payloads[1]["sweep_end_azimuth"], 15.0)
+
+    def test_zero_metadata_is_preserved_and_missing_metadata_is_omitted(self):
+        record = point_record(
+            spatial={
+                "type": "LineString",
+                "coordinates": [[70, 20], [71, 21]],
+                "properties": {
+                    "feature_type": "CORRIDOR",
+                    "corridor_half_width_nm": 0,
+                },
+            }
+        )
+        payload = build_geometry_payloads(record)[0]
+        self.assertIn("corridor_half_width_nm", payload)
+        self.assertEqual(payload["corridor_half_width_nm"], 0)
+        self.assertNotIn("corridor_clearance_nm", payload)
+        self.assertNotIn("sweep_radius_nm", payload)
+
     def test_informational_geometry_basis_flag_does_not_block_tier_a(self):
         record = point_record(qa_flags=["geometry_basis:keyword:area_bounded"])
         self.assertEqual(build_master_payload(record)["triage_tier"], "A")
@@ -275,6 +338,28 @@ class TestDatabaseConstraintAlignment(unittest.TestCase):
 
 
 class TestMigrationContract(unittest.TestCase):
+
+    def test_geometry_metadata_rpc_insert_mapping_is_complete(self):
+        migration = (
+            Path(__file__).resolve().parents[1]
+            / "migrations"
+            / "20261112_triage_contract_alignment.sql"
+        ).read_text(encoding="utf-8")
+        insert_start = migration.index("INSERT INTO public.nav_warning_geometries")
+        insert_end = migration.index("RETURNING geom_id", insert_start)
+        rpc_insert = migration[insert_start:insert_end]
+        for field in (
+            "buffer_nm",
+            "corridor_half_width_nm",
+            "corridor_clearance_nm",
+            "sweep_radius_nm",
+            "sweep_start_azimuth",
+            "sweep_end_azimuth",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, rpc_insert)
+                self.assertIn("g->>'" + field + "'", rpc_insert)
+
     def test_migration_persists_and_exposes_geometry_metadata(self):
         migration = (
             Path(__file__).resolve().parents[1]
