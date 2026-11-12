@@ -995,67 +995,156 @@ def parse_block_geometries(raw_text: str):
 # classifies as 'general'.
 RE_CANCEL_SENTENCE = re.compile(r"(?:^|[.!?\n])[^.!?\n]*\bCANCEL(?:L?ATION|L?ED|L?ING|S?)\b[^.!?\n]*[.!?\n]?", re.IGNORECASE)
 RE_NO_LONGER_SENTENCE = re.compile(r"(?:^|[.!?\n])[^.!?\n]*\bNO LONGER\b[^.!?\n]*[.!?\n]?", re.IGNORECASE)
+RE_COMPLETED_SENTENCE = re.compile(r"(?:^|[.!?\n])[^.!?\n]*\b(?:COMPLETED|DISCONTINUED)\b[^.!?\n]*[.!?\n]?", re.IGNORECASE)
+
+LEGACY_CATEGORY_ALIASES = {
+    "mil_fire": "military",
+    "uxo": "military",
+    "service_status": "electronic",
+    "rig": "offshore",
+    "drift": "drifting",
+    "cable": "subsea",
+    "survey": "subsea",
+    "wreck": "subsea",
+    "ops": "subsea",
+    "general_chart": "general",
+}
 
 
 def classify_hazard_categories(raw_text: str) -> list[str]:
-    """Classifies all matching maritime hazard categories based on terminology.
+    """Classifies all matching maritime hazard categories into the 16-category taxonomy,
+    preserving legacy aliases for backward compatibility.
 
     Priority + negative guards (audit finding F4, 2026-10-30):
-      - electronic interference is checked FIRST, so GNSS/GPS jamming
+      - service_status (electronic interference) is checked FIRST, so GNSS/GPS jamming
         warnings that mention nearby platforms/rigs never file as
-        'offshore' as their primary category;
-      - cancellation/retraction sentences are stripped before keyword
+        'rig'/'offshore' as their primary category;
+      - cancellation/retraction/completion sentences are stripped before keyword
         matching (see the guards above);
       - space/rocket-debris re-entry areas are launch-related
-        (military), never 'drifting' objects.
+        (mil_fire / military), never 'drift' / 'drifting' objects.
     """
     if not raw_text or not isinstance(raw_text, str):
         return ["general"]
 
-    text = RE_NO_LONGER_SENTENCE.sub(
-        " ", RE_CANCEL_SENTENCE.sub(" ", raw_text.upper()))
+    text = RE_COMPLETED_SENTENCE.sub(
+        " ", RE_NO_LONGER_SENTENCE.sub(
+            " ", RE_CANCEL_SENTENCE.sub(" ", raw_text.upper())))
     if not re.search(r"[A-Z]{3}", text):
-        # Only cancellation/retraction sentences remained: a pure
-        # cancel notice carries no hazard of its own.
+        # Only cancellation/retraction/completion sentences remained: a pure
+        # cancel/completion notice carries no hazard of its own.
         return ["general"]
 
     categories: list[str] = []
 
-    if any(k in text for k in ["GNSS", "DGPS", "GPS", "GLONASS", "GALILEO",
-            "BEIDOU", "AIS INTERFERENCE", "RADAR INTERFERENCE",
-            "INTERFERENCE", "JAMMING", "SPOOFING"]):
-        categories.append("electronic")
+    def _add(cat: str) -> None:
+        if cat not in categories:
+            categories.append(cat)
+        legacy = LEGACY_CATEGORY_ALIASES.get(cat)
+        if legacy and legacy not in categories:
+            categories.append(legacy)
 
+    # 1. Service Status / Jamming / Outages (Priority over Rigs/Platforms)
+    if any(k in text for k in [
+        "GNSS", "DGPS", "GPS", "GLONASS", "GALILEO", "BEIDOU",
+        "AIS INTERFERENCE", "RADAR INTERFERENCE", "INTERFERENCE",
+        "JAMMING", "SPOOFING", "TRANSMITTER AT",
+        "RADIO SERVICES INTERRUPTED", "RADIO SERVICE INTERRUPTED",
+        "NAVTEX OFF AIR", "TRANSMITTER OFF AIR", "STATION OFF AIR",
+        "DGPS STATION", "DIFFERENTIAL GPS"
+    ]):
+        _add("service_status")
+
+    # 2. UXO / Mines / Explosives
+    has_mine = bool(re.search(r"\b(?:DRIFTING\s+MINE|SEA\s+MINE|MINE)\b", text))
+    has_ordnance = bool(re.search(r"\b(?:UNEXPLODED\s+ORDNANCE|ORDNANCE\s+DISPOSAL|EXPLOSIVE\s+ORDNANCE|ORDNANCE|TORPEDO|BOMB|WARHEAD|EXPLOSIVE)\b", text))
+    has_demolition = bool(re.search(r"\bDEMOLITION\b", text))
+    if has_mine or (has_demolition and has_ordnance) or (has_ordnance and not re.search(r"\b(?:FIRING|GUNNERY|EXERCISE)\b", text)):
+        _add("uxo")
+
+    # 3. Search and Rescue (SAR)
+    if re.search(r"\b(?:DISTRESS\s+ALERT|SEARCH\s+AND\s+RESCUE|\bSAR\b|OVERDUE\s+VESSEL|MAN\s+OVERBOARD|PERSON\s+OVERBOARD)\b", text):
+        _add("sar")
+
+    # 4. Military Firing / Exercises / Space & Rocket Debris
     military_pattern = (r"\b(DETONATION|DETONATIONS|FIRING|FIRINGS|GUNNERY|"
-                        r"MISSILE|WEAPONS?|ARMED FORCES|NAVAL EXERCISE|"
-                        r"NAVAL EXERCISES|MILITARY EXERCISE|SPACE DEBRIS|"
-                        r"ROCKET DEBRIS|ROCKET LAUNCH)\b")
+                        r"MISSILE|WEAPONS?|ARMED\s+FORCES|NAVAL\s+EXERCISE|"
+                        r"NAVAL\s+EXERCISES|MILITARY\s+EXERCISE|SPACE\s+DEBRIS|"
+                        r"ROCKET\s+DEBRIS|ROCKET\s+LAUNCH)\b")
     if re.search(military_pattern, text):
-        categories.append("military")
+        _add("mil_fire")
 
-    if any(k in text for k in ["LIGHT", "LIGHTS", "BUOY", "BUOYS", "RACON", "BEACON",
-            "UNLIT", "EXTINGUISHED", "OFF AIR"]):
-        categories.append("aton")
+    # 5. Security / Piracy
+    if re.search(r"\b(?:SECURITY\s+ADVISORY|SUSPICIOUS\s+SKIFF|PIRACY|ATTACK|BOARDED|DRONE\s+ACTIVITY)\b", text):
+        _add("security")
 
-    if any(k in text for k in ["SEISMIC", "CABLE", "PIPELINE", "ROV", "TOWING",
-            "DREDGING", "ANCHOR", "CHAIN LOST", "SUNKEN WRECK"]):
-        categories.append("subsea")
+    # 6. Weather
+    if re.search(r"\b(?:TSUNAMI|CYCLONE|GALE|TYPHOON|HURRICANE|STORM|HEAVY\s+SEAS?)\b", text):
+        _add("weather")
 
-    if any(k in text for k in ["DRIFTING", "DERELICT", "MINE", "CONTAINER",
-            "ADRIFT"]):
-        categories.append("drifting")
+    # 7. Ice
+    if re.search(r"\b(?:ICE\s+PATROL|ICEBERG|SEA\s+ICE|KNOWN\s+ICE|PACK\s+ICE|BERGY\s+BIT)\b", text):
+        _add("ice")
 
-    if any(k in text for k in ["RIG", "PLATFORM", "JACK-UP"]):
-        categories.append("offshore")
+    # 8. Drifting Hazards
+    if any(k in text for k in ["DRIFTING", "DERELICT", "CONTAINER", "ADRIFT"]) or re.search(r"\b(?:UNMANNED\s+BARGE|HAZARD\s+FLOAT)\b", text):
+        _add("drift")
+
+    # 9. Wrecks & Obstructions
+    if any(k in text for k in ["SUNKEN WRECK", "DANGEROUS WRECK", "WRECK", "OBSTRUCTION"]) or re.search(r"\b(?:SUBMERGED\s+OBSTRUCTION|CORAL\s+HEAD)\b", text):
+        _add("wreck")
+
+    # 10. Submarine Cables & Pipelines
+    if any(k in text for k in ["CABLE", "PIPELINE"]) or re.search(r"\b(?:SUBMARINE\s+CABLE|PIPE\s+SURVEY|PIPE\s+LAYING)\b", text):
+        _add("cable")
+
+    # 11. Surveys
+    if any(k in text for k in ["SEISMIC", "OCEANOGRAPHIC"]) or re.search(r"\b(?:HYDROGRAPHIC\s+SURVEY|GEOPHYSICAL\s+SURVEY|SEISMIC\s+SURVEY)\b", text):
+        _add("survey")
+
+    # 12. Offshore Rigs
+    if any(k in text for k in ["RIG", "PLATFORM", "JACK-UP"]) or re.search(r"\b(?:DRILLING\s+RIG|OFFSHORE\s+RIG|DRILLSHIP|MODU)\b", text):
+        _add("rig")
+
+    # 13. Aids to Navigation (AtoN)
+    has_light = (any(k in text for k in ["LIGHT", "LIGHTS", "BUOY", "BUOYS", "RACON", "BEACON"])
+                 and not re.search(r"\bFLOODLIGHTS?\b", text))
+    if has_light and any(k in text for k in ["UNLIT", "EXTINGUISHED", "OFF AIR", "OFF STATION", "DAMAGED", "DESTROYED", "RELOCATED", "WITHDRAWN", "ESTABLISHED"]):
+        _add("aton")
+    elif any(k in text for k in ["UNLIT", "EXTINGUISHED"]):
+        _add("aton")
+
+    # 14. Restricted Areas
+    if re.search(r"\b(?:RESTRICTED\s+AREA|EXCLUSION\s+ZONE|PROHIBITED\s+AREA|ENTRY\s+RESTRICTED)\b", text):
+        _add("restricted")
+
+    # 15. Marine Ops (Dredging, Diving, Towing, Demolition Ops)
+    if any(k in text for k in ["ROV", "TOWING", "DREDGING", "ANCHOR", "CHAIN LOST", "DIVING", "UNDER TOW"]) or (has_demolition and not has_ordnance):
+        _add("ops")
+
+    # 16. General Chart Corrections
+    if re.search(r"\b(?:DEPTH\s+CORRECTION|SHOAL\s+DEPTH|NEW\s+SOUNDINGS|SHOALING|CHART\s+CORRECTION)\b", text):
+        _add("general_chart")
 
     return categories if categories else ["general"]
 
 
 
-def classify_hazard(raw_text: str) -> str:
-    """Classifies primary maritime hazard category (first matched category)."""
+def classify_hazard(raw_text: str, canonical: bool = False) -> str:
+    """Classifies primary maritime hazard category.
+    If canonical=False (default), returns the legacy alias (military, electronic, etc.)
+    for backward compatibility with legacy parsers and test suites.
+    If canonical=True, returns the 16-category taxonomy token (mil_fire, service_status, etc.).
+    """
     cats = classify_hazard_categories(raw_text)
-    return cats[0] if cats else "general"
+    if not cats:
+        return "general"
+    primary = cats[0]
+    if canonical:
+        return primary
+    return LEGACY_CATEGORY_ALIASES.get(primary, primary)
+
+
 
 
 def compute_differential(
