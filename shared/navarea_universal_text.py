@@ -301,14 +301,14 @@ RE_AREA_LABEL = re.compile(r"\bAREA\s+([A-Z]|\d{1,2})\b[\.:]?(?=\s+\d{1,3}[-\s]\
 def subarea_marks(body: str):
     """Inline sub-area marker positions for clause segmentation.
 
-    Returns sorted [(start, label)] for the '(A)' parenthesized-letter
-    and 'AREA n' families, each accepted only as a strictly increasing
+    Returns sorted [(start, label)] for either the '(A)' parenthesized-letter
+    or 'AREA n' family. A family is accepted only as a strictly increasing
     sequence of >= 2 same-kind labels whose markers directly introduce a
-    coordinate (the regex lookaheads). A family failing any gate is
-    prose and yields nothing - the clause never splits on it
-    (fail-closed: no split beats a wrong split).
+    coordinate. If both families independently match, the result is
+    ambiguous and no markers are returned (fail-closed: no split beats a
+    wrong split).
     """
-    out = []
+    valid_families = []
     for rex in (RE_PAREN_SUBAREA, RE_AREA_LABEL):
         ms = [(m.start(), m.group(1)) for m in rex.finditer(body or "")]
         if len(ms) < 2:
@@ -324,6 +324,11 @@ def subarea_marks(body: str):
                 ok = False
                 break
         if ok:
-            out.extend(ms)
-    return sorted(out)
+            valid_families.append(ms)
+
+    # The source must use one unambiguous marker family. Combining two
+    # independently valid families can create artificial zone boundaries.
+    if len(valid_families) != 1:
+        return []
+    return valid_families[0]
 

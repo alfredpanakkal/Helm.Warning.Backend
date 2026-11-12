@@ -13,7 +13,7 @@ from shared.exceptions import ParseError, ValidationError
 from shared.navarea_universal_text import subarea_marks
 from shared.geometry_classifier import (
     classify_geometry_archetype, classify_geometry_archetype_detailed,
-    ring_is_simple,
+    ring_is_simple, RE_AREA_BOUNDARY_PHRASE,
 )
 from shared.validation import (
     validate_coordinate_token,
@@ -1371,6 +1371,19 @@ def parse_block_geometries(raw_text: str):
         ):
             data_quality = clause_quality
         if spatial:
+            spatial_type = spatial.get("type") if isinstance(spatial, dict) else None
+            expects_bounded_area = is_multizone and (
+                bool(RE_AREA_BOUNDARY_PHRASE.search(preamble or ""))
+                or basis in ("keyword:area_bounded", "keyword:bounding_box")
+            )
+            # A bounded-area clause must produce an area geometry. Point and
+            # line fallbacks are useful parser diagnostics, but must not be
+            # emitted as operational zone geometries for an incomplete area.
+            # MultiPolygon is valid (e.g. an antimeridian-crossing bounding box).
+            if expects_bounded_area and spatial_type not in ("Polygon", "MultiPolygon"):
+                has_incomplete_zone = True
+                continue
+
             # Preserve per-feature metadata inside properties dictionary
             if isinstance(spatial, dict) and spatial.get("type") != "FeatureCollection":
                 props = spatial.setdefault("properties", {})
@@ -1389,12 +1402,6 @@ def parse_block_geometries(raw_text: str):
             has_incomplete_zone = True
 
     if is_multizone:
-        # Check if an expected bounded-area clause failed to form a valid polygon
-        if preamble and ("BOUND" in preamble.upper() or "AREA" in preamble.upper()):
-            for g_label, g_spatial, _, _ in geoms:
-                if isinstance(g_spatial, dict) and g_spatial.get("type") != "Polygon":
-                    has_incomplete_zone = True
-
         if has_incomplete_zone or len(geoms) < len(clauses):
             if "has_incomplete_zone" not in qa_flags:
                 qa_flags.append("has_incomplete_zone")

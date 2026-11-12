@@ -2,20 +2,24 @@
 
 Covers:
 - Group A: Marker detection & punctuation variants ((A)..(D), (A):..(D):, AREA 1..2, AREA A:..B:)
-- Group B: False-positive protection (prose, non-monotonic, isolated markers, conflicting segmentations)
+- Group B: False-positive protection (prose, non-monotonic, isolated and mixed marker families)
 - Group C: Strict coordinate isolation (geographically distant polygons, zero cross-contamination)
-- Group D: Incomplete-zone QA (partial zone failures, has_incomplete_zone flag, AMBIGUOUS quality roll-up)
+- Group D: Incomplete-zone quarantine, valid MultiPolygon preservation, and parent QA roll-up
 - Group E: Governing preamble context propagation and geometry classification
 - Group F: Four-value return contract compatibility
-- Group G: Payload generation and triage gate validation
-- Group H: Regional parser regression (NAVAREA VIII, XI, I, Baltic)
+- Group G: Regional parser adapter, payload generation, and triage integration
+- Group H: NAVAREA XI shared-parser compatibility (other regional fixtures remain in full regression)
 """
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+
 from shared.navarea_universal_text import subarea_marks
-from shared.utils import parse_block_geometries, parse_coordinates_detailed
-from shared.models import build_geometry_payloads, TriageTier, DataQuality
+from shared.utils import parse_block_geometries
+from shared.models import build_geometry_payloads, TriageTier
 from shared.triage import assign_final_triage
+from scripts.navarea_1_parser import parse_warning
 
 
 class TestGroupAMarkers(unittest.TestCase):
@@ -46,6 +50,20 @@ class TestGroupAMarkers(unittest.TestCase):
         marks = subarea_marks(text)
         self.assertEqual([m[1] for m in marks], ["A", "B", "C", "D"])
 
+    def test_area_number_markers_split_in_shared_parser(self):
+        text = (
+            "IN AREAS BOUNDED BY:\\n"
+            "AREA 1 20-12.0N 075-10.0E, 20-15.0N 075-10.0E, "
+            "20-15.0N 075-15.0E, 20-12.0N 075-15.0E\\n"
+            "AREA 2 21-12.0N 076-10.0E, 21-15.0N 076-10.0E, "
+            "21-15.0N 076-15.0E, 21-12.0N 076-15.0E"
+        )
+        geoms, _, qa_flags, data_quality = parse_block_geometries(text)
+        self.assertEqual([g[0] for g in geoms], ["1", "2"])
+        self.assertEqual([g[1]["type"] for g in geoms], ["Polygon", "Polygon"])
+        self.assertNotIn("has_incomplete_zone", qa_flags)
+        self.assertEqual(data_quality, "EXPLICIT")
+
 
 class TestGroupBFalsePositives(unittest.TestCase):
     """Group B — False-positive protection."""
@@ -60,6 +78,13 @@ class TestGroupBFalsePositives(unittest.TestCase):
 
     def test_repeated_marker_is_prose(self):
         text = "(A): 20-12.0N 075-10.0E (A): 21-12.0N 076-10.0E"
+        self.assertEqual(subarea_marks(text), [])
+
+    def test_mixed_marker_families_fail_closed(self):
+        text = (
+            "(A) 20-12.0N 075-10.0E (B) 21-12.0N 076-10.0E "
+            "AREA 1 22-12.0N 077-10.0E AREA 2 23-12.0N 078-10.0E"
+        )
         self.assertEqual(subarea_marks(text), [])
 
     def test_area_bounded_by_prose_never_splits(self):
@@ -129,11 +154,12 @@ class TestGroupDIncompleteZoneQA(unittest.TestCase):
             "22-15.00N 077-15.00E, 22-12.00N 077-15.00E"
         )
         geoms, coords_text, qa_flags, data_quality = parse_block_geometries(text)
-        self.assertEqual(len(geoms), 3)
-        self.assertEqual([g[0] for g in geoms], ["A", "B", "C"])
+        self.assertEqual(len(geoms), 2)
+        self.assertEqual([g[0] for g in geoms], ["A", "C"])
         self.assertEqual(geoms[0][1]["type"], "Polygon")
-        self.assertEqual(geoms[1][1]["type"], "Point")
-        self.assertEqual(geoms[2][1]["type"], "Polygon")
+        self.assertEqual(geoms[1][1]["type"], "Polygon")
+        # Coordinates from incomplete B remain available for QA/audit, but no B geometry is emitted.
+        self.assertEqual(len(coords_text), 9)
 
         # Incomplete zone B (single point in a bounded area context) must set parent QA
         self.assertIn("has_incomplete_zone", qa_flags)
@@ -149,15 +175,47 @@ class TestGroupDIncompleteZoneQA(unittest.TestCase):
             "22-15.00N 077-15.00E, 22-12.00N 077-15.00E"
         )
         geoms, coords_text, qa_flags, data_quality = parse_block_geometries(text)
-        self.assertEqual(len(geoms), 3)
-        self.assertEqual([g[0] for g in geoms], ["A", "B", "C"])
+        self.assertEqual(len(geoms), 2)
+        self.assertEqual([g[0] for g in geoms], ["A", "C"])
         self.assertEqual(geoms[0][1]["type"], "Polygon")
-        self.assertEqual(geoms[1][1]["type"], "LineString")
-        self.assertEqual(geoms[2][1]["type"], "Polygon")
+        self.assertEqual(geoms[1][1]["type"], "Polygon")
+        # Coordinates from incomplete B remain available for QA/audit, but no B geometry is emitted.
+        self.assertEqual(len(coords_text), 10)
 
         # Two points cannot form a closed bounded area; parent receives incomplete zone flag
         self.assertIn("has_incomplete_zone", qa_flags)
         self.assertEqual(data_quality, "AMBIGUOUS")
+
+
+    def test_valid_multipolygon_is_not_quarantined(self):
+        text = (
+            "AREA BOUNDED WITHIN:\\n"
+            "(A) 10-00N 170-00E (B) 20-00N 170-00E"
+        )
+        multi = {
+            "type": "MultiPolygon",
+            "coordinates": [[[[170.0, 10.0], [171.0, 10.0], [171.0, 11.0],
+                              [170.0, 11.0], [170.0, 10.0]]]],
+        }
+        report = {
+            "flags": [],
+            "basis": "keyword:bounding_box",
+            "data_quality": "EXPLICIT",
+            "feature_type": "BOUNDING_BOX",
+        }
+        with patch(
+            "shared.utils.parse_coordinates_detailed",
+            side_effect=[
+                (["10-00N 170-00E"], 10.0, 170.0, multi, report),
+                (["20-00N 170-00E"], 20.0, 170.0, multi, report),
+            ],
+        ):
+            geoms, _, qa_flags, data_quality = parse_block_geometries(text)
+
+        self.assertEqual(len(geoms), 2)
+        self.assertEqual([g[1]["type"] for g in geoms], ["MultiPolygon", "MultiPolygon"])
+        self.assertNotIn("has_incomplete_zone", qa_flags)
+        self.assertEqual(data_quality, "EXPLICIT")
 
 
 class TestGroupEPreambleAndContext(unittest.TestCase):
@@ -195,51 +253,46 @@ class TestGroupFContractCompatibility(unittest.TestCase):
 
 
 class TestGroupGPayloadsAndTriage(unittest.TestCase):
-    """Group G — Payload building and triage tier assignment."""
+    """Group G — Actual parser adapter, payload, and triage integration."""
 
-    def test_feature_collection_payloads_retain_labels_and_parent_link(self):
-        record = {
-            "warning_id": "NAVAREA VIII 1139/26",
-            "spatial": {
-                "type": "FeatureCollection",
-                "features": [
-                    {
-                        "type": "Feature",
-                        "geometry": {
-                            "type": "Polygon",
-                            "coordinates": [[[75.0, 20.0], [75.0, 21.0], [76.0, 21.0], [76.0, 20.0], [75.0, 20.0]]],
-                        },
-                        "properties": {"zone_label": "A"},
-                    },
-                    {
-                        "type": "Feature",
-                        "geometry": {
-                            "type": "Polygon",
-                            "coordinates": [[[77.0, 20.0], [77.0, 21.0], [78.0, 21.0], [78.0, 20.0], [77.0, 20.0]]],
-                        },
-                        "properties": {"zone_label": "B"},
-                    },
-                ],
-            },
-        }
-        payloads = build_geometry_payloads(record)
-        self.assertEqual(len(payloads), 2)
-        self.assertEqual(payloads[0]["zone_label"], "A")
-        self.assertEqual(payloads[1]["zone_label"], "B")
-        self.assertEqual(payloads[0]["feature_type"], "POLYGON")
-        self.assertEqual(payloads[1]["feature_type"], "POLYGON")
+    def _parse_incomplete_notice(self):
+        raw_block = (
+            "PIPELINE OPERATIONS. IN AREAS BOUNDED BY:\\n"
+            "(A) 20-12.00N 075-10.00E, 20-15.00N 075-10.00E, "
+            "20-15.00N 075-15.00E, 20-12.00N 075-15.00E\\n"
+            "(B) 21-12.00N 076-10.00E\\n"
+            "(C) 22-12.00N 077-10.00E, 22-15.00N 077-10.00E, "
+            "22-15.00N 077-15.00E, 22-12.00N 077-15.00E"
+        )
+        return parse_warning(raw_block, "NAVAREA I 999/26")
 
-    def test_incomplete_zone_assigns_tier_b(self):
-        class DummyRecord:
-            def __init__(self):
-                self.data_quality = DataQuality.AMBIGUOUS
-                self.qa_flags = ["has_incomplete_zone"]
-                self.latitude = 20.0
-                self.longitude = 75.0
-                self.triage_tier = None
-                self.unplotted_reason = None
+    def test_adapter_and_payload_exclude_incomplete_zone(self):
+        _, nav_warning, spatial = self._parse_incomplete_notice()
 
-        rec = DummyRecord()
+        self.assertEqual(spatial["type"], "FeatureCollection")
+        self.assertEqual(
+            [f["properties"]["zone_label"] for f in spatial["features"]],
+            ["A", "C"],
+        )
+        self.assertIn("has_incomplete_zone", nav_warning["qa_flags"])
+        self.assertEqual(nav_warning["data_quality"], "AMBIGUOUS")
+
+        payloads = build_geometry_payloads(nav_warning)
+        self.assertEqual([p["zone_label"] for p in payloads], ["A", "C"])
+        self.assertEqual([p["feature_type"] for p in payloads], ["POLYGON", "POLYGON"])
+        self.assertEqual(nav_warning["warning_id"], "999/26")
+
+    def test_actual_parser_qa_assigns_tier_b(self):
+        _, nav_warning, _ = self._parse_incomplete_notice()
+        rec = SimpleNamespace(
+            data_quality=nav_warning["data_quality"],
+            qa_flags=nav_warning["qa_flags"],
+            latitude=nav_warning["latitude"],
+            longitude=nav_warning["longitude"],
+            coordinates=[],
+            triage_tier=None,
+            unplotted_reason=None,
+        )
         assign_final_triage(rec)
         self.assertEqual(rec.triage_tier, TriageTier.B)
 
