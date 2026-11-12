@@ -19,9 +19,6 @@ on:
       - 'shared/utils.py'
       - 'requirements.txt'
       - '.github/workflows/navarea-vii-sync.yml'
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
 
 concurrency:
