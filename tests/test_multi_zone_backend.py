@@ -303,8 +303,8 @@ class TestGroupGPayloadsAndTriage(unittest.TestCase):
 
     def test_all_incomplete_zones_persist_as_tier_c_with_coordinate_provenance(self):
         raw_block = (
-            "PIPELINE OPERATIONS. IN AREAS BOUNDED BY:\\n"
-            "(A) 20-12.00N 075-10.00E\\n"
+            "PIPELINE OPERATIONS. IN AREAS BOUNDED BY:\n"
+            "(A) 20-12.00N 075-10.00E\n"
             "(B) 21-12.00N 076-10.00E, 21-15.00N 076-10.00E"
         )
         _, nav_warning, spatial = parse_warning(raw_block, "NAVAREA I 998/26")
@@ -370,8 +370,8 @@ class TestGroupVIIIAndUniversalSegmentation(unittest.TestCase):
 
     def _assert_colon_markers_split(self, segmenter):
         body = (
-            "OFFSHORE OPERATIONS IN AREAS BOUNDED BY:\\n"
-            "(A): 20-12.00N 075-10.00E, 20-15.00N 075-10.00E\\n"
+            "OFFSHORE OPERATIONS IN AREAS BOUNDED BY:\n"
+            "(A): 20-12.00N 075-10.00E, 20-15.00N 075-10.00E\n"
             "(B): 21-12.00N 076-10.00E, 21-15.00N 076-10.00E"
         )
         clauses = segmenter(body)
