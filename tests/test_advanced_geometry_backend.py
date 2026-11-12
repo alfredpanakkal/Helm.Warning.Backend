@@ -5,6 +5,7 @@ Generalization, Corridor Swaths, Relocations, and End-to-End Metadata Propagatio
 """
 
 import unittest
+from pathlib import Path
 from shared.models import build_geometry_payloads, build_master_payload
 from shared.utils import (
     parse_coordinates,
@@ -400,6 +401,22 @@ class TestEndToEndPipeline(unittest.TestCase):
         self.assertEqual(payloads[0]["sweep_radius_nm"], 10.0)
         self.assertEqual(payloads[1]["feature_type"], "POLYGON")
         self.assertNotIn("sweep_radius_nm", payloads[1])
+
+    def test_metadata_migration_preserves_lifecycle_safe_replacement(self):
+        migration = (
+            Path(__file__).resolve().parents[1]
+            / "migrations"
+            / "20261112_geometry_metadata_persistence.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn("corridor_half_width_nm", migration)
+        self.assertIn("sweep_start_azimuth", migration)
+        self.assertIn("sweep_end_azimuth", migration)
+        self.assertIn("sweep_radius_nm", migration)
+        self.assertLess(
+            migration.index("INSERT INTO public.nav_warning_geometries"),
+            migration.index("DELETE FROM public.nav_warning_geometries"),
+        )
+        self.assertIn("ELSIF v_existing > 0 THEN", migration)
 
     def test_type_validation_mismatch_fallback(self):
         # If record incorrectly claims SWEEP_ARC for a LineString, it must safely fall back
