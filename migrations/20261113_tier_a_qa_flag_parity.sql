@@ -46,8 +46,13 @@ BEGIN
     -- Legacy Tier-A exceptions already exist. Allow unrelated edits to those
     -- rows, but do not allow a new row or a changed publication gate to create
     -- or perpetuate a newly changed Tier-A QA violation.
-    IF TG_OP = 'INSERT'
-       OR NEW.triage_tier IS DISTINCT FROM OLD.triage_tier
+    IF TG_OP = 'INSERT' THEN
+        RAISE EXCEPTION
+            'Tier A warnings cannot carry review-required QA flags'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF NEW.triage_tier IS DISTINCT FROM OLD.triage_tier
        OR NEW.qa_flags IS DISTINCT FROM OLD.qa_flags THEN
         RAISE EXCEPTION
             'Tier A warnings cannot carry review-required QA flags'
