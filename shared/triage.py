@@ -66,7 +66,11 @@ def assign_final_triage(rec: Any) -> None:
 
     # 2. Hard blocks -> Tier C (persist with unplotted_reason, never render).
     qa_flags = getattr(rec, "qa_flags", []) or getattr(rec, "flags", []) or []
-    unplotted_reason = getattr(rec, "unplotted_reason", None)
+    unplotted_reason = normalize_unplotted_reason(
+        getattr(rec, "unplotted_reason", None), qa_flags
+    )
+    if unplotted_reason is not None:
+        rec.unplotted_reason = unplotted_reason
 
     if (
         getattr(rec, "data_quality", DataQuality.EXPLICIT) == DataQuality.INVALID
