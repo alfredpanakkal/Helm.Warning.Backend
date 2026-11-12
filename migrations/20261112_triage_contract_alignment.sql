@@ -1,5 +1,5 @@
 -- ============================================================================
--- Migration: 20261112_geometry_metadata_persistence.sql
+-- Migration: 20261112_triage_contract_alignment.sql
 -- Align triage publication checks, persist corridor clearance, and expose
 -- the complete persisted geometry metadata through the active spatial view.
 -- Existing lifecycle-safe geometry replacement/preservation remains intact.
@@ -11,12 +11,22 @@ ALTER TABLE public.nav_warning_geometries
 
 -- Existing CHECK covers the four Tier-A database fields. This additive guard
 -- prevents known partial-zone/repair markers from entering the auto-plot tier.
-ALTER TABLE public.nav_warnings
-    ADD CONSTRAINT chk_tier_a_qa_flags
-    CHECK (
-        triage_tier <> 'A'
-        OR NOT (qa_flags ?| ARRAY['has_incomplete_zone', 'has_repairs'])
-    ) NOT VALID;
+DO $
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'chk_tier_a_qa_flags'
+          AND conrelid = 'public.nav_warnings'::regclass
+    ) THEN
+        ALTER TABLE public.nav_warnings
+            ADD CONSTRAINT chk_tier_a_qa_flags
+            CHECK (
+                triage_tier <> 'A'
+                OR NOT (qa_flags ?| ARRAY['has_incomplete_zone', 'has_repairs'])
+            ) NOT VALID;
+    END IF;
+END $;
 
 -- Append columns only: CREATE OR REPLACE VIEW must preserve existing column order.
 CREATE OR REPLACE VIEW public.nav_warnings_active_spatial AS
@@ -197,10 +207,10 @@ BEGIN
            AND qa_flags @> '["geometry_preserved_previous_run"]';
     ELSIF v_existing > 0 THEN
         -- Preservation path: the incoming parse produced no geometry, but a
-        -- previous run stored valid geometries. Keep them, keep Tier A
-        -- (chk_tier_a_invariants: clear unplotted_reason) and flag for review.
+        -- previous run stored valid geometries. Preserve the old geometry,
+        -- but route the failed re-parse to Tier B for human review.
         UPDATE public.nav_warnings
-           SET triage_tier = 'A',
+           SET triage_tier = 'B',
                unplotted_reason = NULL,
                qa_flags = COALESCE(qa_flags, '[]'::jsonb)
                           || '["geometry_preserved_previous_run"]'::jsonb
