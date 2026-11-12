@@ -157,6 +157,18 @@ per sentence, and `categories` lists canonical categories first with legacy alia
 `classify_hazard()` still returns the legacy alias. Lives in `shared/utils.py`; NAVAREA VIII
 `category` now goes through `classify_hazard()` like every other parser.
 
+### Complete 16-category legacy alias mapping and contextual UXO guard (PR #103 correction)
+**Why:** `classify_hazard()` contracts to always return one of the 7 legacy categories (`electronic`,
+`military`, `aton`, `subsea`, `drifting`, `offshore`, `general`). Previously, categories without an
+explicit entry in `LEGACY_CATEGORY_ALIASES` (`sar`, `security`, `weather`, `ice`, `restricted`) leaked
+their canonical token through `classify_hazard()`, breaking downstream consumers expecting the legacy
+vocabulary. The table now explicitly covers all 16 canonical categories with a fail-closed `"general"`
+fallback. Additionally, the UXO detector formerly matched bare `EXPLOSIVE` and `ORDNANCE` substrings,
+falsely classifying dangerous goods cargo (Class 1 explosives), designated explosive anchorages/berths,
+tidal/cartographic references (Ordnance Datum Newlyn, Ordnance Survey), and civil marine blasting as
+unexploded ordnance. UXO now requires specific naval munitions / unexploded weapon context (`UNEXPLODED
+ORDNANCE`, `SEA MINE`, `TORPEDO`, `WARHEAD`, `DEPTH CHARGE`, `EOD`, bomb disposal). Lives in `shared/utils.py`.
+
 ---
 
 ## 3. Adding a new decision to this log

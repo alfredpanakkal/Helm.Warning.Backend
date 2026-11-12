@@ -17,6 +17,7 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 from shared.utils import (
+    LEGACY_CATEGORIES,
     LEGACY_CATEGORY_ALIASES,
     classify_hazard,
     classify_hazard_categories,
@@ -71,6 +72,45 @@ class TestCanonicalFirstAndFallback(unittest.TestCase):
         self.assertEqual(classify_hazard("GPS JAMMING REPORTED.", canonical=True), "service_status")
         self.assertEqual(classify_hazard("DERELICT VESSEL ADRIFT."), "drifting")
         self.assertEqual(classify_hazard("SUNKEN WRECK REPORTED."), "subsea")
+
+    def test_all_16_categories_return_valid_legacy_category(self):
+        # Ensures classify_hazard(raw) with default arguments always returns
+        # one of the 7 legacy categories for all 16 canonical categories.
+        samples = [
+            ("GPS JAMMING REPORTED.", "service_status", "electronic"),
+            ("DRIFTING SEA MINE REPORTED IN VICINITY.", "uxo", "military"),
+            ("SEARCH AND RESCUE OPERATION IN PROGRESS.", "sar", "general"),
+            ("GUNNERY EXERCISE BY NAVAL FORCES.", "mil_fire", "military"),
+            ("SECURITY ADVISORY. SUSPICIOUS SKIFF REPORTED.", "security", "general"),
+            ("GALE WARNING. HEAVY SEAS REPORTED.", "weather", "general"),
+            ("INTERNATIONAL ICE PATROL REPORTS LARGE ICEBERG.", "ice", "general"),
+            ("DERELICT FISHING VESSEL ADRIFT.", "drift", "drifting"),
+            ("DANGEROUS SUNKEN WRECK LOCATED.", "wreck", "subsea"),
+            ("SUBMARINE CABLE REPAIR IN PROGRESS.", "cable", "subsea"),
+            ("HYDROGRAPHIC SURVEY WITH TOWED SENSORS.", "survey", "subsea"),
+            ("DRILLING RIG NOBLE LLOYD NOBLE STATIONED.", "rig", "offshore"),
+            ("NORTH CARDINAL BUOY UNLIT AND DAMAGED.", "aton", "aton"),
+            ("RESTRICTED AREA ESTABLISHED. PROHIBITED ENTRY.", "restricted", "general"),
+            ("DREDGING OPERATIONS AND COMMERCIAL DIVING ACTIVITIES.", "ops", "subsea"),
+            ("DEPTH CORRECTION. NEW SOUNDINGS SHOW SHOALING.", "general_chart", "general"),
+        ]
+        self.assertEqual(len(samples), 16)
+        for raw, expected_canonical, expected_legacy in samples:
+            with self.subTest(canonical=expected_canonical):
+                # 1. Default return must equal the expected legacy category
+                legacy_res = classify_hazard(raw)
+                self.assertEqual(legacy_res, expected_legacy)
+                self.assertIn(legacy_res, LEGACY_CATEGORIES)
+
+                # 2. canonical=True must return the canonical 16-category token
+                canon_res = classify_hazard(raw, canonical=True)
+                self.assertEqual(canon_res, expected_canonical)
+
+                # 3. classify_hazard_categories returns canonical first; legacy alias is present
+                cats = classify_hazard_categories(raw)
+                self.assertEqual(cats[0], expected_canonical)
+                if expected_legacy != expected_canonical:
+                    self.assertIn(expected_legacy, cats)
 
 
 class TestContextualMatching(unittest.TestCase):
@@ -157,6 +197,74 @@ class TestContextualMatching(unittest.TestCase):
 
     def test_generic_platform_is_not_rig(self):
         self.assertNotIn("rig", classify_hazard_categories("PILOT BOARDING PLATFORM RELOCATED TO QUAY 4."))
+
+    def test_dangerous_goods_and_explosive_cargo_is_not_uxo(self):
+        for raw in (
+            "VESSEL CARRYING DANGEROUS GOODS CLASS 1 EXPLOSIVES AT ANCHORAGE.",
+            "EXPLOSIVE CARGO HANDLING AT JETTY 3.",
+            "VESSEL WITH CARGO OF EXPLOSIVES BERTHING AT COMMERCIAL PIER.",
+            "HAZARDOUS GOODS CLASS 1 EXPLOSIVE SHIPMENT EN ROUTE.",
+        ):
+            with self.subTest(raw=raw):
+                cats = classify_hazard_categories(raw)
+                self.assertNotIn("uxo", cats)
+                self.assertNotIn("military", cats)
+
+    def test_explosives_anchorage_and_berth_is_not_uxo(self):
+        for raw in (
+            "EXPLOSIVES ANCHORAGE ESTABLISHED NEAR POSITION 50-00N 001-00E.",
+            "EXPLOSIVES BERTH AT JETTY 2 AVAILABLE FOR MOORING.",
+            "VESSELS DIRECTED TO DESIGNATED EXPLOSIVE HANDLING AREA.",
+        ):
+            with self.subTest(raw=raw):
+                cats = classify_hazard_categories(raw)
+                self.assertNotIn("uxo", cats)
+                self.assertNotIn("military", cats)
+
+    def test_ordnance_datum_and_survey_is_not_uxo(self):
+        for raw in (
+            "TIDAL HEIGHTS REFERRED TO ORDNANCE DATUM NEWLYN.",
+            "ALL SOUNDINGS ARE REDUCED TO ORDNANCE DATUM.",
+            "ORDNANCE SURVEY BENCHMARK OBSERVED AT PIERHEAD.",
+        ):
+            with self.subTest(raw=raw):
+                cats = classify_hazard_categories(raw)
+                self.assertNotIn("uxo", cats)
+                self.assertNotIn("military", cats)
+
+    def test_civil_demolition_and_blasting_without_ordnance_is_ops(self):
+        for raw in (
+            "MARINE DEMOLITION OPERATIONS UNDERWAY AT QUAY WALL 4.",
+            "CIVIL DEMOLITION AND BLASTING OPERATIONS AT HARBOUR ENTRANCE.",
+            "UNDERWATER ROCK BLASTING OPERATIONS IN FAIRWAY.",
+        ):
+            with self.subTest(raw=raw):
+                cats = classify_hazard_categories(raw)
+                self.assertEqual(cats[0], "ops")
+                self.assertNotIn("uxo", cats)
+                self.assertNotIn("military", cats)
+
+    def test_explosive_atmosphere_is_not_uxo(self):
+        cats = classify_hazard_categories("WARNING: EXPLOSIVE ATMOSPHERE AND GAS LEAK REPORTED NEAR TANKER.")
+        self.assertNotIn("uxo", cats)
+        self.assertNotIn("military", cats)
+
+    def test_genuine_uxo_and_sea_mines_classified_correctly(self):
+        for raw in (
+            "UNEXPLODED ORDNANCE LOCATED AT 54-10N 010-20E.",
+            "HISTORIC ORDNANCE REPORTED ON SEABED.",
+            "EXPLOSIVE ORDNANCE DISPOSAL (EOD) IN PROGRESS.",
+            "DRIFTING SEA MINE REPORTED IN VICINITY.",
+            "TORPEDO WARHEAD FOUND AT POSITION 50-20N 002-30W.",
+            "CONTROLLED DEMOLITION OF UNEXPLODED BOMB UNDERWAY.",
+            "DEPTH CHARGE LOCATED IN SHALLOW WATER.",
+        ):
+            with self.subTest(raw=raw):
+                cats = classify_hazard_categories(raw)
+                self.assertEqual(cats[0], "uxo")
+                self.assertIn("military", cats)
+                self.assertEqual(classify_hazard(raw), "military")
+                self.assertEqual(classify_hazard(raw, canonical=True), "uxo")
 
 
 class TestFloodlightAndAton(unittest.TestCase):

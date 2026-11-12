@@ -1053,8 +1053,51 @@ RE_ANCHOR_OPS = re.compile(
     r"|\bAHTS\b")
 
 
+# Contextual UXO/ordnance matching (audit finding PR #103).
+# Generic mentions of EXPLOSIVE or ORDNANCE (cargo, storage, datum, survey,
+# anchorages, civil demolition/blasting) must not trigger UXO classification.
+RE_NON_UXO_ORDNANCE_OR_EXPLOSIVE = re.compile(
+    r"\b(?:ORDNANCE\s+(?:DATUM|SURVEY|BENCH\s*MARK)|"
+    r"(?:DANGEROUS|HAZARDOUS)\s+GOODS\s+(?:CLASS\s+1\s+)?EXPLOSIVES?|"
+    r"CLASS\s+1\s+EXPLOSIVES?|"
+    r"EXPLOSIVES?\s+(?:CARGO|HANDLING|ANCHORAGE|BERTH|QUAY|JETTY|TERMINAL|BASIN|GROUND|AREA|ZONE)|"
+    r"CARGO\s+OF\s+EXPLOSIVES?|"
+    r"EXPLOSIVE\s+(?:ATMOSPHERE|GAS(?:ES)?|VAPOU?RS?))\b"
+)
+RE_ORDNANCE = re.compile(
+    r"\b(?:UNEXPLODED\s+(?:ORDNANCE|MUNITION(?:S)?|BOMB(?:S)?|WARHEAD(?:S)?|PROJECTILE(?:S)?|MISSILE(?:S)?|DEVICE(?:S)?|WEAPON(?:S)?)|"
+    r"(?:EXPLOSIVE|HISTORIC|SUSPECTED|SUBMERGED|SUNKEN|NAVAL|MILITARY)\s+ORDNANCE|"
+    r"ORDNANCE\s+(?:DISPOSAL|RECOVERY|CLEARANCE|DETONATION|FOUND|LOCATED|REPORTED|SIGHTED|DISCOVERED)|"
+    r"(?:FOUND|LOCATED|REPORTED|SIGHTED|DISCOVERED)\s+ORDNANCE|"
+    r"EXPLOSIVE\s+ORDNANCE(?:\s+DISPOSAL)?|\b(?:UXO|EOD)\b|"
+    r"TORPEDO(?:ES)?|WARHEAD(?:S)?|DEPTH\s+CHARGE(?:S)?|"
+    r"(?:AERIAL\s+|UNEXPLODED\s+|SUNKEN\s+|SUBMERGED\s+|NAVAL\s+|HISTORIC\s+)?BOMBS?|"
+    r"(?:SUSPECTED|UNEXPLODED|DANGEROUS|RECOVERED)\s+EXPLOSIVE\s+(?:OBJECT|DEVICE)(?:S)?)\b"
+)
+
+
 def _sentences(text: str) -> list[str]:
     return [s for s in RE_SENTENCE_SPLIT.split(text) if s.strip()]
+
+
+def _has_uxo_ordnance(text: str) -> bool:
+    """True when text refers to unexploded weapons, naval munitions, or ordnance
+    disposal, excluding ordinary explosive cargo, anchorages, or Ordnance Datum."""
+    for sentence in _sentences(text):
+        cleaned = RE_NON_UXO_ORDNANCE_OR_EXPLOSIVE.sub(" ", sentence)
+        if RE_ORDNANCE.search(cleaned):
+            return True
+    return False
+
+
+def _has_naval_mine(text: str) -> bool:
+    """True when text mentions naval / drifting / sea mines, not land mineral mines."""
+    for sentence in _sentences(text):
+        if re.search(r"\b(?:GOLD|COAL|SALT|IRON)\s+MINE\b", sentence):
+            continue
+        if re.search(r"\b(?:DRIFTING\s+MINE|SEA\s+MINE|FLOATING\s+MINE|NAVAL\s+MINE|GROUND\s+MINE|MINE\s+DANGER|MINEFIELD|MINESWEEP\w*|\bMINES?\b)\b", sentence):
+            return True
+    return False
 
 
 def _has_drifting_container(text: str) -> bool:
@@ -1097,15 +1140,33 @@ def _aton_text(text: str) -> str:
 # classify_hazard() maps this to the legacy 'general' via the alias table.
 UNMATCHED_CATEGORIES = ("general_chart", "general")
 
+LEGACY_CATEGORIES = frozenset({
+    "electronic",
+    "military",
+    "aton",
+    "subsea",
+    "drifting",
+    "offshore",
+    "general",
+})
+
+# Full mapping of the 16 canonical taxonomy categories to the 7 legacy categories.
+# Preserves backward compatibility for legacy callers, parsers, and consumers.
 LEGACY_CATEGORY_ALIASES = {
-    "mil_fire": "military",
-    "uxo": "military",
     "service_status": "electronic",
-    "rig": "offshore",
+    "uxo": "military",
+    "sar": "general",
+    "mil_fire": "military",
+    "security": "general",
+    "weather": "general",
+    "ice": "general",
     "drift": "drifting",
+    "wreck": "subsea",
     "cable": "subsea",
     "survey": "subsea",
-    "wreck": "subsea",
+    "rig": "offshore",
+    "aton": "aton",
+    "restricted": "general",
     "ops": "subsea",
     "general_chart": "general",
 }
@@ -1160,8 +1221,8 @@ def classify_hazard_categories(raw_text: str) -> list[str]:
         _add("service_status")
 
     # 2. UXO / Mines / Explosives
-    has_mine = bool(re.search(r"\b(?:DRIFTING\s+MINE|SEA\s+MINE|MINE)\b", text))
-    has_ordnance = bool(re.search(r"\b(?:UNEXPLODED\s+ORDNANCE|ORDNANCE\s+DISPOSAL|EXPLOSIVE\s+ORDNANCE|ORDNANCE|TORPEDO|BOMB|WARHEAD|EXPLOSIVE)\b", text))
+    has_mine = _has_naval_mine(text)
+    has_ordnance = _has_uxo_ordnance(text)
     has_demolition = bool(re.search(r"\bDEMOLITION\b", text))
     if has_mine or (has_demolition and has_ordnance) or (has_ordnance and not re.search(r"\b(?:FIRING|GUNNERY|EXERCISE)\b", text)):
         _add("uxo")
@@ -1223,7 +1284,7 @@ def classify_hazard_categories(raw_text: str) -> list[str]:
         _add("restricted")
 
     # 15. Marine Ops (Dredging, Diving, Towing, Demolition Ops)
-    if (any(k in text for k in ["TOWING", "DREDGING", "CHAIN LOST", "DIVING", "UNDER TOW"])
+    if (any(k in text for k in ["TOWING", "DREDGING", "CHAIN LOST", "DIVING", "UNDER TOW", "BLASTING"])
             or re.search(r"\bROV\b", text) or RE_ANCHOR_OPS.search(text)
             or (has_demolition and not has_ordnance)):
         _add("ops")
@@ -1257,7 +1318,7 @@ def classify_hazard(raw_text: str, canonical: bool = False) -> str:
     primary = cats[0]
     if canonical:
         return primary
-    return LEGACY_CATEGORY_ALIASES.get(primary, primary)
+    return LEGACY_CATEGORY_ALIASES.get(primary, "general")
 
 
 

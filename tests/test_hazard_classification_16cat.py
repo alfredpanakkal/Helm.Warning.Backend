@@ -28,6 +28,9 @@ class TestCanonical16Categories(unittest.TestCase):
         raw = "NAVAREA IV 101/26\nDISTRESS ALERT RECEIVED FROM S/V OCEAN BLUE. SEARCH AND RESCUE OPERATION IN PROGRESS."
         cats = classify_hazard_categories(raw)
         self.assertEqual(cats[0], "sar")
+        self.assertIn("general", cats)
+        self.assertEqual(classify_hazard(raw), "general")
+        self.assertEqual(classify_hazard(raw, canonical=True), "sar")
 
     def test_mil_fire_category(self):
         raw = "NAVAREA VIII 202/26\nGUNNERY AND MISSILE FIRING EXERCISES IN PROGRESS BY NAVAL FORCES."
@@ -42,21 +45,32 @@ class TestCanonical16Categories(unittest.TestCase):
         cats = classify_hazard_categories(raw)
         self.assertEqual(cats[0], "uxo")
         self.assertIn("military", cats)
+        self.assertEqual(classify_hazard(raw), "military")
+        self.assertEqual(classify_hazard(raw, canonical=True), "uxo")
 
     def test_weather_category(self):
         raw = "NAVAREA XI 404/26\nSEVERE CYCLONE WARNING. GALE FORCE WINDS AND HEAVY SWELL REPORTED."
         cats = classify_hazard_categories(raw)
         self.assertEqual(cats[0], "weather")
+        self.assertIn("general", cats)
+        self.assertEqual(classify_hazard(raw), "general")
+        self.assertEqual(classify_hazard(raw, canonical=True), "weather")
 
     def test_ice_category(self):
         raw = "NAVAREA IV 505/26\nINTERNATIONAL ICE PATROL REPORTS LARGE ICEBERG AND PACK ICE SIGHTED."
         cats = classify_hazard_categories(raw)
         self.assertEqual(cats[0], "ice")
+        self.assertIn("general", cats)
+        self.assertEqual(classify_hazard(raw), "general")
+        self.assertEqual(classify_hazard(raw, canonical=True), "ice")
 
     def test_security_category(self):
         raw = "NAVAREA IX 606/26\nSECURITY ADVISORY. SUSPICIOUS SKIFF REPORTED APPROACHING COMMERCIAL VESSEL."
         cats = classify_hazard_categories(raw)
         self.assertEqual(cats[0], "security")
+        self.assertIn("general", cats)
+        self.assertEqual(classify_hazard(raw), "general")
+        self.assertEqual(classify_hazard(raw, canonical=True), "security")
 
     def test_drift_category(self):
         raw = "NAVAREA II 707/26\nDERELICT FISHING VESSEL ADRIFT. DRIFTING CONTAINER DANGEROUS TO SURFACE NAVIGATION."
@@ -110,6 +124,9 @@ class TestCanonical16Categories(unittest.TestCase):
         raw = "NAVAREA XII 1313/26\nRESTRICTED AREA ESTABLISHED. UNAUTHORIZED NAVIGATION PROHIBITED."
         cats = classify_hazard_categories(raw)
         self.assertEqual(cats[0], "restricted")
+        self.assertIn("general", cats)
+        self.assertEqual(classify_hazard(raw), "general")
+        self.assertEqual(classify_hazard(raw, canonical=True), "restricted")
 
     def test_ops_category(self):
         raw = "NAVAREA I 1414/26\nDREDGING OPERATIONS AND COMMERCIAL DIVING ACTIVITIES UNDERWAY BY TUG TITAN."
