@@ -61,7 +61,7 @@ def assign_final_triage(rec: Any) -> None:
             getattr(rec, "latitude", None), getattr(rec, "longitude", None)
         )
 
-    # 2. Hard blocks -> Tier C (persist with unplotted_reason, never render).
+    # 2. Quarantine only when no valid operational coordinate geometry remains.
     qa_flags = getattr(rec, "qa_flags", []) or getattr(rec, "flags", []) or []
     unplotted_reason = normalize_unplotted_reason(
         getattr(rec, "unplotted_reason", None), qa_flags
