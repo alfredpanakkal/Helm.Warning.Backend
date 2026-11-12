@@ -565,7 +565,7 @@ def build_master_payload(record: Dict[str, Any]) -> Dict[str, Any]:
             and status != "superseded"
             and not qa_flags_require_review(qa_flags)
         )
-        triage_tier = "B" if requested_tier == "B" or not tier_a_eligible else "A"
+        triage_tier = "B" if requested_tier in ("B", "C") or not tier_a_eligible else "A"
 
     valid_from = parse_safe_iso_timestamp(record.get("valid_from") or record.get("publication_time") or record.get("issued_text"))
     valid_to = parse_safe_iso_timestamp(record.get("valid_to") or record.get("cancellation_date"))
