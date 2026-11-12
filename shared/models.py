@@ -325,8 +325,8 @@ def geojson_type_to_feature_type(geojson_type: Optional[str]) -> str:
 
 def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Builds GeoJSON geometry child records suitable for public.nav_warning_geometries.
-    Outputs: list of dicts with keys: zone_label, feature_type, buffer_nm, geojson
-    feature_type MUST use the DB CHECK-constraint vocabulary (POINT/LINE/POLYGON).
+    Outputs geometry rows with source-stated buffer, corridor, and sweep metadata.
+    feature_type MUST use the database CHECK-constraint vocabulary.
 
     Per-feature "properties.zone_label" (e.g. NAVAREA XII sub-area labels
     A./B./C.) overrides the record-level label so each sub-area persists as
@@ -381,7 +381,7 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
         if raw_ftype == "SWEEP_ARC":
             feature_type = "SWEEP_ARC" if geom_type == "Polygon" else geojson_type_to_feature_type(geom_type)
         elif raw_ftype == "BOUNDING_BOX":
-            feature_type = "BOUNDING_BOX" if geom_type == "Polygon" else geojson_type_to_feature_type(geom_type)
+            feature_type = "BOUNDING_BOX" if geom_type in ("Polygon", "MultiPolygon") else geojson_type_to_feature_type(geom_type)
         elif raw_ftype == "CORRIDOR":
             feature_type = "CORRIDOR" if geom_type in ("LineString", "MultiLineString") else geojson_type_to_feature_type(geom_type)
         elif raw_ftype == "POINT":
@@ -406,7 +406,12 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
             "geojson": geojson_obj,
         }
         # Sweep-arc metadata (NAVAREA II 358/26 firing-exercise sectors)
-        for key in ("sweep_radius_nm", "sweep_start_azimuth", "sweep_end_azimuth"):
+        for key in (
+            "corridor_half_width_nm",
+            "sweep_radius_nm",
+            "sweep_start_azimuth",
+            "sweep_end_azimuth",
+        ):
             if props.get(key) is not None:
                 payload[key] = props[key]
         geometries.append(payload)
@@ -444,7 +449,10 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
             props = spatial.get("properties") if isinstance(spatial.get("properties"), dict) else {}
             if not props:
                 props = {}
-                for k in ("feature_type", "buffer_nm", "sweep_radius_nm", "sweep_start_azimuth", "sweep_end_azimuth"):
+                for k in (
+                    "feature_type", "buffer_nm", "corridor_half_width_nm",
+                    "sweep_radius_nm", "sweep_start_azimuth", "sweep_end_azimuth",
+                ):
                     if spatial.get(k) is not None:
                         props[k] = spatial.get(k)
                     elif record.get(k) is not None:
