@@ -5,7 +5,7 @@ name: NAVAREA V Ingestion Pipeline
 # automated runs are designed to fail. NAVAREA V is manual-import-only
 # (paste avradio_NN.json via the manual ingest queue) or via a manual
 # workflow_dispatch run. Also excluded from the sync-all orchestrator
-# (scripts/run_all.py). PR dry-runs kept for CI signal.
+# (scripts/run_all.py).
 on:
   workflow_dispatch:
 
