@@ -48,7 +48,7 @@ def _supersede_cross_refs(supabase_client, nav_warnings) -> bool:
         try:
             res = (
                 supabase_client.table("nav_warnings")
-                .select("canonical_id, status")
+                .select("canonical_id, status, triage_tier")
                 .eq("canonical_id", cid)
                 .eq("source_id", SOURCE_ID)
                 .execute()
@@ -60,9 +60,14 @@ def _supersede_cross_refs(supabase_client, nav_warnings) -> bool:
             if rows[0].get("status") != "active":
                 print(f"  ↩️ {cid} already {rows[0].get('status')}")
                 continue
+            patch = {"status": "superseded"}
+            # The database CHECK constraint forbids Tier A + superseded.
+            # Demote only Tier A; retain B/C and never delete child geometry.
+            if rows[0].get("triage_tier") == "A":
+                patch["triage_tier"] = "B"
             (
                 supabase_client.table("nav_warnings")
-                .update({"status": "superseded"})
+                .update(patch)
                 .eq("canonical_id", cid)
                 .eq("source_id", SOURCE_ID)
                 .execute()
