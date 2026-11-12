@@ -230,3 +230,16 @@ When a PR introduces or changes a safety rule, lifecycle behaviour, or an operat
 convention, append a short entry: **rule, why (incident or reasoning), where it lives
 (file), and the PR number.** If you cannot state the why, the rule is not understood well
 enough to merge.
+
+
+## B4 Production rollout verification (2026-11-12)
+
+**Rule/contract:** Tier A is limited to clean explicit RULE-parsed operational geometry, non-superseded records, and no blocking `has_incomplete_zone` / `has_repairs` QA flags. Geometry-bearing warnings that fail Tier A remain Tier B; Tier C is reserved for no valid operational geometry. Failed geometry replacement preserves existing geometry and routes the warning to Tier B until a healthy replacement is accepted.
+
+**Why:** Prevent partial-zone parsing, repairs, or transient parse failures from silently publishing uncertain geometry as Tier A or erasing previously accepted operational geometry.
+
+**Where:** `shared/triage.py`, `shared/models.py`, `migrations/20261112_triage_contract_alignment.sql`, `public.upsert_nav_warning`, `public.nav_warnings_active_spatial`, and `public.nav_warnings_review_queue`.
+
+**Production evidence:** the maintainer confirmed the B4 migration was applied. Read-only checks confirmed `nav_warning_geometries.corridor_clearance_nm`, the five expected active-spatial metadata columns, the 14-column review queue, and the SECURITY DEFINER RPC with `search_path=public, pg_temp`. Existing Tier-A rows had zero violations of the new QA guard; the constraint was then validated (`convalidated = true`). No Production fixture writes were used.
+
+**Operational follow-up:** post-merge Unit tests and the triggered NAVAREA X, IX, XII, III, VII and IV workflows succeeded on commit `0953c6f`. NAVAREA XIX Sync failed three times with zero jobs. Static inspection suggests the artifact upload step's `path`, `retention-days` and `if-no-files-found` keys are incorrectly indented outside `with:`; this is a likely cause, not a diagnosis confirmed by logs. Track correction and successful rerun in [`PRODUCTION_ROLLOUT.md`](PRODUCTION_ROLLOUT.md).
