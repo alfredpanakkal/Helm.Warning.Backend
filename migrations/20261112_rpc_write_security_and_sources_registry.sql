@@ -9,6 +9,7 @@ BEGIN;
 CREATE OR REPLACE FUNCTION public.enforce_nav_warning_write_access()
 RETURNS trigger
 LANGUAGE plpgsql
+SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 BEGIN
