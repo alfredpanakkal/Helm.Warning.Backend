@@ -559,6 +559,14 @@ RE_NEW_FORMER = re.compile(
     r"\b(?:FORMER\s+POSITION|DISCONTINUED\s+(?:IN\s+)?POSITION|PREVIOUS\s+POSITION)\b(?P<former_clause>.*)",
     re.IGNORECASE | re.DOTALL
 )
+RE_RELOCATION_INTENT = re.compile(
+    r"\b(?:RELOCATED|MOVED)\s+FROM\b|"
+    r"\b(?:FORMER|PREVIOUS)\s+POSITION\b|"
+    r"\b(?:NEW|PRESENT)\s+POSITION\b|"
+    r"\bESTABLISHED\s+(?:IN\s+)?(?:NEW\s+)?POSITION\b|"
+    r"\bDISCONTINUED\s+(?:IN\s+)?POSITION\b",
+    re.IGNORECASE
+)
 
 
 def _extract_relocation_positions(raw_text: str) -> Optional[tuple[list[float], list[float]]]:
@@ -970,7 +978,14 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
         if count_mismatch:
             flags.append("COORD_COUNT_MISMATCH")
 
-        if len(points) == 1:
+        relocation_intent = bool(RE_RELOCATION_INTENT.search(text))
+        if relocation_intent and _extract_relocation_positions(text) is None:
+            # Relocation wording without exactly one explicit former and new
+            # position must never fall through to ordinary centroid/point logic.
+            flags.append("AMBIGUOUS_RELOCATION")
+            basis = "ambiguous:relocation"
+            quality = "AMBIGUOUS"
+        elif len(points) == 1:
             primary_lat = points[0][1]
             primary_lon = points[0][0]
             sector = _sector_from_sweep_wording(text, points[0])
@@ -1000,9 +1015,7 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
                     spatial["buffer_nm"] = 0.0
                     spatial["feature_type"] = "POINT"
         else:
-            relocation = None
-            if len(points) == 2:
-                relocation = _extract_relocation_positions(text)
+            relocation = _extract_relocation_positions(text) if relocation_intent else None
 
             if relocation is not None:
                 former_pt, new_pt = relocation
