@@ -701,10 +701,19 @@ Contributions are welcome! Please adhere to the following conventions:
 - **Last Inspected & Verified**: November 9, 2026
 - **Verified Working Scrapers**: 12 sources (Baltic, NAVAREA I, II, III, IV, V, VII, VIII, IX, X incl. AUSCOAST A–H, XI, XII)
 - **Active Automation Workflows**: 19 GitHub Actions workflows in `.github/workflows/` (13 regional syncs incl. Baltic & NAVAREA XIX, master all-sync, manual-ingest, DTG backfill, parsing audit, supabase backup, tests)
-- **Pending Operational Step**: apply `migrations/20261030_navarea_label_backfill.sql` to live Supabase (one-time `navarea` label backfill)
+- **Historical migration note**: do not assume `migrations/20261030_navarea_label_backfill.sql` is pending; inspect the live schema and migration history before deciding whether it is needed.
 - **Database Model**: Master-Child PostGIS with `public.upsert_nav_warning` RPC, `ingestion_generations` run ledger, and plain-reference `parsing_audit_runs` & `parsing_correction_proposals` audit schema
 - **Agent Technical Reference**: Authoritative guidelines maintained in [`agent.md`](agent.md) and [`AGENTS.md`](AGENTS.md)
 
 ---
 
 **Portfolio:** [https://alfredpanakkal.web.app](https://alfredpanakkal.web.app)
+
+
+## B4 Production rollout status (November 12, 2026)
+
+All implementation PRs, including PR #109, are merged to `main` at `0953c6fca00c67c84a6d10d8a2a0b56f444e6e1c`. The maintainer has applied `migrations/20261112_triage_contract_alignment.sql` to Production. Read-only verification confirmed the corridor metadata column, all five active-spatial metadata columns, the expected 14-column review queue, and the `upsert_nav_warning(p_payload jsonb)` SECURITY DEFINER function with `search_path=public, pg_temp`. The Tier-A QA constraint had zero existing violations and was successfully validated.
+
+**Operational status is not fully green yet.** The post-merge Unit tests workflow and the triggered NAVAREA X, IX, XII, III, VII and IV ingestion workflows succeeded on the merge commit. NAVAREA XIX Sync failed on three attempts and reported zero jobs. Static inspection found a likely workflow-definition issue in `.github/workflows/navarea-xix-sync.yml`: the `path`, `retention-days` and `if-no-files-found` inputs appear outside the step's `with:` block. This is a suspected cause, not a confirmed diagnosis from job logs. See [B4 Production rollout record](docs/PRODUCTION_ROLLOUT.md).
+
+Do not rerun the B4 migration. The remaining operational task is to correct and validate the NAVAREA XIX workflow definition, then confirm a successful run and normal scheduled ingestion.
