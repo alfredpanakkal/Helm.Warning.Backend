@@ -200,6 +200,16 @@ Lives in `shared/utils.py`, `shared/models.py`, `scripts/navarea_universal_parse
 
 Lives in `shared/utils.py`, `shared/models.py`, `scripts/navarea_universal_parser.py`, `migrations/20261112_geometry_metadata_persistence.sql`, and geometry regression tests.
 
+### Multi-zone warning splitting and coordinate isolation (Phase B3)
+**Why:** Single navigational bulletins frequently bundle multiple distinct operational areas (e.g. NAVAREA VIII 1139/26 with inline (A)..(D) pipeline areas, or NAVAREA XI with lettered training areas A./B./C.). Previously:
+1. `parse_block_geometries()` only segmented line-initial `RE_LETTERED_CLAUSE` (`A. <coord>`), ignoring inline sub-area markers. Notices with `(A) ... (B) ...` or `AREA 1 ... AREA 2 ...` were treated as a single block; their combined coordinates self-intersected into a tangled shape and degraded to a single open LineString.
+2. Marker detection in `subarea_marks()` required whitespace immediately after marker labels, failing on punctuation variants like `(A):` or `AREA A:`. Punctuation tolerance (`[\.:]?`) was added to `RE_PAREN_SUBAREA` and `RE_AREA_LABEL` while strictly preserving coordinate lookaheads and monotonic sequence gates ($\ge 2$ labels of same family). Unverified candidate marker families (`ZONE`, `STAGE`, `PART`, `SUB-AREA`) were deliberately excluded without bulletin evidence to prevent false splits.
+3. `parse_block_geometries()` did not pass the preamble into `parse_coordinates_detailed()`, causing valid sub-area polygons under "IN AREAS BOUNDED BY:" to lose their governing context and fall back to ambiguous classification. Preamble context propagation restores explicit polygon classification across all constituent zones.
+4. If candidate segmentations conflict, the parser fails closed to a single block. Coordinates across discrete zones are strictly isolated with zero cross-contamination.
+5. Incomplete or malformed zones in a multi-zone notice (e.g. Zone B having only 1 or 2 coordinates where a polygon is expected) are flagged with `has_incomplete_zone` in `qa_flags` and downgrade parent data quality to `AMBIGUOUS`, directing the warning to the Tier B human review queue without corrupting valid companion zones or altering the 4-tuple return contract. Zero database schema migrations or model payload alterations are introduced.
+
+Lives in `shared/navarea_universal_text.py`, `shared/utils.py`, and `tests/test_multi_zone_backend.py`.
+
 ---
 
 ## 3. Adding a new decision to this log

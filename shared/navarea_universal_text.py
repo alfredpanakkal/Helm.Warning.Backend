@@ -294,8 +294,8 @@ def roman_to_key(roman: str):
 #     markers form a strictly increasing sequence (>= 2) of one kind
 #     (A,B,C.. / 1,2,3..); a lone or non-monotonic family is prose
 #     ('(A) SEE NOTE (B) ABOVE', 'AREA 1.5 NM') and yields no marks.
-RE_PAREN_SUBAREA = re.compile(r"\(\s*([A-Z])\s*\)(?=\s+\d{1,3}[-\s]\d)")
-RE_AREA_LABEL = re.compile(r"\bAREA\s+([A-Z]|\d{1,2})\b(?=\s+\d{1,3}[-\s]\d)")
+RE_PAREN_SUBAREA = re.compile(r"\(\s*([A-Z])\s*\)[\.:]?(?=\s+\d{1,3}[-\s]\d)")
+RE_AREA_LABEL = re.compile(r"\bAREA\s+([A-Z]|\d{1,2})\b[\.:]?(?=\s+\d{1,3}[-\s]\d)")
 
 
 def subarea_marks(body: str):

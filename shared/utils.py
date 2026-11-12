@@ -10,6 +10,7 @@ import math
 from typing import Dict, List, Tuple, Set, Any, Optional
 
 from shared.exceptions import ParseError, ValidationError
+from shared.navarea_universal_text import subarea_marks
 from shared.geometry_classifier import (
     classify_geometry_archetype, classify_geometry_archetype_detailed,
     ring_is_simple,
@@ -1296,23 +1297,42 @@ RE_LETTERED_CLAUSE = re.compile(r"^[ \t]*([A-Z])\.[\s]+(?=\d)", re.MULTILINE)
 def parse_block_geometries(raw_text: str):
     """
     Clause-aware geometry parse for the dedicated single-block parsers
-    (NAVAREA I, XI, Baltic): lettered sub-areas ('A. 12-34.5N ...') that
+    (NAVAREA I, XI, Baltic): lettered sub-areas ('A. 12-34.5N ...') and
+    inline sub-area markers ('(A) 20-12.0N ... (B) ...', 'AREA 1 ...') that
     directly introduce coordinates are parsed as SEPARATE geometries
-    (NAVAREA XI 0475/26: areas A/B/C must never merge into one shape).
-    Rejoins line-wrapped tokens, aggregates qa flags and worst-case data
-    quality across clauses.
+    (NAVAREA XI 0475/26 and NAVAREA VIII 1139/26: sub-areas must never merge
+    into one shape). Rejoins line-wrapped tokens, aggregates qa flags,
+    flags incomplete zones, and aggregates worst-case data quality across clauses.
 
     Returns (geoms, coords_text, qa_flags, data_quality) where geoms is a
     list of (label, spatial, lat, lon) and coords_text the canonical
     coordinate strings of all clauses in order.
     """
     text = rejoin_wrapped_coords(raw_text or "")
-    marks = [(m.start(), m.group(1)) for m in RE_LETTERED_CLAUSE.finditer(text)]
+    s_marks = subarea_marks(text)
+    l_marks = [(m.start(), m.group(1)) for m in RE_LETTERED_CLAUSE.finditer(text)]
+
+    # Resolve candidate segmentations safely:
+    # subarea_marks() requires strictly increasing sequence >= 2 of same family
+    # and coordinate lookaheads; RE_LETTERED_CLAUSE matches line-initial 'A. <coord>'.
+    marks = []
+    if s_marks and not l_marks:
+        marks = s_marks
+    elif l_marks and not s_marks:
+        marks = l_marks
+    elif s_marks and l_marks:
+        if [m[0] for m in s_marks] == [m[0] for m in l_marks]:
+            marks = s_marks
+        else:
+            # Conflicting plausible boundaries: fail closed to single block
+            marks = []
+
     clauses = []
+    preamble = None
     if marks:
-        preamble = text[:marks[0][0]].strip()
-        if preamble:
-            clauses.append((None, preamble))
+        lead = text[:marks[0][0]].strip()
+        if lead:
+            preamble = lead
         for k, (start, label) in enumerate(marks):
             end = marks[k + 1][0] if k + 1 < len(marks) else len(text)
             seg = text[start:end].strip()
@@ -1326,11 +1346,15 @@ def parse_block_geometries(raw_text: str):
     coords_text = []
     qa_flags = []
     data_quality = None
+    is_multizone = len(clauses) > 1 and any(c[0] is not None for c in clauses)
+    has_incomplete_zone = False
 
     for label, clause_text in clauses:
         if not clause_text:
             continue
-        coords, lat, lon, spatial, report = parse_coordinates_detailed(clause_text)
+        coords, lat, lon, spatial, report = parse_coordinates_detailed(
+            clause_text, context_text=preamble
+        )
         coords_text.extend(coords)
         for flag in report.get("flags") or []:
             if flag not in qa_flags:
@@ -1361,6 +1385,20 @@ def parse_block_geometries(raw_text: str):
                         props[k] = report[k]
                         spatial.setdefault(k, report[k])
             geoms.append((label, spatial, lat, lon))
+        elif is_multizone and label is not None:
+            has_incomplete_zone = True
+
+    if is_multizone:
+        # Check if an expected bounded-area clause failed to form a valid polygon
+        if preamble and ("BOUND" in preamble.upper() or "AREA" in preamble.upper()):
+            for g_label, g_spatial, _, _ in geoms:
+                if isinstance(g_spatial, dict) and g_spatial.get("type") != "Polygon":
+                    has_incomplete_zone = True
+
+        if has_incomplete_zone or len(geoms) < len(clauses):
+            if "has_incomplete_zone" not in qa_flags:
+                qa_flags.append("has_incomplete_zone")
+            data_quality = "AMBIGUOUS"
 
     return geoms, coords_text, qa_flags, data_quality
 
