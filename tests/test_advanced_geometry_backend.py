@@ -315,6 +315,17 @@ class TestBoundingBoxes(unittest.TestCase):
         }})
         self.assertEqual(payloads[0]["feature_type"], "BOUNDING_BOX")
 
+    def test_two_corner_antimeridian_box_is_split_and_centered(self):
+        text = (
+            "AREA BOUNDED WITHIN 10-00.0N 179-00.0E AND "
+            "11-00.0N 179-00.0W. HYDROGRAPHIC SURVEY."
+        )
+        coords, lat, lon, spatial, report = parse_coordinates_detailed(text)
+        self.assertEqual(spatial["type"], "MultiPolygon")
+        self.assertEqual(report["feature_type"], "BOUNDING_BOX")
+        self.assertEqual(lon, -180.0)
+        self.assertEqual(len(spatial["coordinates"]), 2)
+
     def test_two_corner_bounding_box_archetype(self):
         text = (
             "AREA BOUNDED WITHIN\n"
