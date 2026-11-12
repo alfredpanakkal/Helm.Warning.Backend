@@ -131,7 +131,9 @@ class TestCorridorSwaths(unittest.TestCase):
         self.assertEqual(spatial["type"], "LineString")
         self.assertEqual(report["feature_type"], "CORRIDOR")
         self.assertEqual(report["buffer_nm"], 0.0)
-        self.assertEqual(report["corridor_half_width_nm"], 2.0)
+        self.assertEqual(report["corridor_clearance_nm"], 2.0)
+        self.assertNotIn("corridor_half_width_nm", report)
+        self.assertIn("corridor_width_semantics_ambiguous", report["flags"])
         # Raw route coordinates are strictly preserved (no artificial buffer deformation)
         self.assertEqual(spatial["coordinates"], [[60.0, 10.0], [60.5, 10.5]])
 
@@ -144,7 +146,8 @@ class TestCorridorSwaths(unittest.TestCase):
         self.assertEqual(spatial["type"], "LineString")
         self.assertEqual(report["feature_type"], "CORRIDOR")
         self.assertEqual(report["buffer_nm"], 0.0)
-        self.assertEqual(report["corridor_half_width_nm"], round(500 / 1852.0, 3))
+        self.assertEqual(report["corridor_clearance_nm"], round(500 / 1852.0, 3))
+        self.assertNotIn("corridor_half_width_nm", report)
 
     def test_route_with_km_clearance(self):
         text = (
@@ -155,7 +158,8 @@ class TestCorridorSwaths(unittest.TestCase):
         self.assertEqual(spatial["type"], "LineString")
         self.assertEqual(report["feature_type"], "CORRIDOR")
         self.assertEqual(report["buffer_nm"], 0.0)
-        self.assertEqual(report["corridor_half_width_nm"], round(3.0 / 1.852, 3))
+        self.assertEqual(report["corridor_clearance_nm"], round(3.0 / 1.852, 3))
+        self.assertNotIn("corridor_half_width_nm", report)
 
     def test_point_safety_zone(self):
         text = "DRILLING RIG AT 18-30.0N 072-00.0E. 500 METRES SAFETY ZONE IN FORCE."
@@ -171,6 +175,16 @@ class TestCorridorSwaths(unittest.TestCase):
         coords, lat, lon, spatial, report = parse_coordinates_detailed(text)
         self.assertEqual(report["feature_type"], "LINE")
         self.assertEqual(report["buffer_nm"], 0.0)
+
+    def test_explicit_half_width_is_stored_separately(self):
+        text = (
+            "CABLE OPERATIONS ALONG LINE 10-00.0N 060-00.0E TO 10-30.0N 060-30.0E. "
+            "WIDE BERTH OF 2 NM ON EACH SIDE."
+        )
+        coords, lat, lon, spatial, report = parse_coordinates_detailed(text)
+        self.assertEqual(report["feature_type"], "CORRIDOR")
+        self.assertEqual(report["corridor_half_width_nm"], 2.0)
+        self.assertNotIn("corridor_width_semantics_ambiguous", report["flags"])
 
     def test_explicit_statute_miles_convert_to_nautical_miles(self):
         text = (
@@ -331,13 +345,16 @@ class TestEndToEndPipeline(unittest.TestCase):
         self.assertEqual(feat["geometry"]["type"], "LineString")
         self.assertEqual(feat["properties"]["feature_type"], "CORRIDOR")
         self.assertEqual(feat["properties"]["buffer_nm"], 0.0)
-        self.assertEqual(feat["properties"]["corridor_half_width_nm"], 1.5)
+        self.assertEqual(feat["properties"]["corridor_clearance_nm"], 1.5)
+        self.assertNotIn("corridor_half_width_nm", feat["properties"])
+        self.assertIn("corridor_width_semantics_ambiguous", warn["qa_flags"])
 
         payloads = build_geometry_payloads(warn)
         self.assertEqual(len(payloads), 1)
         self.assertEqual(payloads[0]["feature_type"], "CORRIDOR")
         self.assertEqual(payloads[0]["buffer_nm"], 0.0)
-        self.assertEqual(payloads[0]["corridor_half_width_nm"], 1.5)
+        self.assertEqual(payloads[0]["corridor_clearance_nm"], 1.5)
+        self.assertNotIn("corridor_half_width_nm", payloads[0])
 
     def test_universal_parser_preserves_subarea_sweeps_without_cross_contamination(self):
         bulletin = (
