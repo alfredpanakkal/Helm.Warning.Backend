@@ -38,7 +38,7 @@ UNPLOTTED_REASONS = {
     "duplicate_of", "validation_failed", "no_valid_geometry",
 }
 
-TIER_C_QA_FLAGS = {
+TIER_REVIEW_QA_FLAGS = {
     "MISSING_HEM", "PARTIAL_TRUNCATED_MISSING_COORDS", "AI_VALIDATION_FAILED",
     "ORPHAN_FRAGMENT", "MINUTES_OUT_OF_RANGE", "SECONDS_OUT_OF_RANGE",
     "LAT_OUT_OF_RANGE", "LON_OUT_OF_RANGE", "AXIS_HEMISPHERE_MISMATCH",
@@ -558,27 +558,24 @@ def build_master_payload(record: Dict[str, Any]) -> Dict[str, Any]:
     parsing_method = record.get("parsing_method", "RULE")
     qa_flags = record.get("qa_flags") or []
     unplotted_reason = normalize_unplotted_reason(record.get("unplotted_reason"), qa_flags)
-    has_quarantine_flag = any(flag in TIER_C_QA_FLAGS for flag in qa_flags)
+    has_review_flag = any(flag in TIER_REVIEW_QA_FLAGS for flag in qa_flags)
 
-    if not geoms or data_quality == "INVALID" or has_quarantine_flag:
+    if not geoms:
         triage_tier = "C"
         if unplotted_reason is None:
             unplotted_reason = unplotted_reason_from_qa_flags(qa_flags) or "no_valid_geometry"
     else:
-        # A geometry-bearing warning that fails any Tier A condition belongs
-        # in review. Preserve an explicit Tier B request; never promote it.
+        # Geometry-bearing partial failures remain visible for human review.
         requested_tier = record.get("triage_tier")
         tier_a_eligible = (
             data_quality == "EXPLICIT"
             and unplotted_reason is None
             and parsing_method == "RULE"
             and status != "superseded"
+            and not has_review_flag
             and not qa_flags_require_review(qa_flags)
         )
-        if requested_tier == "C":
-            triage_tier = "C"
-        else:
-            triage_tier = "B" if requested_tier == "B" or not tier_a_eligible else "A"
+        triage_tier = "B" if requested_tier == "B" or not tier_a_eligible else "A"
 
     valid_from = parse_safe_iso_timestamp(record.get("valid_from") or record.get("publication_time") or record.get("issued_text"))
     valid_to = parse_safe_iso_timestamp(record.get("valid_to") or record.get("cancellation_date"))
