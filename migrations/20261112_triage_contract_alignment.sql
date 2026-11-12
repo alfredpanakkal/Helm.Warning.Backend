@@ -11,7 +11,7 @@ ALTER TABLE public.nav_warning_geometries
 
 -- Existing CHECK covers the four Tier-A database fields. This additive guard
 -- prevents known partial-zone/repair markers from entering the auto-plot tier.
-DO $
+DO $b4$
 BEGIN
     IF NOT EXISTS (
         SELECT 1
@@ -26,7 +26,7 @@ BEGIN
                 OR NOT (qa_flags ?| ARRAY['has_incomplete_zone', 'has_repairs'])
             ) NOT VALID;
     END IF;
-END $;
+END $b4$;
 
 -- Append columns only: CREATE OR REPLACE VIEW must preserve existing column order.
 CREATE OR REPLACE VIEW public.nav_warnings_active_spatial AS
