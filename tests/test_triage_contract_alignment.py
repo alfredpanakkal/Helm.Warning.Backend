@@ -122,8 +122,17 @@ class TestTierBInvariants(unittest.TestCase):
             data_quality=DataQuality.AMBIGUOUS,
             qa_flags=["has_incomplete_zone"],
         )
+        rec.spatial = {"type": "Point", "coordinates": [70.0, 20.0]}
         assign_final_triage(rec)
         self.assertEqual(rec.triage_tier, TriageTier.B)
+
+        master = build_master_payload(
+            point_record(
+                data_quality="AMBIGUOUS",
+                qa_flags=["has_incomplete_zone"],
+            )
+        )
+        self.assertEqual(master["triage_tier"], "B")
 
     def test_partial_validation_failure_with_valid_geometry_routes_to_b(self):
         rec = triage_record(qa_flags=["VALIDATION_FAILED"])
