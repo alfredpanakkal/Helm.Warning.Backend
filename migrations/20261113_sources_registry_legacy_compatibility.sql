@@ -11,8 +11,19 @@ BEGIN;
 
 -- The frontend upsert does not send the legacy region column. Keep the column
 -- and its existing values, but stop requiring it for new contract-shaped rows.
-ALTER TABLE public.sources_registry
-    ALTER COLUMN region DROP NOT NULL;
+DO $legacy_region$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'sources_registry'
+          AND column_name = 'region'
+    ) THEN
+        ALTER TABLE public.sources_registry
+            ALTER COLUMN region DROP NOT NULL;
+    END IF;
+END;
+$legacy_region$;
 
 -- Current frontend SourceRegistryItem fields (JSONB for structured values).
 ALTER TABLE public.sources_registry
