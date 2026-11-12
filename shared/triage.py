@@ -9,8 +9,8 @@ import logging
 import math
 
 from shared.models import (
-    DataQuality, ParsingMethod, TriageTier, TIER_REVIEW_QA_FLAGS,
-    UNPLOTTED_REASONS, qa_flags_require_review, unplotted_reason_from_qa_flags,
+    DataQuality, ParsingMethod, TriageTier,
+    qa_flags_require_review, unplotted_reason_from_qa_flags,
     normalize_unplotted_reason,
 )
 from shared.logging import get_logger
