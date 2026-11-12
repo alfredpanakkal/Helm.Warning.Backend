@@ -49,6 +49,8 @@ class TestSourcesRegistryCompatibilityMigration(unittest.TestCase):
             / "20261113_sources_registry_legacy_compatibility.sql"
         ).read_text(encoding="utf-8")
         self.assertIn("ALTER COLUMN region DROP NOT NULL", migration)
+        self.assertIn("ALTER COLUMN navarea DROP NOT NULL", migration)
+        self.assertIn("ALTER COLUMN parser_id DROP NOT NULL", migration)
         self.assertNotIn("DROP COLUMN", migration)
         self.assertNotIn("DELETE FROM", migration)
         self.assertNotIn("TRUNCATE", migration)
