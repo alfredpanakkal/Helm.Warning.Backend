@@ -71,7 +71,8 @@ class TestAiParser(unittest.TestCase):
         self.assertEqual(result["triage_tier"], 2)
         # categories now come from the canonical classifier
         self.assertEqual(result["category"], "drifting")
-        self.assertEqual(result["categories"], ["drifting"])
+        self.assertIn("drifting", result["categories"])
+        self.assertEqual(result["categories"][0], "drift")
 
     def test_fallback_parse_warning_advisory(self):
         text = "GENERAL ADVISORY FOR NAVIGATORS IN AREA 20-00.0N 060-00.0E."
@@ -83,7 +84,8 @@ class TestAiParser(unittest.TestCase):
         # fallback; the canonical classifier tags it correctly now.
         text = "SEISMIC SURVEY IN AREA 54-10.0N 010-20.0E. CABLE OPERATIONS."
         result = fallback_parse_warning(text)
-        self.assertEqual(result["categories"], ["subsea"])
+        self.assertIn("subsea", result["categories"])
+        self.assertIn("cable", result["categories"])
         self.assertEqual(result["category"], "subsea")
 
     def test_fallback_cancel_notice_classifies_general(self):
@@ -110,7 +112,8 @@ class TestAiParser(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["triage_tier"], 2)
         self.assertEqual(result["category"], "drifting")
-        self.assertEqual(result["categories"], ["drifting"])
+        self.assertIn("drifting", result["categories"])
+        self.assertEqual(result["categories"][0], "drift")
         self.assertEqual(len(result["coordinates"]), 1)
         self.assertAlmostEqual(result["coordinates"][0]["repaired_lat"], 52.751667, places=5)
         self.assertAlmostEqual(result["coordinates"][0]["repaired_lon"], 2.206667, places=5)

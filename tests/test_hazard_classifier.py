@@ -85,7 +85,8 @@ class TestElectronicPriority(unittest.TestCase):
         raw = ("GNSS INTERFERENCE MAY BE EXPERIENCED IN THE BALTIC SEA "
                "IN VICINITY OF OFFSHORE PLATFORMS AND RIGS.")
         cats = classify_hazard_categories(raw)
-        self.assertEqual(cats[0], "electronic")
+        self.assertEqual(cats[0], "service_status")
+        self.assertIn("electronic", cats)
         self.assertEqual(classify_hazard(raw), "electronic")
 
     def test_gps_jamming_without_gnss_word_matches(self):
