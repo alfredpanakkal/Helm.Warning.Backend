@@ -281,6 +281,11 @@ class TestMigrationContract(unittest.TestCase):
             "g.zone_label",
             "g->>'corridor_clearance_nm'",
             "chk_tier_a_qa_flags",
+            "CREATE OR REPLACE VIEW public.nav_warnings_review_queue",
+            "w.status IN ('active', 'superseded')",
+            "w.parsing_method",
+            "w.qa_flags",
+            "w.unplotted_reason",
         ):
             self.assertIn(contract, migration)
         self.assertIn("SET triage_tier = 'B'", migration)
