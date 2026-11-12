@@ -995,7 +995,107 @@ def parse_block_geometries(raw_text: str):
 # classifies as 'general'.
 RE_CANCEL_SENTENCE = re.compile(r"(?:^|[.!?\n])[^.!?\n]*\bCANCEL(?:L?ATION|L?ED|L?ING|S?)\b[^.!?\n]*[.!?\n]?", re.IGNORECASE)
 RE_NO_LONGER_SENTENCE = re.compile(r"(?:^|[.!?\n])[^.!?\n]*\bNO LONGER\b[^.!?\n]*[.!?\n]?", re.IGNORECASE)
-RE_COMPLETED_SENTENCE = re.compile(r"(?:^|[.!?\n])[^.!?\n]*\b(?:COMPLETED|DISCONTINUED)\b[^.!?\n]*[.!?\n]?", re.IGNORECASE)
+# Completion/discontinuation is stripped ONLY when an OPERATION is the subject
+# ("DREDGING OPERATIONS COMPLETED", "SURVEY DISCONTINUED ON 12 OCT"). A bare
+# COMPLETED/DISCONTINUED elsewhere describes equipment or a service
+# ("DGPS STATION DISCONTINUED", "DISCONTINUED LIGHT BUOY", "COMPLETED PLATFORM")
+# and is itself the active hazard, so that sentence must survive.
+_COMPLETION_SUBJECTS = (
+    r"(?:OPERATIONS?|WORKS?|EXERCISES?|SURVEYS?|DREDGING|DRILLING|DIVING|"
+    r"SALVAGE|REPAIRS?|TOWING|DEMOLITION|FIRINGS?|LAUNCH(?:ES)?|ACTIVIT(?:Y|IES)|"
+    r"TESTS?|TESTING|INSTALLATION|CONSTRUCTION|MAINTENANCE|RECOVERY|LAYING)"
+)
+RE_COMPLETED_SENTENCE = re.compile(
+    r"(?:^|[.!?\n])[^.!?\n]*?\b" + _COMPLETION_SUBJECTS + r"\b"
+    r"(?:\s+(?:IN|AT|OFF|NEAR|WITHIN|ON)(?:\s+[A-Z0-9/\-]+){1,3})?"
+    r"(?:\s+(?:HAS|HAVE|WAS|WERE|IS|ARE|BEEN|NOW|SUCCESSFULLY|ALL))*"
+    r"\s+(?:COMPLETED|DISCONTINUED)\b"
+    r"(?=\s*(?:[.!?\n]|$)|\s+(?:ON|AT|SINCE|AS|BY|AND|\d))"
+    r"[^.!?\n]*[.!?\n]?",
+    re.IGNORECASE,
+)
+
+# Contextual-match helpers (PR #103 follow-up). Each hazard needs context, not
+# a bare substring: 'ORIGINAL' contains RIG, 'PROVIDED' contains ROV, a
+# 'container vessel' is not a drifting container, a 'cable' is also a unit of
+# distance, and an 'anchor' instruction is not marine operations.
+RE_FLOODLIGHT = re.compile(r"\bFLOOD\s*-?\s*LIGHTS?\b")
+RE_SENTENCE_SPLIT = re.compile(r"[.!?\n]+")
+RE_CONTAINER_CARRIER = re.compile(
+    r"\bCONTAINERS?\s+(?:VESSELS?|SHIPS?|CARRIERS?|TERMINALS?|BERTHS?|PORTS?|CRANES?|YARDS?|FEEDERS?)\b")
+RE_CONTAINER_LOOSE = re.compile(
+    r"\b(?:OVERBOARD|FLOATING|FALLEN|FELL|LOST|SUBMERGED|SEMI-SUBMERGED|ADRIFT|DRIFTING|DETACHED|LOOSE)\b")
+RE_WRECK = re.compile(
+    r"\bWRECK(?:S|AGE|ED)?\b"
+    r"|\b(?:SUNKEN|SUBMERGED|SEMI-SUBMERGED|CAPSIZED)\s+(?:\w+\s+)?(?:OBSTRUCTION|VESSEL|HULL)\b"
+    r"|\bCORAL\s+HEAD\b")
+# 'N CABLES' / 'A CABLE' / 'ANCHOR CABLE' are distances or ship's gear, not seabed cables.
+RE_CABLE_NOT_SUBSEA = re.compile(
+    r"\b(?:\d+(?:\.\d+)?|ONE|TWO|THREE|FOUR|FIVE|HALF|A)\s+CABLES?\b"
+    r"|\b(?:ANCHOR|CHAIN|MOORING|TOW|TOWING)\s+CABLES?\b")
+RE_CABLE_CONTEXT = re.compile(
+    r"\b(?:SUBMARINE|SUBSEA|UNDERWATER|SEABED|SEA\s+BED|LAYING|LAID|REPAIR|RECOVER(?:Y|ING)|"
+    r"BURIAL|TRENCH(?:ING)?|PLOUGH(?:ING)?|INSTALL(?:ATION|ING)?|OPERATIONS?|WORKS?|SURVEY|"
+    r"CABLE\s*-?\s*(?:SHIP|VESSEL|LAYER)|C/S|POWER|TELECOM\w*|FIB(?:RE|ER)|DAMAGED|BROKEN|ROV)\b")
+RE_PIPELINE_CONTEXT = re.compile(
+    r"\b(?:SUBMARINE|SUBSEA|UNDERWATER|OFFSHORE|SEABED|SEA\s+BED|LAYING|LAID|REPAIR|SURVEY|"
+    r"INSTALL(?:ATION|ING)?|BURIAL|TRENCH(?:ING)?|OIL|GAS|OPERATIONS?|WORKS?|RISER|FLOWLINE|"
+    r"DAMAGED|LEAK(?:ING|AGE)?)\b")
+RE_RIG = re.compile(
+    r"\bRIGS?\b"
+    r"|\b(?:OFFSHORE|OIL|GAS|PRODUCTION|WELL\s*HEAD|DRILLING|FIXED|PROCESSING|ACCOMMODATION|JACKET|WORKOVER)"
+    r"\s+(?:\w+\s+)?PLATFORMS?\b"
+    r"|\bJACK-?UPS?\b|\b(?:DRILLSHIPS?|MODU|FPSO)\b")
+RE_ANCHOR_OPS = re.compile(
+    r"\bANCHOR\s+(?:HANDLING|LAYING|PATTERN|SPREAD|RECOVERY|DRAGGING)\b"
+    r"|\b(?:LOST|ABANDONED|DRAGGED)\s+ANCHORS?\b"
+    r"|\bANCHORS?\s+(?:AND\s+CHAIN\s+)?(?:LOST|ABANDONED)\b"
+    r"|\bAHTS\b")
+
+
+def _sentences(text: str) -> list[str]:
+    return [s for s in RE_SENTENCE_SPLIT.split(text) if s.strip()]
+
+
+def _has_drifting_container(text: str) -> bool:
+    """CONTAINER counts as drift only when a container itself is loose/adrift
+    in the same sentence; 'container vessel/ship/terminal' never does."""
+    for sentence in _sentences(text):
+        cleaned = RE_CONTAINER_CARRIER.sub(" ", sentence)
+        if re.search(r"\bCONTAINERS?\b", cleaned) and RE_CONTAINER_LOOSE.search(cleaned):
+            return True
+    return False
+
+
+def _has_subsea_cable_or_pipeline(text: str) -> bool:
+    for sentence in _sentences(text):
+        cable_text = RE_CABLE_NOT_SUBSEA.sub(" ", sentence)
+        if re.search(r"\bCABLES?\b", cable_text) and RE_CABLE_CONTEXT.search(cable_text):
+            return True
+        if re.search(r"\bPIPELINES?\b", sentence) and RE_PIPELINE_CONTEXT.search(sentence):
+            return True
+    return False
+
+
+def _aton_text(text: str) -> str:
+    """Text used for AtoN checks with floodlights handled per sentence: the
+    floodlight words are removed, and a sentence that mentioned a floodlight
+    but has no other AtoN noun is dropped so its status words (UNLIT,
+    EXTINGUISHED...) cannot be attributed to a buoy elsewhere in the bulletin."""
+    nouns = ("LIGHT", "BUOY", "RACON", "BEACON")
+    kept = []
+    for sentence in _sentences(text):
+        if RE_FLOODLIGHT.search(sentence):
+            stripped = RE_FLOODLIGHT.sub(" ", sentence)
+            if any(n in stripped for n in nouns):
+                kept.append(stripped)
+        else:
+            kept.append(sentence)
+    return ". ".join(kept)
+
+# Result for empty / unmatched input from classify_hazard_categories().
+# classify_hazard() maps this to the legacy 'general' via the alias table.
+UNMATCHED_CATEGORIES = ("general_chart", "general")
 
 LEGACY_CATEGORY_ALIASES = {
     "mil_fire": "military",
@@ -1025,24 +1125,28 @@ def classify_hazard_categories(raw_text: str) -> list[str]:
         (mil_fire / military), never 'drift' / 'drifting' objects.
     """
     if not raw_text or not isinstance(raw_text, str):
-        return ["general"]
+        return list(UNMATCHED_CATEGORIES)
 
+    upper = raw_text.upper()
     text = RE_COMPLETED_SENTENCE.sub(
         " ", RE_NO_LONGER_SENTENCE.sub(
-            " ", RE_CANCEL_SENTENCE.sub(" ", raw_text.upper())))
+            " ", RE_CANCEL_SENTENCE.sub(" ", upper)))
+    # True when a cancel/no-longer/completion guard removed something. A notice
+    # that is ONLY such sentences carries no hazard of its own and stays
+    # ['general'] (existing contract); genuinely empty/unmatched text instead
+    # falls back to the canonical ['general_chart', 'general'].
+    guard_stripped = text != upper
     if not re.search(r"[A-Z]{3}", text):
-        # Only cancellation/retraction/completion sentences remained: a pure
-        # cancel/completion notice carries no hazard of its own.
-        return ["general"]
+        return ["general"] if guard_stripped else list(UNMATCHED_CATEGORIES)
 
-    categories: list[str] = []
+    # Canonical categories are collected on their own; legacy aliases are
+    # derived from them at the end, so categories[0] is always canonical and
+    # every alias follows all canonical entries.
+    canonical: list[str] = []
 
     def _add(cat: str) -> None:
-        if cat not in categories:
-            categories.append(cat)
-        legacy = LEGACY_CATEGORY_ALIASES.get(cat)
-        if legacy and legacy not in categories:
-            categories.append(legacy)
+        if cat not in canonical:
+            canonical.append(cat)
 
     # 1. Service Status / Jamming / Outages (Priority over Rigs/Platforms)
     if any(k in text for k in [
@@ -1087,15 +1191,15 @@ def classify_hazard_categories(raw_text: str) -> list[str]:
         _add("ice")
 
     # 8. Drifting Hazards
-    if any(k in text for k in ["DRIFTING", "DERELICT", "CONTAINER", "ADRIFT"]) or re.search(r"\b(?:UNMANNED\s+BARGE|HAZARD\s+FLOAT)\b", text):
+    if any(k in text for k in ["DRIFTING", "DERELICT", "ADRIFT"]) or _has_drifting_container(text) or re.search(r"\b(?:UNMANNED\s+BARGE|HAZARD\s+FLOAT)\b", text):
         _add("drift")
 
     # 9. Wrecks & Obstructions
-    if any(k in text for k in ["SUNKEN WRECK", "DANGEROUS WRECK", "WRECK", "OBSTRUCTION"]) or re.search(r"\b(?:SUBMERGED\s+OBSTRUCTION|CORAL\s+HEAD)\b", text):
+    if RE_WRECK.search(text):
         _add("wreck")
 
     # 10. Submarine Cables & Pipelines
-    if any(k in text for k in ["CABLE", "PIPELINE"]) or re.search(r"\b(?:SUBMARINE\s+CABLE|PIPE\s+SURVEY|PIPE\s+LAYING)\b", text):
+    if _has_subsea_cable_or_pipeline(text) or re.search(r"\b(?:PIPE\s+SURVEY|PIPE\s+LAYING)\b", text):
         _add("cable")
 
     # 11. Surveys
@@ -1103,15 +1207,15 @@ def classify_hazard_categories(raw_text: str) -> list[str]:
         _add("survey")
 
     # 12. Offshore Rigs
-    if any(k in text for k in ["RIG", "PLATFORM", "JACK-UP"]) or re.search(r"\b(?:DRILLING\s+RIG|OFFSHORE\s+RIG|DRILLSHIP|MODU)\b", text):
+    if RE_RIG.search(text):
         _add("rig")
 
     # 13. Aids to Navigation (AtoN)
-    has_light = (any(k in text for k in ["LIGHT", "LIGHTS", "BUOY", "BUOYS", "RACON", "BEACON"])
-                 and not re.search(r"\bFLOODLIGHTS?\b", text))
-    if has_light and any(k in text for k in ["UNLIT", "EXTINGUISHED", "OFF AIR", "OFF STATION", "DAMAGED", "DESTROYED", "RELOCATED", "WITHDRAWN", "ESTABLISHED"]):
+    aton_text = _aton_text(text)
+    has_light = any(k in aton_text for k in ["LIGHT", "LIGHTS", "BUOY", "BUOYS", "RACON", "BEACON"])
+    if has_light and any(k in aton_text for k in ["UNLIT", "EXTINGUISHED", "OFF AIR", "OFF STATION", "DAMAGED", "DESTROYED", "RELOCATED", "WITHDRAWN", "ESTABLISHED"]):
         _add("aton")
-    elif any(k in text for k in ["UNLIT", "EXTINGUISHED"]):
+    elif any(k in aton_text for k in ["UNLIT", "EXTINGUISHED"]):
         _add("aton")
 
     # 14. Restricted Areas
@@ -1119,14 +1223,25 @@ def classify_hazard_categories(raw_text: str) -> list[str]:
         _add("restricted")
 
     # 15. Marine Ops (Dredging, Diving, Towing, Demolition Ops)
-    if any(k in text for k in ["ROV", "TOWING", "DREDGING", "ANCHOR", "CHAIN LOST", "DIVING", "UNDER TOW"]) or (has_demolition and not has_ordnance):
+    if (any(k in text for k in ["TOWING", "DREDGING", "CHAIN LOST", "DIVING", "UNDER TOW"])
+            or re.search(r"\bROV\b", text) or RE_ANCHOR_OPS.search(text)
+            or (has_demolition and not has_ordnance)):
         _add("ops")
 
     # 16. General Chart Corrections
     if re.search(r"\b(?:DEPTH\s+CORRECTION|SHOAL\s+DEPTH|NEW\s+SOUNDINGS|SHOALING|CHART\s+CORRECTION)\b", text):
         _add("general_chart")
 
-    return categories if categories else ["general"]
+    if not canonical:
+        return ["general"] if guard_stripped else list(UNMATCHED_CATEGORIES)
+
+    # Legacy aliases follow ALL canonical entries (order of first appearance).
+    aliases: list[str] = []
+    for cat in canonical:
+        legacy = LEGACY_CATEGORY_ALIASES.get(cat)
+        if legacy and legacy not in canonical and legacy not in aliases:
+            aliases.append(legacy)
+    return canonical + aliases
 
 
 

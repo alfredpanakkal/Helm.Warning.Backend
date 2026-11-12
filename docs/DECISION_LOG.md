@@ -144,6 +144,19 @@ can be populated. Lives in `shared/utils.py` (`_sector_from_sweep_wording`),
 `scripts/navarea_universal_parser.py` (property propagation),
 `shared/models.py` (`build_geometry_payloads`).
 
+### Hazard keywords need context; completion only strips operations (PR #103 follow-up)
+**Why:** substring keyword matching filed 'ORIGINAL' as rig, 'PROVIDED' as ROV ops, every
+container vessel as drifting, every generic obstruction as a wreck, a distance of '2 CABLES' as a
+seabed cable, and any 'ANCHOR' instruction as marine ops. The completion guard also deleted whole
+active warnings ('DGPS STATION DISCONTINUED', 'LIGHT BUOY DISCONTINUED'), and one floodlight
+mention suppressed an unlit buoy elsewhere in the bulletin. Matching is now contextual, the
+completion guard strips only sentences whose subject is an operation, floodlights are handled
+per sentence, and `categories` lists canonical categories first with legacy aliases after
+(`categories[0]` is always canonical). Empty or unmatched text returns
+`['general_chart', 'general']`; cancel/completion-only notices stay `['general']`;
+`classify_hazard()` still returns the legacy alias. Lives in `shared/utils.py`; NAVAREA VIII
+`category` now goes through `classify_hazard()` like every other parser.
+
 ---
 
 ## 3. Adding a new decision to this log
