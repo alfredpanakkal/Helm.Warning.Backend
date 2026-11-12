@@ -835,6 +835,11 @@ class TestSupabaseParsingAudit(unittest.TestCase):
     # trips PGRST200 in PostgREST.
     def test_geometry_fetch_accepts_geom_geojson_computed_key(self):
         self.assertIn("geom_geojson", audit_supabase_parsing.GEOMETRY_SELECT_COLS)
+        for metadata_column in (
+            "zone_label", "corridor_half_width_nm", "corridor_clearance_nm",
+            "sweep_radius_nm", "sweep_start_azimuth", "sweep_end_azimuth",
+        ):
+            self.assertIn(metadata_column, audit_supabase_parsing.GEOMETRY_SELECT_COLS)
         self.assertNotIn("st_asgeojson(", audit_supabase_parsing.GEOMETRY_SELECT_COLS)
         geom_row = {
             "warning_id": self.sample_active_warning["id"],
