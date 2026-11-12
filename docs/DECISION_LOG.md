@@ -189,6 +189,17 @@ parsers and `build_geometry_payloads()`, with strict validation against GeoJSON 
 -> Polygon, `CORRIDOR` -> LineString, `POINT` -> Point).
 Lives in `shared/utils.py`, `shared/models.py`, `scripts/navarea_universal_parser.py`.
 
+### Phase B2 follow-up — geometry safety and metadata persistence (PR #105)
+**Why:** Review of the Phase B2 implementation identified edge cases that could create incorrect geometry or lose source metadata.
+1. Axis-range and two-corner bounding boxes crossing the antimeridian are split into a `MultiPolygon`; their longitude midpoint is the dateline, never the arithmetic midpoint near Greenwich. Ambiguous axis ordering remains fail-closed.
+2. Explicit statute miles convert at 0.868976 NM per statute mile. Unqualified "miles" in maritime warning text retain the established nautical-mile convention; they are not silently reinterpreted.
+3. Corridor line geometry keeps `buffer_nm = 0`. A source phrase such as "WIDE BERTH OF 2 NM" does not establish whether 2 NM is total width or each-side clearance, so the source value is retained as `corridor_clearance_nm` and flagged `corridor_width_semantics_ambiguous`. Only explicit "half-width"/"each side" wording populates `corridor_half_width_nm`. Point safety zones continue to use `buffer_nm`.
+4. Relocation-intent text without exactly one former and one new position fails closed: no guessed point, centroid, line, or sector is generated; `AMBIGUOUS_RELOCATION` is recorded.
+5. The additive migration `20261112_geometry_metadata_persistence.sql` extends the lifecycle-safe `20261023_lifecycle_safety.sql` RPC to persist existing `corridor_half_width_nm` and `sweep_*` columns. It does not add columns and preserves insert-before-delete geometry replacement and previous-geometry retention on failed parses.
+6. PR validation relies on the central unit-test workflow introduced by PR #106; regional ingestion workflows remain outside routine PR validation.
+
+Lives in `shared/utils.py`, `shared/models.py`, `scripts/navarea_universal_parser.py`, `migrations/20261112_geometry_metadata_persistence.sql`, and geometry regression tests.
+
 ---
 
 ## 3. Adding a new decision to this log
