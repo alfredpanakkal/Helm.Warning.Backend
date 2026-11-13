@@ -210,12 +210,12 @@ class TestE2ESync(unittest.TestCase):
                 "cancel": [],
             }
 
-        with patch("shared.sync_engine.build_master_payload", return_value=master), \\
-             patch("shared.sync_engine.build_geometry_payloads", return_value=geometry), \\
-             patch("shared.sync_engine.compute_differential", side_effect=changed_warning), \\
+        with patch("shared.sync_engine.build_master_payload", return_value=master), \
+             patch("shared.sync_engine.build_geometry_payloads", return_value=geometry), \
+             patch("shared.sync_engine.compute_differential", side_effect=changed_warning), \
              patch("shared.sync_engine.resolve_cancel_cross_refs", return_value={
                  "referenced": 0, "resolved": 0, "applied": 0, "unresolved": 0,
-             }), \\
+             }), \
              patch("shared.sync_engine._record_generation"):
             success = run_differential_sync(
                 source_id="ukho-navarea-1",
