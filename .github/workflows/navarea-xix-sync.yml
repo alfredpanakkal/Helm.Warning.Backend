@@ -27,7 +27,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   ingest-navarea-xix-warnings:
@@ -79,9 +79,9 @@ jobs:
         if: always()
         with:
           name: navarea-xix-warnings-data
-        path: |
-          navareas/navarea_xix/latest_raw.html
-          navareas/navarea_xix/latest_raw.txt
-          navareas/navarea_xix/parsed.json
-        retention-days: 7
-        if-no-files-found: ignore
+          path: |
+            navareas/navarea_xix/latest_raw.html
+            navareas/navarea_xix/latest_raw.txt
+            navareas/navarea_xix/parsed.json
+          retention-days: 7
+          if-no-files-found: ignore
