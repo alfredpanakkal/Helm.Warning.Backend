@@ -124,13 +124,23 @@ class TestQaFlagReviewPolicy(unittest.TestCase):
             "CREATE OR REPLACE FUNCTION public.qa_flags_require_review",
             migration,
         )
-        self.assertIn("flag.value NOT LIKE 'geometry_basis:%'", migration)
+        self.assertIn(
+            "left(flag.value, length('geometry_basis:')) <> 'geometry_basis:'",
+            migration,
+        )
+        self.assertNotIn("NOT LIKE 'geometry_basis:%'", migration)
+        self.assertIn(
+            "WHEN pg_catalog.jsonb_typeof(p_qa_flags) <> 'array' THEN true",
+            migration,
+        )
         self.assertIn(
             "CREATE TRIGGER trg_tier_a_qa_flag_parity",
             migration,
         )
         self.assertIn("NEW.qa_flags IS DISTINCT FROM OLD.qa_flags", migration)
+        self.assertIn("NEW.status = 'active'", migration)
         self.assertIn("IF TG_OP = 'INSERT' THEN", migration)
+        self.assertIn("CREATE TEMP TABLE tier_a_qa_flag_trigger_test", migration)
         self.assertNotIn("UPDATE public.nav_warnings", migration)
 
     def test_empty_flags_do_not_require_review(self):
@@ -160,6 +170,13 @@ class TestQaFlagReviewPolicy(unittest.TestCase):
                 "COORD_COUNT_MISMATCH",
             ])
         )
+
+    def test_geometry_basis_prefix_is_literal_not_a_pattern(self):
+        self.assertTrue(qa_flags_require_review(["geometryXbasis:keyword:rig"]))
+        self.assertTrue(qa_flags_require_review(["geometry-basis:keyword:rig"]))
+
+    def test_empty_string_flag_does_not_require_review(self):
+        self.assertFalse(qa_flags_require_review([""]))
 
 
 class TestSupersedeLifecycleInvariant(unittest.TestCase):
