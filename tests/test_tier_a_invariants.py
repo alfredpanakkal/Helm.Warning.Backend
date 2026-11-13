@@ -2,6 +2,7 @@
 """Regression tests for the database Tier-A invariant at payload and lifecycle boundaries."""
 
 import os
+from pathlib import Path
 import sys
 import unittest
 from types import SimpleNamespace
@@ -10,7 +11,7 @@ ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from shared.models import build_master_payload
+from shared.models import build_master_payload, qa_flags_require_review
 from scripts.navarea_8_sync import _supersede_cross_refs as supersede_viii
 from scripts.navarea_iv_sync import _supersede_cross_refs as supersede_iv
 from scripts.navarea_xii_sync import _supersede_cross_refs as supersede_xii
@@ -98,6 +99,84 @@ class TestTierAPayloadInvariant(unittest.TestCase):
         master = build_master_payload(record)
         self.assertEqual(master["triage_tier"], "C")
         self.assertEqual(master["unplotted_reason"], "no_valid_geometry")
+
+    def test_review_required_qa_flag_demotes_geometry_to_tier_b(self):
+        master = build_master_payload(
+            self._record(qa_flags=["COORD_COUNT_MISMATCH"])
+        )
+        self.assertEqual(master["triage_tier"], "B")
+
+    def test_geometry_basis_flag_remains_informational(self):
+        master = build_master_payload(
+            self._record(qa_flags=["geometry_basis:keyword:rig"])
+        )
+        self.assertEqual(master["triage_tier"], "A")
+
+
+class TestQaFlagReviewPolicy(unittest.TestCase):
+    def test_sql_migration_enforces_the_same_informational_prefix(self):
+        migration = (
+            Path(__file__).resolve().parents[1]
+            / "migrations"
+            / "20261113_tier_a_qa_flag_parity.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "CREATE OR REPLACE FUNCTION public.qa_flags_require_review",
+            migration,
+        )
+        self.assertIn(
+            "left(flag.value, length('geometry_basis:')) <> 'geometry_basis:'",
+            migration,
+        )
+        self.assertNotIn("NOT LIKE 'geometry_basis:%'", migration)
+        self.assertIn(
+            "WHEN pg_catalog.jsonb_typeof(p_qa_flags) <> 'array' THEN true",
+            migration,
+        )
+        self.assertIn(
+            "CREATE TRIGGER trg_tier_a_qa_flag_parity",
+            migration,
+        )
+        self.assertIn("NEW.qa_flags IS DISTINCT FROM OLD.qa_flags", migration)
+        self.assertIn("NEW.status = 'active'", migration)
+        self.assertIn("IF TG_OP = 'INSERT' THEN", migration)
+        self.assertIn("CREATE TEMP TABLE tier_a_qa_flag_trigger_test", migration)
+        self.assertNotIn("UPDATE public.nav_warnings", migration)
+
+    def test_empty_flags_do_not_require_review(self):
+        self.assertFalse(qa_flags_require_review([]))
+
+    def test_json_null_flag_requires_review(self):
+        self.assertTrue(qa_flags_require_review([None]))
+
+    def test_geometry_basis_flags_are_informational(self):
+        self.assertFalse(
+            qa_flags_require_review(["geometry_basis:keyword:rig"])
+        )
+
+    def test_non_geometry_basis_flags_require_review(self):
+        for flag in (
+            "COORD_COUNT_MISMATCH",
+            "geometry_preserved_previous_run",
+            "verified_by_admin",
+        ):
+            with self.subTest(flag=flag):
+                self.assertTrue(qa_flags_require_review([flag]))
+
+    def test_mixed_flags_require_review(self):
+        self.assertTrue(
+            qa_flags_require_review([
+                "geometry_basis:keyword:rig",
+                "COORD_COUNT_MISMATCH",
+            ])
+        )
+
+    def test_geometry_basis_prefix_is_literal_not_a_pattern(self):
+        self.assertTrue(qa_flags_require_review(["geometryXbasis:keyword:rig"]))
+        self.assertTrue(qa_flags_require_review(["geometry-basis:keyword:rig"]))
+
+    def test_empty_string_flag_does_not_require_review(self):
+        self.assertFalse(qa_flags_require_review([""]))
 
 
 class TestSupersedeLifecycleInvariant(unittest.TestCase):

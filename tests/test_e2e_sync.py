@@ -166,6 +166,74 @@ class TestE2ESync(unittest.TestCase):
             {"p_payload": {"master": master, "geometries": geoms}}
         )
 
+    def test_rpc_failure_does_not_attempt_non_atomic_master_write(self):
+        mock_supabase = MagicMock()
+        mock_supabase.rpc.side_effect = RuntimeError("RPC unavailable")
+
+        master = {"canonical_id": "NAVAREA I 042/26", "title": "Test Warning"}
+        geoms = [{"zone_label": "Zone A", "geojson": {"type": "Point", "coordinates": [0, 0]}}]
+
+        success = upsert_warning_atomic(mock_supabase, master, geoms)
+
+        self.assertFalse(success)
+        mock_supabase.table.assert_not_called()
+
+    def test_rpc_failure_does_not_record_raw_message_checksum(self):
+        """A failed atomic upsert must not cache the new checksum as processed."""
+        from types import SimpleNamespace
+
+        mock_supabase = MagicMock()
+        nav_warnings_table = MagicMock()
+        raw_messages_table = MagicMock()
+        nav_warnings_table.select.return_value.eq.return_value.execute.return_value = SimpleNamespace(data=[])
+        raw_messages_table.select.return_value.eq.return_value.execute.return_value = SimpleNamespace(data=[])
+        mock_supabase.table.side_effect = lambda name: {
+            "nav_warnings": nav_warnings_table,
+            "raw_messages": raw_messages_table,
+        }[name]
+        mock_supabase.rpc.side_effect = RuntimeError("RPC unavailable")
+
+        master = {
+            "canonical_id": "NAVAREA I 042/26",
+            "raw_text": "NAVAREA I 042/26 TEST WARNING",
+            "triage_tier": "A",
+            "status": "active",
+        }
+        geometry = [{"feature_type": "POINT", "geojson": {"type": "Point", "coordinates": [1, 2]}}]
+        message = {"warning_id": "042/26", "checksum_sha256": "new-checksum"}
+
+        def changed_warning(**kwargs):
+            return {
+                "skip": [],
+                "new": [(kwargs["scraped_warnings"][0], kwargs["scraped_messages"][0])],
+                "update": [],
+                "cancel": [],
+            }
+
+        with patch("shared.sync_engine.build_master_payload", return_value=master), \
+             patch("shared.sync_engine.build_geometry_payloads", return_value=geometry), \
+             patch("shared.sync_engine.compute_differential", side_effect=changed_warning), \
+             patch("shared.sync_engine.resolve_cancel_cross_refs", return_value={
+                 "referenced": 0, "resolved": 0, "applied": 0, "unresolved": 0,
+             }), \
+             patch("shared.sync_engine._record_generation"):
+            success = run_differential_sync(
+                source_id="ukho-navarea-1",
+                navarea_name="NAVAREA I",
+                scraped_warnings=[{
+                    "warning_id": "042/26",
+                    "navarea": "NAVAREA I",
+                    "raw_text": master["raw_text"],
+                }],
+                scraped_messages=[message],
+                supabase_client=mock_supabase,
+                full_snapshot=False,
+            )
+
+        self.assertFalse(success)
+        mock_supabase.rpc.assert_called_once()
+        raw_messages_table.insert.assert_not_called()
+
     def test_fail_fast_missing_credentials(self):
         from shared.sync_engine import get_supabase_client
         with patch.dict(os.environ, {"SUPABASE_URL": "", "SUPABASE_KEY": "", "ALLOW_DRY_RUN": ""}):

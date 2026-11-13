@@ -81,8 +81,10 @@ def get_supabase_client():
 
 
 def upsert_warning_atomic(supabase_client, master: Dict[str, Any], geometries: List[Dict[str, Any]]) -> bool:
-    """Invokes public.upsert_nav_warning RPC to update master and child geometries in one transaction.
-    Falls back to direct master upsert if RPC is unavailable.
+    """Persist master and child geometries only through the atomic RPC.
+
+    A direct master-table fallback is unsafe: it can partially update a
+    warning while leaving its geometry children unchanged or missing.
     """
     if supabase_client is None:
         return True
@@ -96,28 +98,12 @@ def upsert_warning_atomic(supabase_client, master: Dict[str, Any], geometries: L
         supabase_client.rpc("upsert_nav_warning", {"p_payload": payload}).execute()
         return True
     except Exception as rpc_err:
-        # Fallback to direct master upsert if RPC is missing.
-        # IMPORTANT: the direct upsert CANNOT persist geometries (the
-        # geom_postgis column requires PostGIS/ST_GeomFromGeoJSON, only
-        # available inside the RPC). Persisting the master while dropping
-        # its geometries corrupts the nav_warnings_active_spatial JOIN
-        # (Tier-A masters with zero geometry rows = invisible on the map),
-        # so this is treated as an error, not a silent success.
-        print(f"    ⚠️ RPC upsert failed ({rpc_err}); attempting direct master upsert...")
-        try:
-            supabase_client.table("nav_warnings").upsert(master, on_conflict="canonical_id").execute()
-        except Exception as direct_err:
-            print(f"    ❌ Direct master upsert failed: {direct_err}")
-            return False
-        if geometries:
-            print(
-                f"    ❌ GEOMETRIES DROPPED for {master.get('canonical_id')}: "
-                f"{len(geometries)} geometry payload(s) NOT persisted "
-                f"(nav_warnings_active_spatial will not show this warning). "
-                f"Fix the upsert_nav_warning RPC and re-run the sync."
-            )
-            return False
-        return True
+        print(
+            f"    ❌ Atomic RPC upsert failed for "
+            f"{master.get('canonical_id')}: {rpc_err}. "
+            "No fallback write was attempted; retry after fixing the RPC."
+        )
+        return False
 
 
 def _record_generation(
@@ -530,24 +516,28 @@ def run_differential_sync(
             cid = master["canonical_id"]
             wid = warn_wrapper.get("warning_id", cid)
 
-            # Persist raw_message audit row
-            if msg and isinstance(msg, dict):
-                clean_msg = {k: v for k, v in msg.items() if k in VALID_RAW_COLUMNS}
-                clean_msg.setdefault("source_id", source_id)
-                clean_msg.setdefault("warning_id", wid)
-                clean_msg.setdefault("full_raw_text", master["raw_text"])
-                try:
-                    supabase_client.table("raw_messages").insert(clean_msg).execute()
-                    print(f"  ✅ [raw_messages] {wid}")
-                except Exception as msg_err:
-                    # Ignore unique violation if message already recorded
-                    if "duplicate key" not in str(msg_err).lower():
-                        print(f"  ⚠️ [raw_messages] {wid}: {msg_err}")
-
-            # Atomic master + geometry upsert
+            # Atomic master + geometry upsert must succeed before recording the
+            # checksum-bearing raw message. Otherwise the next differential
+            # pass could treat an unpersisted warning as unchanged and skip it.
             success = upsert_warning_atomic(supabase_client, master, geoms)
             if success:
                 print(f"  ✨ [nav_warnings + geoms] {cid} (Triage: {master['triage_tier']}, Geoms: {len(geoms)})")
+
+                # Persist the raw-message audit row only after the atomic write.
+                # This remains best-effort: audit failure must not undo a
+                # successful master + geometry transaction.
+                if msg and isinstance(msg, dict):
+                    clean_msg = {k: v for k, v in msg.items() if k in VALID_RAW_COLUMNS}
+                    clean_msg.setdefault("source_id", source_id)
+                    clean_msg.setdefault("warning_id", wid)
+                    clean_msg.setdefault("full_raw_text", master["raw_text"])
+                    try:
+                        supabase_client.table("raw_messages").insert(clean_msg).execute()
+                        print(f"  ✅ [raw_messages] {wid}")
+                    except Exception as msg_err:
+                        # Ignore unique violation if message already recorded
+                        if "duplicate key" not in str(msg_err).lower():
+                            print(f"  ⚠️ [raw_messages] {wid}: {msg_err}")
             else:
                 print(f"  ❌ Failed to upsert: {cid}")
                 has_errors = True
