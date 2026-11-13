@@ -195,7 +195,7 @@ BEGIN
     -- But changing its QA flags or reactivating it is rejected.
     BEGIN
         UPDATE pg_temp.tier_a_qa_flag_trigger_test
-           SET qa_flags = '["geometry_basis:keyword:rig"]'
+           SET qa_flags = '["COORD_COUNT_MISMATCH"]'
          WHERE id = 4;
         RAISE EXCEPTION 'legacy QA flag change unexpectedly succeeded';
     EXCEPTION WHEN check_violation THEN
