@@ -55,6 +55,17 @@ class TestSourcesRegistryCompatibilityMigration(unittest.TestCase):
         self.assertNotIn("DELETE FROM", migration)
         self.assertNotIn("TRUNCATE", migration)
 
+    def test_migration_asserts_frontend_upsert_conflict_and_nullability(self):
+        migration = (
+            Path(__file__).resolve().parents[1]
+            / "migrations"
+            / "20261113_sources_registry_legacy_compatibility.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Frontend SourceRegistryItem columns are incomplete", migration)
+        self.assertIn("Frontend-omitted source registry columns must be nullable", migration)
+        self.assertIn("con.contype IN ('p', 'u')", migration)
+        self.assertIn("pg_get_constraintdef(con.oid) LIKE '%(source_id)%'", migration)
+
 
 if __name__ == "__main__":
     unittest.main()
