@@ -86,23 +86,45 @@ ALTER TABLE public.sources_registry
 
 DO $assert$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name = 'sources_registry'
-          AND column_name = 'publisher_name'
-    ) OR NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name = 'sources_registry'
-          AND column_name = 'health'
-    ) OR NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name = 'sources_registry'
-          AND column_name = 'active_warnings_count'
+    IF EXISTS (
+        SELECT 1
+        FROM (VALUES ('source_id'), ('publisher_id'), ('publisher_name'),
+                     ('navareas'), ('scope'), ('discovery_url'), ('format'),
+                     ('publication_semantics'), ('enabled'), ('verification'),
+                     ('health'), ('updated_at'))
+             AS required(column_name)
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns AS c
+            WHERE c.table_schema = 'public'
+              AND c.table_name = 'sources_registry'
+              AND c.column_name = required.column_name
+        )
     ) THEN
-        RAISE EXCEPTION 'sources_registry compatibility columns were not created';
+        RAISE EXCEPTION 'Frontend SourceRegistryItem columns are incomplete';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM (VALUES ('region'), ('navarea'), ('parser_id'))
+             AS optional(column_name)
+        JOIN information_schema.columns AS c
+          ON c.table_schema = 'public'
+         AND c.table_name = 'sources_registry'
+         AND c.column_name = optional.column_name
+        WHERE c.is_nullable <> 'YES'
+    ) THEN
+        RAISE EXCEPTION 'Frontend-omitted source registry columns must be nullable';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_constraint AS con
+        WHERE con.conrelid = 'public.sources_registry'::regclass
+          AND con.contype IN ('p', 'u')
+          AND pg_catalog.pg_get_constraintdef(con.oid) LIKE '%(source_id)%'
+    ) THEN
+        RAISE EXCEPTION 'sources_registry source_id must remain a conflict target';
     END IF;
 END;
 $assert$;
