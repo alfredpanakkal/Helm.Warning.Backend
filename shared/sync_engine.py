@@ -516,24 +516,28 @@ def run_differential_sync(
             cid = master["canonical_id"]
             wid = warn_wrapper.get("warning_id", cid)
 
-            # Persist raw_message audit row
-            if msg and isinstance(msg, dict):
-                clean_msg = {k: v for k, v in msg.items() if k in VALID_RAW_COLUMNS}
-                clean_msg.setdefault("source_id", source_id)
-                clean_msg.setdefault("warning_id", wid)
-                clean_msg.setdefault("full_raw_text", master["raw_text"])
-                try:
-                    supabase_client.table("raw_messages").insert(clean_msg).execute()
-                    print(f"  ✅ [raw_messages] {wid}")
-                except Exception as msg_err:
-                    # Ignore unique violation if message already recorded
-                    if "duplicate key" not in str(msg_err).lower():
-                        print(f"  ⚠️ [raw_messages] {wid}: {msg_err}")
-
-            # Atomic master + geometry upsert
+            # Atomic master + geometry upsert must succeed before recording the
+            # checksum-bearing raw message. Otherwise the next differential
+            # pass could treat an unpersisted warning as unchanged and skip it.
             success = upsert_warning_atomic(supabase_client, master, geoms)
             if success:
                 print(f"  ✨ [nav_warnings + geoms] {cid} (Triage: {master['triage_tier']}, Geoms: {len(geoms)})")
+
+                # Persist the raw-message audit row only after the atomic write.
+                # This remains best-effort: audit failure must not undo a
+                # successful master + geometry transaction.
+                if msg and isinstance(msg, dict):
+                    clean_msg = {k: v for k, v in msg.items() if k in VALID_RAW_COLUMNS}
+                    clean_msg.setdefault("source_id", source_id)
+                    clean_msg.setdefault("warning_id", wid)
+                    clean_msg.setdefault("full_raw_text", master["raw_text"])
+                    try:
+                        supabase_client.table("raw_messages").insert(clean_msg).execute()
+                        print(f"  ✅ [raw_messages] {wid}")
+                    except Exception as msg_err:
+                        # Ignore unique violation if message already recorded
+                        if "duplicate key" not in str(msg_err).lower():
+                            print(f"  ⚠️ [raw_messages] {wid}: {msg_err}")
             else:
                 print(f"  ❌ Failed to upsert: {cid}")
                 has_errors = True
