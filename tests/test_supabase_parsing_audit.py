@@ -650,7 +650,25 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertEqual(len(client.recorded_inserts.get("parsing_audit_runs", [])), 0)
         self.assertEqual(len(client.recorded_rpcs), 0)
 
-    # 13. Historical/inactive warning remains preserved
+    # 13. Historical/inactive Tier-A warnings do not create operational
+    # zero-geometry errors; active Tier-A warnings still must have geometry.
+    def test_tier_a_zero_geometry_required_only_for_active_warnings(self):
+        active_warn = dict(self.sample_active_warning)
+        active_issues = validate_warning_geometry(active_warn, [])
+        self.assertTrue(
+            any(issue["code"] == "TIER_A_ZERO_GEOMETRIES" for issue in active_issues)
+        )
+
+        for status in ("cancelled", "expired", "superseded"):
+            with self.subTest(status=status):
+                historical_warn = dict(self.sample_active_warning)
+                historical_warn["status"] = status
+                issues = validate_warning_geometry(historical_warn, [])
+                self.assertFalse(
+                    any(issue["code"] == "TIER_A_ZERO_GEOMETRIES" for issue in issues)
+                )
+
+    # 14. Historical/inactive warning remains preserved
     def test_historical_warning_preserved(self):
         cancelled_warn = dict(self.sample_active_warning)
         cancelled_warn["status"] = "cancelled"
