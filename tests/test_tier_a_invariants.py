@@ -136,6 +136,9 @@ class TestQaFlagReviewPolicy(unittest.TestCase):
     def test_empty_flags_do_not_require_review(self):
         self.assertFalse(qa_flags_require_review([]))
 
+    def test_json_null_flag_requires_review(self):
+        self.assertTrue(qa_flags_require_review([None]))
+
     def test_geometry_basis_flags_are_informational(self):
         self.assertFalse(
             qa_flags_require_review(["geometry_basis:keyword:rig"])
