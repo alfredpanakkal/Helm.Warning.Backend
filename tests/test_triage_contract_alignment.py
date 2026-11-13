@@ -144,6 +144,7 @@ class TestTierAInvariants(unittest.TestCase):
         )
         payloads = build_geometry_payloads(record)
         self.assertEqual([item["zone_label"] for item in payloads], ["Corridor A", "Sweep B"])
+        self.assertEqual(payloads[0]["feature_type"], "CORRIDOR")
         self.assertEqual(payloads[0]["buffer_nm"], 0.0)
         self.assertEqual(payloads[0]["corridor_half_width_nm"], 1.25)
         self.assertEqual(payloads[0]["corridor_clearance_nm"], 2.5)
@@ -151,6 +152,10 @@ class TestTierAInvariants(unittest.TestCase):
         self.assertEqual(payloads[1]["sweep_radius_nm"], 8.0)
         self.assertEqual(payloads[1]["sweep_start_azimuth"], 270.0)
         self.assertEqual(payloads[1]["sweep_end_azimuth"], 15.0)
+        for key in ("sweep_radius_nm", "sweep_start_azimuth", "sweep_end_azimuth"):
+            self.assertNotIn(key, payloads[0])
+        for key in ("corridor_half_width_nm", "corridor_clearance_nm"):
+            self.assertNotIn(key, payloads[1])
 
     def test_zero_metadata_is_preserved_and_missing_metadata_is_omitted(self):
         record = point_record(
@@ -348,17 +353,20 @@ class TestMigrationContract(unittest.TestCase):
         insert_start = migration.index("INSERT INTO public.nav_warning_geometries")
         insert_end = migration.index("RETURNING geom_id", insert_start)
         rpc_insert = migration[insert_start:insert_end]
-        for field in (
-            "buffer_nm",
-            "corridor_half_width_nm",
-            "corridor_clearance_nm",
-            "sweep_radius_nm",
-            "sweep_start_azimuth",
-            "sweep_end_azimuth",
-        ):
-            with self.subTest(field=field):
-                self.assertIn(field, rpc_insert)
-                self.assertIn("g->>'" + field + "'", rpc_insert)
+        normalized_insert = " ".join(rpc_insert.split())
+        expected_mapping = (
+            "(warning_id, zone_label, feature_type, buffer_nm, corridor_half_width_nm, "
+            "corridor_clearance_nm, sweep_start_azimuth, sweep_end_azimuth, "
+            "sweep_radius_nm, geom_postgis) VALUES "
+            "(v_id, g->>'zone_label', v_ftype, COALESCE((g->>'buffer_nm')::numeric, 0), "
+            "NULLIF(g->>'corridor_half_width_nm', '')::double precision, "
+            "NULLIF(g->>'corridor_clearance_nm', '')::double precision, "
+            "NULLIF(g->>'sweep_start_azimuth', '')::double precision, "
+            "NULLIF(g->>'sweep_end_azimuth', '')::double precision, "
+            "NULLIF(g->>'sweep_radius_nm', '')::double precision, "
+            "ST_SetSRID(ST_GeomFromGeoJSON(g->'geojson'), 4326)::geography)"
+        )
+        self.assertIn(expected_mapping, normalized_insert)
 
     def test_migration_persists_and_exposes_geometry_metadata(self):
         migration = (
