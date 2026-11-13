@@ -67,5 +67,18 @@ class TestSourcesRegistryCompatibilityMigration(unittest.TestCase):
         self.assertIn("pg_get_constraintdef(con.oid) LIKE '%(source_id)%'", migration)
 
 
+    def test_operational_check_constraints_are_added_idempotently(self):
+        migration = (
+            Path(__file__).resolve().parents[1]
+            / "migrations"
+            / "20261113_sources_registry_legacy_compatibility.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn("sources_registry_poll_interval_sec_check", migration)
+        self.assertIn("CHECK (poll_interval_sec > 0) NOT VALID", migration)
+        self.assertIn("sources_registry_active_warnings_count_check", migration)
+        self.assertIn("CHECK (active_warnings_count >= 0) NOT VALID", migration)
+        self.assertIn("IF NOT EXISTS (", migration)
+
+
 if __name__ == "__main__":
     unittest.main()
