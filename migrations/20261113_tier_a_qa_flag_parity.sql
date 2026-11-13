@@ -27,8 +27,11 @@ AS $function$
                 ELSE '[]'::jsonb
             END
         ) AS flag(value)
-        WHERE flag.value <> ''
-          AND flag.value NOT LIKE 'geometry_basis:%'
+        WHERE flag.value IS NULL
+           OR (
+               flag.value <> ''
+               AND flag.value NOT LIKE 'geometry_basis:%'
+           )
     );
 $function$;
 
@@ -80,6 +83,12 @@ BEGIN
     END IF;
     IF NOT public.qa_flags_require_review('["COORD_COUNT_MISMATCH"]'::jsonb) THEN
         RAISE EXCEPTION 'coordinate mismatch must require review';
+    END IF;
+    IF NOT public.qa_flags_require_review('[null]'::jsonb) THEN
+        RAISE EXCEPTION 'JSON null QA flags must require review';
+    END IF;
+    IF NOT public.qa_flags_require_review('["geometry_basis:keyword:rig",null]'::jsonb) THEN
+        RAISE EXCEPTION 'mixed informational/JSON null flags must require review';
     END IF;
     IF NOT public.qa_flags_require_review('["geometry_preserved_previous_run"]'::jsonb) THEN
         RAISE EXCEPTION 'preserved geometry must require review';
