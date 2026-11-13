@@ -485,10 +485,13 @@ def validate_warning_geometry(
     """
     issues: List[Dict[str, Any]] = []
     tier = record.get("triage_tier")
+    status = (record.get("status") or "").strip().lower()
     allowed_types = {"POINT", "LINE", "POLYGON", "CORRIDOR", "SWEEP_ARC", "BOUNDING_BOX"}
 
-    # Tier A record must have at least one valid geometry row
-    if tier == "A" and (not geometry_data or len(geometry_data) == 0):
+    # Only active Tier-A warnings are required to have geometry for the
+    # operational map. Historical cancelled/expired/superseded records remain
+    # in the audit dataset but must not be reported as current plotting errors.
+    if status == "active" and tier == "A" and not geometry_data:
         issues.append({
             "code": "TIER_A_ZERO_GEOMETRIES",
             "field": "geometries",
