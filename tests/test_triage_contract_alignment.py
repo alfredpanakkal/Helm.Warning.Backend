@@ -355,16 +355,16 @@ class TestMigrationContract(unittest.TestCase):
         rpc_insert = migration[insert_start:insert_end]
         normalized_insert = " ".join(rpc_insert.split())
         expected_mapping = (
-            "(warning_id, zone_label, feature_type, buffer_nm, corridor_half_width_nm, "
+            "( warning_id, zone_label, feature_type, buffer_nm, corridor_half_width_nm, "
             "corridor_clearance_nm, sweep_start_azimuth, sweep_end_azimuth, "
-            "sweep_radius_nm, geom_postgis) VALUES "
-            "(v_id, g->>'zone_label', v_ftype, COALESCE((g->>'buffer_nm')::numeric, 0), "
+            "sweep_radius_nm, geom_postgis ) VALUES "
+            "( v_id, g->>'zone_label', v_ftype, COALESCE((g->>'buffer_nm')::numeric, 0), "
             "NULLIF(g->>'corridor_half_width_nm', '')::double precision, "
             "NULLIF(g->>'corridor_clearance_nm', '')::double precision, "
             "NULLIF(g->>'sweep_start_azimuth', '')::double precision, "
             "NULLIF(g->>'sweep_end_azimuth', '')::double precision, "
             "NULLIF(g->>'sweep_radius_nm', '')::double precision, "
-            "ST_SetSRID(ST_GeomFromGeoJSON(g->'geojson'), 4326)::geography)"
+            "ST_SetSRID(ST_GeomFromGeoJSON(g->'geojson'), 4326)::geography )"
         )
         self.assertIn(expected_mapping, normalized_insert)
 
