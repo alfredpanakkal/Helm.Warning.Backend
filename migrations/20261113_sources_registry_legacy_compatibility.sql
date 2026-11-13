@@ -84,6 +84,34 @@ ALTER TABLE public.sources_registry
     ADD COLUMN IF NOT EXISTS last_status text,
     ADD COLUMN IF NOT EXISTS active_warnings_count integer NOT NULL DEFAULT 0;
 
+
+-- Keep operational numeric invariants identical to the fresh-table contract.
+-- NOT VALID avoids failing this compatibility migration because of pre-existing
+-- legacy rows; PostgreSQL still enforces each CHECK for new or updated rows.
+DO $operational_checks$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_constraint
+        WHERE conrelid = 'public.sources_registry'::regclass
+          AND conname = 'sources_registry_poll_interval_sec_check'
+    ) THEN
+        ALTER TABLE public.sources_registry
+            ADD CONSTRAINT sources_registry_poll_interval_sec_check
+            CHECK (poll_interval_sec > 0) NOT VALID;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_constraint
+        WHERE conrelid = 'public.sources_registry'::regclass
+          AND conname = 'sources_registry_active_warnings_count_check'
+    ) THEN
+        ALTER TABLE public.sources_registry
+            ADD CONSTRAINT sources_registry_active_warnings_count_check
+            CHECK (active_warnings_count >= 0) NOT VALID;
+    END IF;
+END;
+$operational_checks$;
+
 DO $assert$
 BEGIN
     IF EXISTS (
