@@ -211,11 +211,12 @@ def ring_is_simple(ring: Sequence[Sequence[float]]) -> bool:
 def split_antimeridian_ring(ring: Sequence[Sequence[float]]):
     """Split a simple polygon ring at the antimeridian.
 
-    Supports the common single-ring case with exactly two crossings of one
-    180-degree meridian. Longitudes are unwrapped only for clipping; output
-    coordinates remain in GeoJSON's [-180, 180] range. Unsupported topology
-    returns None so callers can fail closed instead of drawing a world-spanning
-    boundary.
+    Supports compact, single-ring areas with exactly two crossings of one
+    180-degree meridian. Each source edge is interpreted along its shorter
+    longitude transition, so this is not suitable for global or deliberately
+    long-way-around boundaries. Longitudes are unwrapped only for clipping;
+    output coordinates remain in GeoJSON's [-180, 180] range. Unsupported
+    topology returns None so callers can fail closed.
     """
     if not isinstance(ring, (list, tuple)) or len(ring) < 4:
         return None
@@ -248,6 +249,10 @@ def split_antimeridian_ring(ring: Sequence[Sequence[float]]):
 
     min_lon = min(point[0] for point in unwrapped)
     max_lon = max(point[0] for point in unwrapped)
+    # Keep this helper limited to compact local areas. A wider unwrapped span
+    # is ambiguous without an explicit geodesic/long-way boundary contract.
+    if max_lon - min_lon >= 180.0:
+        return None
     first_k = math.ceil((min_lon - 180.0) / 360.0)
     last_k = math.floor((max_lon - 180.0) / 360.0)
     meridians = [
