@@ -525,7 +525,7 @@ def extract_labelled_issue_dtg(raw_text: str) -> Optional[str]:
     if not isinstance(raw_text, str) or not raw_text:
         return None
     match = re.search(
-        r"(?im)\\bDate\\s*:\\s*(\\d{4}/\\d{2}/\\d{2}\\s+\\d{2})\\s*UTC\\b",
+        r"(?im)\bDate\s*:\s*(\d{4}/\d{2}/\d{2}\s+\d{2})\s*UTC\b",
         raw_text,
     )
     if not match:
