@@ -442,60 +442,65 @@ def run_differential_sync(
     # raw-text checksums stay unchanged (observed 2026-10: five regions
     # silently disappeared from the map). Force such warnings through the
     # RPC again so their geometry payloads get rewritten from this parse.
-    geometry_seen = None  # None = check unavailable; set() = checked
-    # NOTE: compute_differential returns 'skip' as a flat list of canonical_id
-    # strings (unlike 'new'/'update', which hold (warning, msg) tuples).
+    # Reconcile stored child geometry against the current parser output even
+    # when the raw bulletin checksum is unchanged. Parser fixes must be able
+    # to repair stale geometry without requiring a source-text change.
+    geometry_types_by_warning = None  # None = check unavailable; dict = checked
     skipped_cids = set(diff["skip"]) if diff["skip"] else set()
-    backfill_candidate_ids = [
-        rec["id"]
+    geometry_candidates = {
+        rec["id"]: w
         for w in scraped_for_diff
         if w["canonical_id"] in skipped_cids and w.get("_geoms")
         for rec in [existing_warnings.get(w["canonical_id"]) or {}]
         if rec.get("id") and rec.get("status") == "active" and rec.get("triage_tier") == "A"
-    ]
-    if backfill_candidate_ids:
-        geometry_seen = set()
+    }
+    if geometry_candidates:
+        geometry_types_by_warning = {}
         try:
-            # PostgREST caps .in_() lists; query in chunks of 100
-            for i in range(0, len(backfill_candidate_ids), 100):
-                chunk = backfill_candidate_ids[i:i + 100]
+            candidate_ids = list(geometry_candidates)
+            for i in range(0, len(candidate_ids), 100):
+                chunk = candidate_ids[i:i + 100]
                 res_geom = (
                     supabase_client.table("nav_warning_geometries")
-                    .select("warning_id")
+                    .select("warning_id, feature_type")
                     .in_("warning_id", chunk)
                     .execute()
                 )
-                geometry_seen.update(
-                    g.get("warning_id")
-                    for g in (res_geom.data or [])
-                    if isinstance(g, dict) and g.get("warning_id")
-                )
+                for row in (res_geom.data or []):
+                    if not isinstance(row, dict) or not row.get("warning_id"):
+                        continue
+                    geometry_types_by_warning.setdefault(row["warning_id"], set()).add(
+                        str(row.get("feature_type") or "").strip().upper()
+                    )
         except Exception as e:
-            print(f"⚠️ Geometry backfill check failed ({e}); guard skipped this run.")
-            geometry_seen = None
+            print(f"⚠️ Geometry reconciliation check failed ({e}); guard skipped this run.")
+            geometry_types_by_warning = None
 
-    if geometry_seen is not None and diff["skip"]:
-        # Candidates (active + Tier A + fresh geoms) whose DB id has zero
-        # geometry rows get reclassified from 'skip' into 'update'.
-        backfilled_cids = set()
+    if geometry_types_by_warning is not None and diff["skip"]:
+        wrapper_by_cid = {w["canonical_id"]: w for w in scraped_for_diff}
+        repair_cids = set()
         for cid in diff["skip"]:
-            if cid not in skipped_cids:
-                continue
+            wrapper = wrapper_by_cid.get(cid)
             rec = existing_warnings.get(cid) or {}
-            if rec.get("id") in geometry_seen:
+            if not wrapper or not rec.get("id") or rec.get("id") not in geometry_candidates:
                 continue
-            backfilled_cids.add(cid)
-            print(f"  🔁 Geometry backfill: {cid} is Tier A active with zero geometry rows → re-upserting")
-        if backfilled_cids:
-            wrapper_by_cid = {w["canonical_id"]: w for w in scraped_for_diff}
-            for cid in sorted(backfilled_cids):
-                wrapper = wrapper_by_cid.get(cid)
-                if wrapper:
-                    # 'update' entries are (warning, msg) tuples; the raw message
-                    # is already recorded (checksum matched), so pass an empty
-                    # msg to skip the redundant raw_messages insert.
-                    diff["update"].append((wrapper, {}))
-            diff["skip"] = [cid for cid in diff["skip"] if cid not in backfilled_cids]
+            expected_types = {
+                str(g.get("feature_type") or "").strip().upper()
+                for g in (wrapper.get("_geoms") or [])
+            }
+            stored_types = geometry_types_by_warning.get(rec["id"], set())
+            if not stored_types or stored_types != expected_types:
+                repair_cids.add(cid)
+                print(
+                    f"  🔁 Geometry reconciliation: {cid} stored={sorted(stored_types)} "
+                    f"parsed={sorted(expected_types)} → re-upserting"
+                )
+        if repair_cids:
+            for cid in sorted(repair_cids):
+                wrapper = wrapper_by_cid[cid]
+                # Raw message checksum already exists; only refresh master + geometry.
+                diff["update"].append((wrapper, {}))
+            diff["skip"] = [cid for cid in diff["skip"] if cid not in repair_cids]
 
     print(
         f"\n[2/4] Differential analysis: "
