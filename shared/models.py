@@ -12,6 +12,8 @@ import math
 import re
 from typing import Optional, Any, Dict, List
 
+from .severity import determine_hazard_severity
+
 
 class TriageTier(str, Enum):
     A = "A"   # Auto-plot: EXPLICIT, rule-parsed, zero flags, valid geometry
@@ -589,9 +591,14 @@ def build_master_payload(record: Dict[str, Any]) -> Dict[str, Any]:
         )
         triage_tier = "B" if requested_tier in ("B", "C") or not tier_a_eligible else "A"
 
+    raw_text = record.get("raw_text") or record.get("warning_text") or ""
+    severity = record.get("severity")
+    if severity not in {"critical", "high", "moderate"}:
+        severity = determine_hazard_severity(raw_text, cleaned_cats)
+
     issued_at = parse_safe_iso_timestamp(
         record.get("issued_at") or record.get("issued_text")
-        or extract_labelled_issue_dtg(record.get("raw_text") or record.get("warning_text") or "")
+        or extract_labelled_issue_dtg(raw_text)
     )
     valid_from = parse_safe_iso_timestamp(record.get("valid_from"))
     valid_to = parse_safe_iso_timestamp(record.get("valid_to") or record.get("cancellation_date"))
@@ -602,6 +609,7 @@ def build_master_payload(record: Dict[str, Any]) -> Dict[str, Any]:
         "title": title[:255],
         "area_text": area_text,
         "categories": cleaned_cats,
+        "severity": severity,
         "status": status,
         "triage_tier": triage_tier,
         "data_quality": data_quality,
@@ -611,6 +619,6 @@ def build_master_payload(record: Dict[str, Any]) -> Dict[str, Any]:
         "issued_at": issued_at,
         "valid_from": valid_from,
         "valid_to": valid_to,
-        "raw_text": record.get("raw_text") or record.get("warning_text") or "",
+        "raw_text": raw_text,
         "source_id": record.get("source_id", ""),
     }
