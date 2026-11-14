@@ -12,15 +12,15 @@ from typing import Iterable
 VALID_SEVERITIES = frozenset({"critical", "high", "moderate"})
 
 _CRITICAL_TEXT = re.compile(
-    r"\b(?:DRIFTING\s+MINE|SEA\s+MINE|UNEXPLODED\s+ORDNANCE|"
-    r"ORDNANCE\s+DISPOSAL|EXPLOSIVE\s+ORDNANCE|DISTRESS\s+ALERT|"
+    r"\b(?:DRIFTING\s+MINE|SEA\s+MINE|\bMINE\b|DISTRESS\s+ALERT|"
     r"SEARCH\s+AND\s+RESCUE|MAN\s+OVERBOARD|PERSON\s+OVERBOARD|"
     r"GUNNERY|FIRING\s+EXERCISE|MILITARY\s+FIRING|MISSILE\s+FIRING|"
     r"NAVAL\s+FIRING|ROCKET\s+LAUNCH|TSUNAMI|CYCLONE|TYPHOON|HURRICANE)\b",
     re.IGNORECASE,
 )
 _HIGH_TEXT = re.compile(
-    r"\b(?:SECURITY\s+ADVISORY|PIRACY|SUSPICIOUS\s+SKIFF|ATTACK|BOARDED|"
+    r"\b(?:UNEXPLODED\s+ORDNANCE|ORDNANCE\s+DISPOSAL|EXPLOSIVE\s+ORDNANCE|"
+    r"SECURITY\s+ADVISORY|PIRACY|SUSPICIOUS\s+SKIFF|ATTACK|BOARDED|"
     r"DERELICT|ADRIFT|DRIFTING\s+(?:VESSEL|BARGE|CONTAINER|HATCH)|"
     r"ICEBERG|SEA\s+ICE|DANGEROUS\s+WRECK|SUNKEN\s+WRECK|"
     r"SUBMERGED\s+OBSTRUCTION|OBSTRUCTION|COLLISION|UNLIT|DAMAGED|"
@@ -39,9 +39,9 @@ def determine_hazard_severity(raw_text: str, categories: Iterable[str] | None = 
     text = raw_text if isinstance(raw_text, str) else ""
     cats = {str(category).strip().lower() for category in (categories or []) if category}
 
-    if _CRITICAL_TEXT.search(text) or cats.intersection({"uxo", "sar", "mil_fire", "weather"}):
+    if _CRITICAL_TEXT.search(text) or cats.intersection({"sar", "mil_fire", "weather"}):
         return "critical"
-    if _HIGH_TEXT.search(text) or cats.intersection({"security", "drift", "drifting", "ice", "wreck"}):
+    if _HIGH_TEXT.search(text) or cats.intersection({"uxo", "security", "drift", "drifting", "ice", "wreck"}):
         return "high"
     if "aton" in cats and re.search(r"\b(?:UNLIT|DAMAGED|DESTROYED|OFF\s+STATION|WITHDRAWN)\b", text, re.I):
         return "high"
