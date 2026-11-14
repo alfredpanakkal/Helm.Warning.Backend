@@ -13,7 +13,7 @@ from shared.exceptions import ParseError, ValidationError
 from shared.navarea_universal_text import subarea_marks
 from shared.geometry_classifier import (
     classify_geometry_archetype, classify_geometry_archetype_detailed,
-    ring_is_simple, RE_AREA_BOUNDARY_PHRASE,
+    ring_is_simple, split_antimeridian_ring, RE_AREA_BOUNDARY_PHRASE,
 )
 from shared.validation import (
     validate_coordinate_token,
@@ -1172,13 +1172,11 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
                     ring = points if points[0] == points[-1] else points + [points[0]]
                     unique_vertices = {tuple(p) for p in ring}
                     ring_ok = len(unique_vertices) >= 3 and ring_is_simple(ring)
-                    if ring_ok and not count_mismatch:
-                        spatial = {"type": "Polygon", "coordinates": [ring]}
-                        spatial["feature_type"] = "POLYGON"
-                        spatial["buffer_nm"] = 0.0
-                        if basis is None:
-                            basis = "fallback:legacy_polygon"
-                    elif count_mismatch:
+                    crosses_antimeridian = any(
+                        abs(a[0] - b[0]) > 180.0
+                        for a, b in zip(ring, ring[1:])
+                    )
+                    if count_mismatch:
                         # Refused positions present: never close the
                         # remainder into a ring (A1 completeness check).
                         if "AMBIGUOUS_FALLBACK" not in flags:
@@ -1187,6 +1185,27 @@ def parse_coordinates_detailed(raw_text: str, context_text: Optional[str] = None
                         spatial["feature_type"] = "POINT"
                         spatial["buffer_nm"] = 0.0
                         basis = "fallback:count_mismatch"
+                    elif basis == "keyword:area_bounded" and crosses_antimeridian:
+                        split_geometry = split_antimeridian_ring(ring)
+                        if split_geometry is not None:
+                            spatial = split_geometry
+                            spatial["feature_type"] = "POLYGON"
+                            spatial["buffer_nm"] = 0.0
+                            if "ANTIMERIDIAN_SPLIT" not in flags:
+                                flags.append("ANTIMERIDIAN_SPLIT")
+                        else:
+                            # Unsupported Date Line topology must never fall
+                            # through to a misleading world-spanning LineString.
+                            spatial = None
+                            basis = "ambiguous:antimeridian_split"
+                            if "ANTIMERIDIAN_SPLIT_FAILED" not in flags:
+                                flags.append("ANTIMERIDIAN_SPLIT_FAILED")
+                    elif ring_ok:
+                        spatial = {"type": "Polygon", "coordinates": [ring]}
+                        spatial["feature_type"] = "POLYGON"
+                        spatial["buffer_nm"] = 0.0
+                        if basis is None:
+                            basis = "fallback:legacy_polygon"
                     elif basis is None:
                         # Bowtie/crooked order with NO keyword evidence:
                         # discrete markers + review flag, never a

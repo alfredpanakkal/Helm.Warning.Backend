@@ -207,6 +207,119 @@ def ring_is_simple(ring: Sequence[Sequence[float]]) -> bool:
     return True
 
 
+
+def split_antimeridian_ring(ring: Sequence[Sequence[float]]):
+    """Split a simple polygon ring at the antimeridian.
+
+    Supports compact, single-ring areas with exactly two crossings of one
+    180-degree meridian. Each source edge is interpreted along its shorter
+    longitude transition, so this is not suitable for global or deliberately
+    long-way-around boundaries. Longitudes are unwrapped only for clipping;
+    output coordinates remain in GeoJSON's [-180, 180] range. Unsupported
+    topology returns None so callers can fail closed.
+    """
+    if not isinstance(ring, (list, tuple)) or len(ring) < 4:
+        return None
+    try:
+        coords = [[float(point[0]), float(point[1])] for point in ring]
+    except (TypeError, ValueError, IndexError):
+        return None
+    if any(
+        not math.isfinite(lon) or not math.isfinite(lat)
+        or lon < -180.0 or lon > 180.0 or lat < -90.0 or lat > 90.0
+        for lon, lat in coords
+    ):
+        return None
+    if coords[0] != coords[-1]:
+        return None
+
+    # Unwrap sequentially so every source edge follows its short longitude
+    # transition. A non-closed unwrapped ring indicates global winding and is
+    # outside this deliberately narrow splitter.
+    unwrapped = [coords[0][:]]
+    for lon, lat in coords[1:]:
+        while lon - unwrapped[-1][0] > 180.0:
+            lon -= 360.0
+        while lon - unwrapped[-1][0] < -180.0:
+            lon += 360.0
+        unwrapped.append([lon, lat])
+    if abs(unwrapped[-1][0] - unwrapped[0][0]) > 1e-7:
+        return None
+    unwrapped[-1] = unwrapped[0][:]
+
+    min_lon = min(point[0] for point in unwrapped)
+    max_lon = max(point[0] for point in unwrapped)
+    # Keep this helper limited to compact local areas. A wider unwrapped span
+    # is ambiguous without an explicit geodesic/long-way boundary contract.
+    if max_lon - min_lon >= 180.0:
+        return None
+    first_k = math.ceil((min_lon - 180.0) / 360.0)
+    last_k = math.floor((max_lon - 180.0) / 360.0)
+    meridians = [
+        180.0 + 360.0 * k
+        for k in range(first_k, last_k + 1)
+        if min_lon + 1e-7 < 180.0 + 360.0 * k < max_lon - 1e-7
+    ]
+    if len(meridians) != 1:
+        return None
+    boundary = meridians[0]
+
+    # Exact boundary vertices need a separate topology policy; do not guess.
+    if any(abs(point[0] - boundary) <= 1e-7 for point in unwrapped[:-1]):
+        return None
+    crossings = [
+        (a, b)
+        for a, b in zip(unwrapped, unwrapped[1:])
+        if (a[0] < boundary < b[0]) or (b[0] < boundary < a[0])
+    ]
+    if len(crossings) != 2:
+        return None
+
+    def intersection(a, b):
+        fraction = (boundary - a[0]) / (b[0] - a[0])
+        latitude = a[1] + fraction * (b[1] - a[1])
+        return [boundary, latitude]
+
+    def clip(keep_less):
+        output = []
+        previous = unwrapped[-2]
+        for current in unwrapped[:-1]:
+            previous_inside = previous[0] < boundary if keep_less else previous[0] > boundary
+            current_inside = current[0] < boundary if keep_less else current[0] > boundary
+            if current_inside:
+                if not previous_inside:
+                    output.append(intersection(previous, current))
+                output.append(current[:])
+            elif previous_inside:
+                output.append(intersection(previous, current))
+            previous = current
+        if output and output[0] != output[-1]:
+            output.append(output[0][:])
+        return output
+
+    k = round((boundary - 180.0) / 360.0)
+    clipped_rings = (
+        (clip(True), -360.0 * k),
+        (clip(False), -360.0 * (k + 1)),
+    )
+    polygons = []
+    for clipped, shift in clipped_rings:
+        if len(clipped) < 4:
+            return None
+        canonical = [[round(lon + shift, 6), round(lat, 6)] for lon, lat in clipped]
+        if canonical[0] != canonical[-1]:
+            canonical.append(canonical[0][:])
+        if (
+            len({tuple(point) for point in canonical[:-1]}) < 3
+            or not ring_is_simple(canonical)
+            or any(abs(a[0] - b[0]) > 180.0 for a, b in zip(canonical, canonical[1:]))
+        ):
+            return None
+        polygons.append([canonical])
+
+    return {"type": "MultiPolygon", "coordinates": polygons}
+
+
 def classify_geometry_archetype_detailed(
     raw_text: str, points: Sequence[Sequence[float]],
     context_text: Optional[str] = None,

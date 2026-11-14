@@ -7,6 +7,7 @@ Generalization, Corridor Swaths, Relocations, and End-to-End Metadata Propagatio
 import unittest
 from pathlib import Path
 from shared.models import build_geometry_payloads, build_master_payload
+from shared.geometry_classifier import ring_is_simple, split_antimeridian_ring
 from shared.utils import (
     parse_coordinates,
     parse_coordinates_detailed,
@@ -17,6 +18,7 @@ from shared.utils import (
     _sector_from_sweep_wording,
 )
 from scripts.navarea_universal_parser import parse_bulletin_text
+from scripts.navarea_xi_parser import parse_warning as parse_navarea_xi_warning
 
 
 class TestSectorSweeps(unittest.TestCase):
@@ -293,6 +295,171 @@ class TestBoundingBoxes(unittest.TestCase):
         self.assertEqual(spatial["type"], "Polygon")
         self.assertEqual(report["feature_type"], "BOUNDING_BOX")
         self.assertEqual(report["basis"], "keyword:bounding_box")
+
+    def test_navarea_xi_explicit_bounded_area_crossing_antimeridian_is_split(self):
+        raw = (
+            "NO.26-0504       Date:2026/11/09 12 UTC\n"
+            "NORTH PACIFIC.\n"
+            "SPACE DEBRIS.\n"
+            "0130Z TO 0501Z DAILY 14 TO 20 NOV.\n"
+            "AREA BOUNDED BY\n"
+            "23-56N 144-37E 26-09N 151-14E\n"
+            "27-46N 156-36E 29-28N 165-10E\n"
+            "30-43N 172-44E 31-10N 178-00E\n"
+            "31-16N 175-01W 31-21N 171-27W\n"
+            "30-33N 161-15W 29-37N 155-40W\n"
+            "28-49N 151-35W 26-53N 145-26W\n"
+            "26-50N 145-28W 24-03N 154-32W\n"
+            "23-46N 156-11W 24-52N 159-19W\n"
+            "27-38N 167-49W 29-23N 175-00W\n"
+            "29-35N 176-36W 29-37N 179-58W\n"
+            "29-28N 176-13E 29-11N 170-10E\n"
+            "28-12N 163-45E 26-39N 156-17E\n"
+            "23-27N 144-49E.\n"
+            "CANCEL THIS MSG 200601Z NOV."
+        )
+
+        _raw_message, warning, spatial = parse_navarea_xi_warning(
+            raw, "NO.26-0504"
+        )
+
+        self.assertEqual(warning["canonical_id"], "NAVAREA XI 0504/26")
+        self.assertEqual(spatial["type"], "MultiPolygon")
+        self.assertEqual(warning["data_quality"], "EXPLICIT")
+        self.assertNotIn("COORD_COUNT_MISMATCH", warning["qa_flags"])
+        self.assertEqual(len(spatial["coordinates"]), 2)
+
+        output_points = []
+        for polygon in spatial["coordinates"]:
+            self.assertEqual(len(polygon), 1)
+            ring = polygon[0]
+            self.assertEqual(ring[0], ring[-1])
+            self.assertTrue(ring_is_simple(ring))
+            self.assertTrue(all(
+                abs(a[0] - b[0]) <= 180.0
+                for a, b in zip(ring, ring[1:])
+            ))
+            output_points.extend(ring)
+
+        # Every source vertex survives normalization; only Date Line
+        # intersection vertices may be added.
+        source_points = [
+            [144.616667, 23.933333], [151.233333, 26.15],
+            [156.6, 27.766667], [165.166667, 29.466667],
+            [172.733333, 30.716667], [178.0, 31.166667],
+            [-175.016667, 31.266667], [-171.45, 31.35],
+            [-161.25, 30.55], [-155.666667, 29.616667],
+            [-151.583333, 28.816667], [-145.433333, 26.883333],
+            [-145.466667, 26.833333], [-154.533333, 24.05],
+            [-156.183333, 23.766667], [-159.316667, 24.866667],
+            [-167.816667, 27.633333], [-175.0, 29.383333],
+            [-176.6, 29.583333], [-179.966667, 29.616667],
+            [176.216667, 29.466667], [170.166667, 29.183333],
+            [163.75, 28.2], [156.283333, 26.65],
+            [144.816667, 23.45],
+        ]
+
+        # Compare planar area after unwrapping both output pieces into
+        # the same longitude domain as the original source ring.
+        def signed_area(ring):
+            return sum(
+                a[0] * b[1] - b[0] * a[1]
+                for a, b in zip(ring, ring[1:])
+            ) / 2.0
+
+        unwrapped_source = [source_points[0][:]]
+        for lon, lat in source_points[1:]:
+            while lon - unwrapped_source[-1][0] > 180.0:
+                lon -= 360.0
+            while lon - unwrapped_source[-1][0] < -180.0:
+                lon += 360.0
+            unwrapped_source.append([lon, lat])
+        unwrapped_source.append(unwrapped_source[0][:])
+
+        output_area = 0.0
+        for polygon in spatial["coordinates"]:
+            output_ring = [point[:] for point in polygon[0]]
+            if max(point[0] for point in output_ring) < 0:
+                output_ring = [[lon + 360.0, lat] for lon, lat in output_ring]
+            output_area += abs(signed_area(output_ring))
+        self.assertAlmostEqual(
+            abs(signed_area(unwrapped_source)), output_area, places=3
+        )
+
+        for source_point in source_points:
+            self.assertTrue(
+                any(
+                    abs(point[0] - source_point[0]) < 0.00001
+                    and abs(point[1] - source_point[1]) < 0.00001
+                    for point in output_points
+                ),
+                f"Source vertex was lost: {source_point}",
+            )
+
+        payloads = build_geometry_payloads({
+            "title": warning["title"],
+            "spatial": spatial,
+        })
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0]["feature_type"], "POLYGON")
+        self.assertEqual(payloads[0]["geojson"]["type"], "MultiPolygon")
+
+    def test_antimeridian_split_supports_both_directions_and_winding(self):
+        eastern_crossing = [
+            [170.0, 10.0], [-170.0, 10.0],
+            [-170.0, 20.0], [170.0, 20.0], [170.0, 10.0],
+        ]
+        western_crossing = [
+            [-170.0, 10.0], [170.0, 10.0],
+            [170.0, 20.0], [-170.0, 20.0], [-170.0, 10.0],
+        ]
+
+        for ring in (
+            eastern_crossing,
+            list(reversed(eastern_crossing)),
+            western_crossing,
+            list(reversed(western_crossing)),
+        ):
+            with self.subTest(ring=ring):
+                geometry = split_antimeridian_ring(ring)
+                self.assertIsNotNone(geometry)
+                self.assertEqual(geometry["type"], "MultiPolygon")
+                self.assertEqual(len(geometry["coordinates"]), 2)
+                for polygon in geometry["coordinates"]:
+                    output_ring = polygon[0]
+                    self.assertEqual(output_ring[0], output_ring[-1])
+                    self.assertTrue(ring_is_simple(output_ring))
+                    self.assertTrue(all(
+                        abs(a[0] - b[0]) <= 180.0
+                        for a, b in zip(output_ring, output_ring[1:])
+                    ))
+
+    def test_global_span_antimeridian_ring_fails_closed(self):
+        global_ring = [
+            [0.0, 0.0], [170.0, 10.0],
+            [-170.0, 20.0], [0.0, 30.0], [0.0, 0.0],
+        ]
+        self.assertIsNone(split_antimeridian_ring(global_ring))
+
+    def test_non_crossing_ring_is_not_split(self):
+        ordinary_ring = [
+            [10.0, 10.0], [20.0, 10.0],
+            [20.0, 20.0], [10.0, 20.0], [10.0, 10.0],
+        ]
+        self.assertIsNone(split_antimeridian_ring(ordinary_ring))
+
+    def test_unsupported_multiple_antimeridian_crossings_fail_closed(self):
+        text = (
+            "AREA BOUNDED BY "
+            "10-00.0N 170-00.0E 11-00.0N 170-00.0W "
+            "12-00.0N 170-00.0E 13-00.0N 170-00.0W "
+            "14-00.0N 170-00.0E 15-00.0N 170-00.0W "
+            "16-00.0N 170-00.0E."
+        )
+        _coords, _lat, _lon, spatial, report = parse_coordinates_detailed(text)
+        self.assertIsNone(spatial)
+        self.assertIn("ANTIMERIDIAN_SPLIT_FAILED", report["flags"])
+        self.assertEqual(report["data_quality"], "AMBIGUOUS")
 
     def test_axis_range_crossing_antimeridian_is_split(self):
         text = (
