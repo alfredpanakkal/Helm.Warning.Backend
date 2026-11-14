@@ -541,7 +541,7 @@ def build_master_payload(record: Dict[str, Any]) -> Dict[str, Any]:
             cleaned_cats.append(c)
 
     title = record.get("title") or f"{canonical_id}"
-    area_text = record.get("area_text") or record.get("general_area") or record.get("subarea") or record.get("issued_text")
+    area_text = record.get("area_text") or record.get("general_area") or record.get("subarea")
     status = record.get("status") or "active"
 
     # Final publication gate. Geometry payloads, not coordinate provenance,
@@ -567,7 +567,11 @@ def build_master_payload(record: Dict[str, Any]) -> Dict[str, Any]:
         )
         triage_tier = "B" if requested_tier in ("B", "C") or not tier_a_eligible else "A"
 
-    valid_from = parse_safe_iso_timestamp(record.get("valid_from") or record.get("publication_time") or record.get("issued_text"))
+    issued_at = parse_safe_iso_timestamp(
+        record.get("issued_at") or record.get("issued_text")
+        or extract_labelled_issue_dtg(record.get("raw_text") or record.get("warning_text") or "")
+    )
+    valid_from = parse_safe_iso_timestamp(record.get("valid_from"))
     valid_to = parse_safe_iso_timestamp(record.get("valid_to") or record.get("cancellation_date"))
 
     return {
@@ -582,6 +586,7 @@ def build_master_payload(record: Dict[str, Any]) -> Dict[str, Any]:
         "parsing_method": parsing_method,
         "qa_flags": record.get("qa_flags", []),
         "unplotted_reason": unplotted_reason,
+        "issued_at": issued_at,
         "valid_from": valid_from,
         "valid_to": valid_to,
         "raw_text": record.get("raw_text") or record.get("warning_text") or "",
