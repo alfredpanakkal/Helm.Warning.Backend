@@ -161,7 +161,7 @@ class TestEndToEnd(unittest.TestCase):
             "issued_text": extract_issue_dtg(block),
         }
         master = build_master_payload(record)
-        self.assertEqual(master["issued_at"], "2026-11-02T11:02:00+00:00")
+        self.assertEqual(master["issued_at"], "2026-11-02T11:02:00")
         self.assertIsNone(master["valid_from"])
         self.assertNotIn("issued_text", master)
 
