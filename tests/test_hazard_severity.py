@@ -10,6 +10,9 @@ class HazardSeverityTests(unittest.TestCase):
         self.assertEqual(determine_hazard_severity("DISTRESS ALERT RECEIVED.", ["sar"]), "critical")
         self.assertEqual(determine_hazard_severity("TSUNAMI WARNING.", ["weather"]), "critical")
 
+    def test_uxo_without_mine_is_high_not_critical(self):
+        self.assertEqual(determine_hazard_severity("UNEXPLODED ORDNANCE DISPOSAL.", ["uxo", "military"]), "high")
+
     def test_high_hazard_categories(self):
         self.assertEqual(determine_hazard_severity("DERELICT VESSEL ADRIFT.", ["drift", "drifting"]), "high")
         self.assertEqual(determine_hazard_severity("DANGEROUS WRECK.", ["wreck", "subsea"]), "high")
