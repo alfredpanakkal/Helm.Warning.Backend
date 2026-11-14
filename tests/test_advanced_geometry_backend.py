@@ -433,6 +433,13 @@ class TestBoundingBoxes(unittest.TestCase):
                         for a, b in zip(output_ring, output_ring[1:])
                     ))
 
+    def test_global_span_antimeridian_ring_fails_closed(self):
+        global_ring = [
+            [0.0, 0.0], [170.0, 10.0],
+            [-170.0, 20.0], [0.0, 30.0], [0.0, 0.0],
+        ]
+        self.assertIsNone(split_antimeridian_ring(global_ring))
+
     def test_non_crossing_ring_is_not_split(self):
         ordinary_ring = [
             [10.0, 10.0], [20.0, 10.0],
