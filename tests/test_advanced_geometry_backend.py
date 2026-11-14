@@ -7,7 +7,7 @@ Generalization, Corridor Swaths, Relocations, and End-to-End Metadata Propagatio
 import unittest
 from pathlib import Path
 from shared.models import build_geometry_payloads, build_master_payload
-from shared.geometry_classifier import ring_is_simple
+from shared.geometry_classifier import ring_is_simple, split_antimeridian_ring
 from shared.utils import (
     parse_coordinates,
     parse_coordinates_detailed,
@@ -341,6 +341,33 @@ class TestBoundingBoxes(unittest.TestCase):
             ))
             output_points.extend(ring)
 
+        # Compare planar area after unwrapping both output pieces into
+        # the same longitude domain as the original source ring.
+        def signed_area(ring):
+            return sum(
+                a[0] * b[1] - b[0] * a[1]
+                for a, b in zip(ring, ring[1:])
+            ) / 2.0
+
+        unwrapped_source = [source_points[0][:]]
+        for lon, lat in source_points[1:]:
+            while lon - unwrapped_source[-1][0] > 180.0:
+                lon -= 360.0
+            while lon - unwrapped_source[-1][0] < -180.0:
+                lon += 360.0
+            unwrapped_source.append([lon, lat])
+        unwrapped_source.append(unwrapped_source[0][:])
+
+        output_area = 0.0
+        for polygon in spatial["coordinates"]:
+            output_ring = [point[:] for point in polygon[0]]
+            if max(point[0] for point in output_ring) < 0:
+                output_ring = [[lon + 360.0, lat] for lon, lat in output_ring]
+            output_area += abs(signed_area(output_ring))
+        self.assertAlmostEqual(
+            abs(signed_area(unwrapped_source)), output_area, places=3
+        )
+
         # Every source vertex survives normalization; only Date Line
         # intersection vertices may be added.
         source_points = [
@@ -375,6 +402,43 @@ class TestBoundingBoxes(unittest.TestCase):
         self.assertEqual(len(payloads), 1)
         self.assertEqual(payloads[0]["feature_type"], "POLYGON")
         self.assertEqual(payloads[0]["geojson"]["type"], "MultiPolygon")
+
+    def test_antimeridian_split_supports_both_directions_and_winding(self):
+        eastern_crossing = [
+            [170.0, 10.0], [-170.0, 10.0],
+            [-170.0, 20.0], [170.0, 20.0], [170.0, 10.0],
+        ]
+        western_crossing = [
+            [-170.0, 10.0], [170.0, 10.0],
+            [170.0, 20.0], [-170.0, 20.0], [-170.0, 10.0],
+        ]
+
+        for ring in (
+            eastern_crossing,
+            list(reversed(eastern_crossing)),
+            western_crossing,
+            list(reversed(western_crossing)),
+        ):
+            with self.subTest(ring=ring):
+                geometry = split_antimeridian_ring(ring)
+                self.assertIsNotNone(geometry)
+                self.assertEqual(geometry["type"], "MultiPolygon")
+                self.assertEqual(len(geometry["coordinates"]), 2)
+                for polygon in geometry["coordinates"]:
+                    output_ring = polygon[0]
+                    self.assertEqual(output_ring[0], output_ring[-1])
+                    self.assertTrue(ring_is_simple(output_ring))
+                    self.assertTrue(all(
+                        abs(a[0] - b[0]) <= 180.0
+                        for a, b in zip(output_ring, output_ring[1:])
+                    ))
+
+    def test_non_crossing_ring_is_not_split(self):
+        ordinary_ring = [
+            [10.0, 10.0], [20.0, 10.0],
+            [20.0, 20.0], [10.0, 20.0], [10.0, 10.0],
+        ]
+        self.assertIsNone(split_antimeridian_ring(ordinary_ring))
 
     def test_unsupported_multiple_antimeridian_crossings_fail_closed(self):
         text = (
