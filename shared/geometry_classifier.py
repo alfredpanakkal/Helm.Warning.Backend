@@ -79,7 +79,7 @@ MIN_SEQUENTIAL_N = 5
 # "RIGS" — a bare \b...\\b token fails on word suffixes).
 RE_BOUNDED = re.compile(
     r"AREAS?\s+BOUNDED\s+BY|BOUND\s+BY|EXCLUSION\s+ZONE|RESTRICTED\s+AREA"
-    r"|LINES?\s+JOINING|AREAS?\s+DELIMITED\s+BY|ENCLOSED\s+BY"
+    r"|LINES\s+JOINING|AREAS?\s+DELIMITED\s+BY|ENCLOSED\s+BY"
 )
 RE_BBOX = re.compile(r"AREA\s+BOUNDED\s+WITHIN")
 RE_POINT_OPS = re.compile(
@@ -115,6 +115,9 @@ RE_ALONG_LINE_JOINING = re.compile(
 # TRACKLINE JOINING'; IV 206/26 'SEA ICE LIMIT ... TRACKLINES JOINING'):
 # an explicit open line — must beat the VICINITY rule and every fallback.
 RE_TRACKLINE_JOINING = re.compile(r"TRACKLINES?\s+JOINING")
+# JCG cable-work bulletins use "IN VICINITY OF LINE JOINING" to describe
+# an ordered route. Singular LINE is not a bounded-area edge enumeration.
+RE_VICINITY_LINE_JOINING = re.compile(r"IN\s+VICINITY\s+OF\s+LINE\s+JOINING")
 # Boundary wording for the rig-rule conflict check only — deliberately
 # BROADER than RE_BOUNDED: rig work areas use 'AREA DELIMITED BY' /
 # 'ENCLOSED BY' (NAVAREA III 0122/26). Matching here only sets a review
@@ -367,7 +370,8 @@ def classify_geometry_archetype_detailed(
 
     # 'ALONG LINE JOINING ...' is a route: must beat RE_BOUNDED's generic
     # 'LINES? JOINING', or a 4-waypoint route becomes a Polygon.
-    if RE_ALONG_LINE_JOINING.search(text) or RE_TRACKLINE_JOINING.search(text):
+    if (RE_ALONG_LINE_JOINING.search(text) or RE_TRACKLINE_JOINING.search(text)
+            or RE_VICINITY_LINE_JOINING.search(text)):
         return "linestring", "keyword:linear", flags
 
     # 'AREA BOUNDED WITHIN <lat> TO <lat> AND <lon> TO <lon>': two opposite

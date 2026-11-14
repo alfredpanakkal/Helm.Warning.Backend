@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from shared.utils import parse_coordinates, parse_coordinates_detailed
 from shared.models import build_geometry_payloads
-from shared.geometry_classifier import classify_geometry_archetype, _is_sequential, ring_is_simple
+from shared.geometry_classifier import classify_geometry_archetype, _is_sequential, ring_is_simple, RE_BOUNDED
 
 
 V961 = """NAVAREA VIII -961/26 INDIA WEST COAST - OFF HAZIRA TO MUMBAI (.)
@@ -210,6 +210,32 @@ class TestKeywordTaxonomy(unittest.TestCase):
                "18-30N 071-30E, 19-00N 072-00E")
         spatial = _spatial(raw)
         self.assertEqual(spatial["type"], "MultiPoint")
+
+
+class TestVicinityLineJoining(unittest.TestCase):
+    """JCG 'IN VICINITY OF LINE JOINING' clauses describe routes, not areas."""
+
+    def test_vicinity_of_line_joining_is_linestring(self):
+        raw = (
+            "SUBMARINE CABLE RECOVERY WORKS IN VICINITY OF LINE JOINING "
+            "35-00.0N 159-56.0E, 34-55.0N 158-58.0E, "
+            "34-57.0N 158-40.0E"
+        )
+        _, _, _, spatial, report = parse_coordinates_detailed(raw)
+        self.assertEqual(spatial["type"], "LineString")
+        self.assertEqual(report["basis"], "keyword:linear")
+
+    def test_plural_lines_joining_remains_bounded_area_evidence(self):
+        raw = (
+            "AREA BOUNDED BY LINES JOINING 18-00N 071-00E, "
+            "18-00N 072-00E, 19-00N 072-00E, 19-00N 071-00E"
+        )
+        _, _, _, spatial, report = parse_coordinates_detailed(raw)
+        self.assertEqual(spatial["type"], "Polygon")
+        self.assertEqual(report["basis"], "keyword:area_bounded")
+
+    def test_line_joining_does_not_match_area_regex_alone(self):
+        self.assertFalse(RE_BOUNDED.search("IN VICINITY OF LINE JOINING"))
 
 
 class TestRigListAlwaysPoints(unittest.TestCase):

@@ -80,7 +80,8 @@ class TestE2ESync(unittest.TestCase):
         self.assertEqual(master["data_quality"], "EXPLICIT")
         self.assertEqual(master["parsing_method"], "RULE")
         self.assertEqual(master["categories"], ["drifting", "military"])
-        self.assertIsNotNone(master["valid_from"])
+        self.assertEqual(master["issued_at"], "2026-10-19T08:00:00+00:00")
+        self.assertIsNone(master["valid_from"])
         self.assertEqual(master["source_id"], "ukho-navarea-1")
 
     def test_build_geometry_payloads(self):
@@ -243,10 +244,8 @@ class TestE2ESync(unittest.TestCase):
 
 
 class TestDtgIssueDateParsing(unittest.TestCase):
-    """NAVAREA DTG issue-date header ("030020Z JUL 26" on the line above the
-    "NAVAREA XII n/yy" header) must resolve to an ISO timestamp, so
-    build_master_payload()'s valid_from stops being NULL for the NGA
-    memo regions (IV/XII). Fail-closed on invalid DTGs (never guess)."""
+    """NAVAREA DTG issue-date headers resolve to issued_at, never valid_from.
+    Fail-closed on invalid DTGs (never guess)."""
 
     def test_dtg_two_digit_year(self):
         self.assertEqual(parse_safe_iso_timestamp("030020Z JUL 26"),
@@ -271,7 +270,7 @@ class TestDtgIssueDateParsing(unittest.TestCase):
     def test_unknown_month_fail_closed(self):
         self.assertIsNone(parse_safe_iso_timestamp("030020Z XYZ 26"))
 
-    def test_build_master_payload_valid_from_from_dtg(self):
+    def test_build_master_payload_issued_at_from_dtg(self):
         master = build_master_payload({
             "warning_id": "469/26",
             "navarea": "XII",
@@ -280,7 +279,8 @@ class TestDtgIssueDateParsing(unittest.TestCase):
             "source_id": "nga-navarea-xii",
             "issued_text": "030020Z JUL 26",
         })
-        self.assertEqual(master["valid_from"], "2026-07-03T00:20:00")
+        self.assertEqual(master["issued_at"], "2026-07-03T00:20:00")
+        self.assertIsNone(master["valid_from"])
         self.assertNotIn("issued_text", master)
 
 if __name__ == "__main__":

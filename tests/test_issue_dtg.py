@@ -150,7 +150,7 @@ class TestConversion(unittest.TestCase):
 
 
 class TestEndToEnd(unittest.TestCase):
-    def test_viii_block_valid_from(self):
+    def test_viii_block_issue_date_is_not_validity(self):
         block = ("NAVAREA VIII -1155/26\nVAKALPUDI NAVTEX STATION OFF AIR\n-------\n021102Z/NOV 26")
         record = {
             "warning_id": "1155/26",
@@ -161,8 +161,29 @@ class TestEndToEnd(unittest.TestCase):
             "issued_text": extract_issue_dtg(block),
         }
         master = build_master_payload(record)
-        self.assertEqual(master["valid_from"], "2026-11-02T11:02:00")
+        self.assertEqual(master["issued_at"], "2026-11-02T11:02:00")
+        self.assertIsNone(master["valid_from"])
         self.assertNotIn("issued_text", master)
+
+    def test_labelled_header_date_populates_issued_at(self):
+        raw = "NO.26-0504 Date:2026/11/09 12 UTC\nAREA BOUNDED BY ..."
+        master = build_master_payload({
+            "warning_id": "0504/26",
+            "navarea": "XI",
+            "title": "SPACE DEBRIS",
+            "raw_text": raw,
+            "source_id": "kaiho-navarea-xi",
+        })
+        self.assertEqual(master["issued_at"], "2026-11-09T12:00:00+00:00")
+        self.assertIsNone(master["valid_from"])
+        self.assertIsNone(master["area_text"])
+
+    def test_invalid_labelled_header_date_is_rejected(self):
+        raw = "NO.26-0504 Date:2026/02/30 12 UTC\nBODY"
+        master = build_master_payload({
+            "warning_id": "0504/26", "navarea": "XI", "raw_text": raw,
+        })
+        self.assertIsNone(master["issued_at"])
 
     def test_no_dtg_block_stays_none(self):
         record = {

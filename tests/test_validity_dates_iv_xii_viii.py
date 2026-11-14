@@ -7,8 +7,8 @@ _extract_validity_dates (same import as the backfill script) with the
 block's header year. Contract (Alfred, 2026-11-08): a returned value is
 kept ONLY when it carries a time of day; date-only stamps are dropped
 (None) and no time is ever invented. A cancel dateline with a time sets
-valid_to; valid_from stays the issue DTG (build_master_payload's
-issued_text fallback) unless a time-bearing range start exists.
+valid_to; issue DTGs populate issued_at, while valid_from requires
+explicit time-bearing validity-start evidence.
 """
 
 import os
@@ -74,8 +74,7 @@ VIII_CANCEL_BULLETIN = (
 
 
 class TestCancelDateline(unittest.TestCase):
-    """A self-cancel dateline with a time sets valid_to; the parser
-    leaves valid_from to the issue DTG (None key, master fallback)."""
+    """A self-cancel dateline sets valid_to; issue DTG remains separate."""
 
     def test_iv_cancel_dateline_sets_valid_to(self):
         parsed = parse_iv(_iv_memo("21", IV_CANCEL_BODY), now_utc=NOW)
@@ -115,8 +114,7 @@ class TestCancelDateline(unittest.TestCase):
 
 
 class TestDateOnlyValuesDropped(unittest.TestCase):
-    """Date-only stamps carry no time of day - dropped (None), never
-    invented. valid_from keeps falling back to the issue DTG."""
+    """Date-only validity stamps are dropped; issue DTG is not validity."""
 
     def test_until_date_only_dropped(self):
         parsed = parse_iv(_iv_memo("22", IV_UNTIL_BODY), now_utc=NOW)
@@ -147,20 +145,20 @@ class TestTimeBearingRangeKept(unittest.TestCase):
 
 
 class TestMasterPayloadEndToEnd(unittest.TestCase):
-    """build_master_payload: valid_to from the cancel dateline;
-    valid_from falls back to the issue DTG when no time-bearing range
-    start exists (parse_safe_iso formats: naive DTG iso, Z -> +00:00)."""
+    """build_master_payload keeps issue timestamps separate from validity."""
 
     def test_iv_block_master_payload(self):
         parsed = parse_iv(_iv_memo("21", IV_CANCEL_BODY), now_utc=NOW)
         master = build_master_payload(parsed["nav_warnings"][0])
-        self.assertEqual(master["valid_from"], "2026-01-06T20:49:00")
+        self.assertEqual(master["issued_at"], "2026-01-06T20:49:00")
+        self.assertIsNone(master["valid_from"])
         self.assertEqual(master["valid_to"], "2026-11-07T00:01:00+00:00")
 
     def test_viii_block_master_payload(self):
         parsed = parse_viii(VIII_CANCEL_BULLETIN, now_utc=NOW)
         master = build_master_payload(parsed["nav_warnings"][0])
-        self.assertEqual(master["valid_from"], "2026-11-02T11:02:00")
+        self.assertEqual(master["issued_at"], "2026-11-02T11:02:00")
+        self.assertIsNone(master["valid_from"])
         self.assertEqual(master["valid_to"], "2026-11-07T00:01:00+00:00")
 
 
