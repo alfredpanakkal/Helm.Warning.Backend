@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from shared.utils import parse_coordinates, parse_coordinates_detailed
 from shared.models import build_geometry_payloads
-from shared.geometry_classifier import classify_geometry_archetype, _is_sequential, ring_is_simple
+from shared.geometry_classifier import classify_geometry_archetype, _is_sequential, ring_is_simple, RE_BOUNDED
 
 
 V961 = """NAVAREA VIII -961/26 INDIA WEST COAST - OFF HAZIRA TO MUMBAI (.)
