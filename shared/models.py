@@ -515,6 +515,28 @@ def build_geometry_payloads(record: Dict[str, Any]) -> List[Dict[str, Any]]:
     return geometries
 
 
+def extract_labelled_issue_dtg(raw_text: str) -> Optional[str]:
+    """Extract an explicitly labelled UTC issue date from bulletin text.
+
+    Unlike the whole-line terminal DTG parser, this handles source headers
+    such as "NO.26-0504 Date:2026/11/09 12 UTC". It requires the Date label,
+    explicit UTC, a four-digit year, and a real calendar date.
+    """
+    if not isinstance(raw_text, str) or not raw_text:
+        return None
+    match = re.search(
+        r"(?im)\\bDate\\s*:\\s*(\\d{4}/\\d{2}/\\d{2}\\s+\\d{2})\\s*UTC\\b",
+        raw_text,
+    )
+    if not match:
+        return None
+    try:
+        value = datetime.strptime(match.group(1), "%Y/%m/%d %H")
+    except ValueError:
+        return None
+    return value.replace(tzinfo=timezone.utc).isoformat()
+
+
 def build_master_payload(record: Dict[str, Any]) -> Dict[str, Any]:
     """Builds schema-compliant master record for public.nav_warnings.
     Strips legacy flat columns (latitude, longitude, spatial, issued_text)
