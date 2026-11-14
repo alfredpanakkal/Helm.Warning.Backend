@@ -502,7 +502,7 @@ def run_differential_sync(
                 repair_cids.add(cid)
                 print(
                     f"  🔁 Geometry reconciliation: {cid} stored={sorted(stored_types)} "
-                    f"parsed={sorted(expected_types)} → re-upserting"
+                    f"parsed={sorted({str(g.get('feature_type') or '').strip().upper() for g in (wrapper.get('_geoms') or [])})} → re-upserting"
                 )
         if repair_cids:
             for cid in sorted(repair_cids):
