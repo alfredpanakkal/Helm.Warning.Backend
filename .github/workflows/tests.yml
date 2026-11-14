@@ -49,3 +49,22 @@ jobs:
             echo '~~~'
           } > comment.md
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file comment.md
+      - name: Add test output to run summary
+        if: always()
+        run: |
+          if [ -f unittest.log ]; then
+            echo '### Unit test output (last 220 lines)' >> "$GITHUB_STEP_SUMMARY"
+            echo '~~~text' >> "$GITHUB_STEP_SUMMARY"
+            tail -n 220 unittest.log >> "$GITHUB_STEP_SUMMARY"
+            echo '~~~' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Unit test log was not created.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload unit test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unittest-log-${{ github.run_id }}
+          path: unittest.log
+          if-no-files-found: warn
+          retention-days: 7
