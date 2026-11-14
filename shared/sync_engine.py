@@ -44,6 +44,19 @@ CANCEL_MIN_FEED_COUNT = int(os.environ.get("SYNC_CANCEL_MIN_FEED_COUNT", "10"))
 CANCEL_MIN_FEED_FRACTION = float(os.environ.get("SYNC_CANCEL_MIN_FEED_FRACTION", "0.5"))
 
 
+def _stored_geometry_matches_parse(stored_types, parsed_geometries):
+    """Compare persisted feature-type metadata with the current parser output."""
+    expected_types = {
+        str(geometry.get("feature_type") or "").strip().upper()
+        for geometry in (parsed_geometries or [])
+    }
+    actual_types = {
+        str(feature_type or "").strip().upper()
+        for feature_type in (stored_types or set())
+    }
+    return bool(expected_types) and actual_types == expected_types
+
+
 def get_supabase_client():
     """Initializes and returns the Supabase client.
     Exits loud if SUPABASE_URL or SUPABASE_KEY are missing unless ALLOW_DRY_RUN=1.
@@ -484,12 +497,8 @@ def run_differential_sync(
             rec = existing_warnings.get(cid) or {}
             if not wrapper or not rec.get("id") or rec.get("id") not in geometry_candidates:
                 continue
-            expected_types = {
-                str(g.get("feature_type") or "").strip().upper()
-                for g in (wrapper.get("_geoms") or [])
-            }
             stored_types = geometry_types_by_warning.get(rec["id"], set())
-            if not stored_types or stored_types != expected_types:
+            if not _stored_geometry_matches_parse(stored_types, wrapper.get("_geoms")):
                 repair_cids.add(cid)
                 print(
                     f"  🔁 Geometry reconciliation: {cid} stored={sorted(stored_types)} "
