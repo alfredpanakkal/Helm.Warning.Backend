@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from shared.utils import parse_coordinates, parse_coordinates_detailed
 from shared.models import build_geometry_payloads
-from shared.geometry_classifier import classify_geometry_archetype, _is_sequential, ring_is_simple, RE_BOUNDED
+from shared.geometry_classifier import classify_geometry_archetype, _is_sequential, ring_is_simple, RE_BOUNDED, RE_BOUNDED
 
 
 V961 = """NAVAREA VIII -961/26 INDIA WEST COAST - OFF HAZIRA TO MUMBAI (.)
@@ -221,9 +221,9 @@ class TestVicinityLineJoining(unittest.TestCase):
             "35-00.0N 159-56.0E, 34-55.0N 158-58.0E, "
             "34-57.0N 158-40.0E"
         )
-        spatial = _spatial(raw)
+        _, _, _, spatial, report = parse_coordinates_detailed(raw)
         self.assertEqual(spatial["type"], "LineString")
-        self.assertEqual(spatial["feature_type"], "LINE")
+        self.assertEqual(report["basis"], "keyword:linear")
 
     def test_plural_lines_joining_remains_bounded_area_evidence(self):
         raw = (
