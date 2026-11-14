@@ -376,6 +376,19 @@ class TestBoundingBoxes(unittest.TestCase):
         self.assertEqual(payloads[0]["feature_type"], "POLYGON")
         self.assertEqual(payloads[0]["geojson"]["type"], "MultiPolygon")
 
+    def test_unsupported_multiple_antimeridian_crossings_fail_closed(self):
+        text = (
+            "AREA BOUNDED BY "
+            "10-00.0N 170-00.0E 11-00.0N 170-00.0W "
+            "12-00.0N 170-00.0E 13-00.0N 170-00.0W "
+            "14-00.0N 170-00.0E 15-00.0N 170-00.0W "
+            "16-00.0N 170-00.0E."
+        )
+        _coords, _lat, _lon, spatial, report = parse_coordinates_detailed(text)
+        self.assertIsNone(spatial)
+        self.assertIn("ANTIMERIDIAN_SPLIT_FAILED", report["flags"])
+        self.assertEqual(report["data_quality"], "AMBIGUOUS")
+
     def test_axis_range_crossing_antimeridian_is_split(self):
         text = (
             "AREA BOUNDED WITHIN 10-00.0N TO 11-00.0N AND "
