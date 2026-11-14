@@ -7,6 +7,7 @@ Generalization, Corridor Swaths, Relocations, and End-to-End Metadata Propagatio
 import unittest
 from pathlib import Path
 from shared.models import build_geometry_payloads, build_master_payload
+from shared.geometry_classifier import ring_is_simple
 from shared.utils import (
     parse_coordinates,
     parse_coordinates_detailed,
