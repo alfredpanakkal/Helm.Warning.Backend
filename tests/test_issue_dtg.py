@@ -166,7 +166,7 @@ class TestEndToEnd(unittest.TestCase):
         self.assertNotIn("issued_text", master)
 
     def test_labelled_header_date_populates_issued_at(self):
-        raw = "NO.26-0504 Date:2026/11/09 12 UTC\\nAREA BOUNDED BY ..."
+        raw = "NO.26-0504 Date:2026/11/09 12 UTC\nAREA BOUNDED BY ..."
         master = build_master_payload({
             "warning_id": "0504/26",
             "navarea": "XI",
@@ -179,7 +179,7 @@ class TestEndToEnd(unittest.TestCase):
         self.assertIsNone(master["area_text"])
 
     def test_invalid_labelled_header_date_is_rejected(self):
-        raw = "NO.26-0504 Date:2026/02/30 12 UTC\\nBODY"
+        raw = "NO.26-0504 Date:2026/02/30 12 UTC\nBODY"
         master = build_master_payload({
             "warning_id": "0504/26", "navarea": "XI", "raw_text": raw,
         })
