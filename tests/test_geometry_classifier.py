@@ -212,6 +212,32 @@ class TestKeywordTaxonomy(unittest.TestCase):
         self.assertEqual(spatial["type"], "MultiPoint")
 
 
+class TestVicinityLineJoining(unittest.TestCase):
+    """JCG 'IN VICINITY OF LINE JOINING' clauses describe routes, not areas."""
+
+    def test_vicinity_of_line_joining_is_linestring(self):
+        raw = (
+            "SUBMARINE CABLE RECOVERY WORKS IN VICINITY OF LINE JOINING "
+            "35-00.0N 159-56.0E, 34-55.0N 158-58.0E, "
+            "34-57.0N 158-40.0E"
+        )
+        spatial = _spatial(raw)
+        self.assertEqual(spatial["type"], "LineString")
+        self.assertEqual(spatial["feature_type"], "LINE")
+
+    def test_plural_lines_joining_remains_bounded_area_evidence(self):
+        raw = (
+            "AREA BOUNDED BY LINES JOINING 18-00N 071-00E, "
+            "18-00N 072-00E, 19-00N 072-00E, 19-00N 071-00E"
+        )
+        _, _, _, spatial, report = parse_coordinates_detailed(raw)
+        self.assertEqual(spatial["type"], "Polygon")
+        self.assertEqual(report["basis"], "keyword:area_bounded")
+
+    def test_line_joining_does_not_match_area_regex_alone(self):
+        self.assertFalse(RE_BOUNDED.search("IN VICINITY OF LINE JOINING"))
+
+
 class TestRigListAlwaysPoints(unittest.TestCase):
     """Standing rule (2026-10-28, AMENDED same day by owner decision):
     rig-class keywords (RIG / JACK-UP / DRILLSHIP / MODU) plot as points
