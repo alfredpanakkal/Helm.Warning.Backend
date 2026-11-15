@@ -258,7 +258,7 @@ enough to merge.
 **Production safety:** This PR only adds a migration. It does not apply it, alter Production permissions, change warning records, enable RLS, modify default privileges, or change PostGIS ownership.
 
 
-### Dotted-line route geometry and operator-review hold (PR pending)
+### Dotted-line route geometry and operator-review hold (PR #128)
 
 **Rule/contract:** The explicit source phrases "FOLLOWING THE DOTTED LINE" and "ALONG THE DOTTED LINE" identify open route geometry. Where a bulletin labels multiple routes on standalone lines (A, B, etc.) beneath that heading, each route is parsed independently and retains its source label. A QA flag keeps these newly classified routes in Tier B pending operator review; they are not automatically published to Tier A. No coordinates are inferred, joined across labels, or reordered.
 
