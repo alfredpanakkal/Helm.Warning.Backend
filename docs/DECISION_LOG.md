@@ -258,7 +258,7 @@ enough to merge.
 **Production safety:** This PR only adds a migration. It does not apply it, alter Production permissions, change warning records, enable RLS, modify default privileges, or change PostGIS ownership.
 
 
-### Dotted-line route geometry and operator-review hold (PR pending)
+### Dotted-line route geometry and operator-review hold (PR #128)
 
 **Rule/contract:** The explicit source phrases "FOLLOWING THE DOTTED LINE" and "ALONG THE DOTTED LINE" identify open route geometry. Where a bulletin labels multiple routes on standalone lines (A, B, etc.) beneath that heading, each route is parsed independently and retains its source label. A QA flag keeps these newly classified routes in Tier B pending operator review; they are not automatically published to Tier A. No coordinates are inferred, joined across labels, or reordered.
 
@@ -269,7 +269,17 @@ enough to merge.
 **Safety:** Parser-only change. It does not update existing Production rows, promote Tier-B warnings, alter raw bulletin text, change lifecycle status, or modify geometry already stored in Supabase.
 
 
-### Read-only live raw-text dry run for dotted-line geometry (PR pending)
+### Unlabelled single dotted-line routes (follow-up)
+
+**Rule/contract:** When an explicit `ALONG THE DOTTED LINE` / `FOLLOWING THE DOTTED LINE` heading is followed by one route and no source-supplied standalone route label, retain the LineString but leave `sub_area` null. Do not invent the generic `Area` label. Existing labelled multi-route splitting remains unchanged; dotted-line geometry remains Tier B for operator review.
+
+**Why:** The active raw text for NAVAREA III 0171/26 contains the dotted-line heading followed directly by 21 coordinates, with no route label. The parser correctly built the LineString but incorrectly assigned the fallback `Area` label, causing the live dry-run validator to fail. The source label is absent and must remain absent in parsed metadata.
+
+**Where:** `scripts/navarea_universal_parser.py` (`_segment_clauses`) and `tests/test_geometry_correctness_gaps.py`.
+
+**Safety:** Parser and regression-test change only. No Supabase writes, Tier-B promotion, lifecycle/status changes, or geometry edits.
+
+### Read-only live raw-text dry run for dotted-line geometry (PR #129)
 
 **Rule/contract:** Before any production geometry update, run `scripts.dry_run_dotted_line_geometry` through the manual `Dotted-line Geometry Dry Run` workflow. It SELECTs only the three target canonical IDs, reparses stored `raw_text` using the deterministic universal parser, and writes a local JSON artifact only. It never writes to Supabase, creates proposals, calls AI, changes status, or promotes publication tier.
 
