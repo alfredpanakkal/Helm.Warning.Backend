@@ -28,6 +28,8 @@ NOW_UTC = datetime(2026, 11, 15, tzinfo=timezone.utc)
 
 
 def _geometry_items(spatial: Any) -> List[Dict[str, Any]]:
+    if isinstance(spatial, list):
+        return [item for entry in spatial for item in _geometry_items(entry)]
     if not isinstance(spatial, dict):
         return []
     if spatial.get("type") == "FeatureCollection":
@@ -97,10 +99,18 @@ def _persisted_by_id(records: Any) -> Dict[str, Any]:
     for record in records:
         if not isinstance(record, dict) or not isinstance(record.get("canonical_id"), str):
             raise ValueError("each persisted record needs a canonical_id")
-        geometry = record.get("geometry", record.get("spatial"))
+        geometry = record.get("geometry", record.get("spatial", record.get("geojson")))
         if geometry is None:
             raise ValueError(f"{record['canonical_id']}: persisted record needs geometry or spatial")
-        result[record["canonical_id"]] = geometry
+        canonical_id = record["canonical_id"]
+        if canonical_id not in result:
+            result[canonical_id] = geometry
+        else:
+            previous = result[canonical_id]
+            if not isinstance(previous, list):
+                previous = [previous]
+            previous.append(geometry)
+            result[canonical_id] = previous
     return result
 
 
