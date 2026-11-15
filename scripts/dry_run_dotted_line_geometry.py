@@ -13,7 +13,6 @@ import argparse
 from datetime import datetime, timezone
 import json
 import os
-import re
 import sys
 from typing import Any, Dict, List
 
