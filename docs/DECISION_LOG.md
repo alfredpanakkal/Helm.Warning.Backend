@@ -267,3 +267,14 @@ enough to merge.
 **Where:** `shared/geometry_classifier.py`, `scripts/navarea_universal_parser.py`, and `tests/test_geometry_correctness_gaps.py`.
 
 **Safety:** Parser-only change. It does not update existing Production rows, promote Tier-B warnings, alter raw bulletin text, change lifecycle status, or modify geometry already stored in Supabase.
+
+
+### Read-only live raw-text dry run for dotted-line geometry (PR pending)
+
+**Rule/contract:** Before any production geometry update, run `scripts.dry_run_dotted_line_geometry` through the manual `Dotted-line Geometry Dry Run` workflow. It SELECTs only the three target canonical IDs, reparses stored `raw_text` using the deterministic universal parser, and writes a local JSON artifact only. It never writes to Supabase, creates proposals, calls AI, changes status, or promotes publication tier.
+
+**Expected results:** NAVAREA III 0169/26 produces separate A/B LineStrings with 7/22 coordinates; NAVAREA III 0171/26 produces one 21-coordinate LineString; NAVAREA IX 440/26 remains ambiguous and is rejected if parsed as a line or polygon. The two dotted-line routes must retain `DOTTED_LINE_ROUTE_REVIEW` and Tier B.
+
+**Why:** Unit fixtures establish the parser rule, but the production rows must be checked against their exact stored raw text before considering a data correction. The existing full-dataset parsing audit validates stored rows; it does not re-run this universal parser to generate proposed geometry.
+
+**Safety:** Read-only Supabase SELECT only. No production geometry writes are authorized by this workflow. Any subsequent update requires a separate reviewed and explicitly approved operation.
