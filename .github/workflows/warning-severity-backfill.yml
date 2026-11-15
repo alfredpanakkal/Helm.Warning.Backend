@@ -1,0 +1,67 @@
+name: Warning Severity Backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Apply severity-only corrections (leave false for dry run)"
+        required: true
+        type: boolean
+        default: false
+      confirm_apply:
+        description: "Second explicit confirmation for production writes"
+        required: true
+        type: boolean
+        default: false
+      expected_count:
+        description: "Expected full nav_warnings row count"
+        required: true
+        type: string
+        default: "950"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: warning-severity-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production-corrections
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Validate write authorization
+        if: inputs.apply == true && inputs.confirm_apply != true
+        run: |
+          echo "::error::Production apply requires both apply=true and confirm_apply=true."
+          exit 2
+      - name: Recalculate and optionally apply
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          ARGS=(--expected-count "${{ inputs.expected_count }}" --report-dir severity-backfill-report)
+          if [[ "${{ inputs.apply }}" == "true" ]]; then
+            ARGS+=(--apply --confirm-apply)
+          fi
+          python -m scripts.backfill_warning_severity "${ARGS[@]}"
+      - name: Upload backfill report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: warning-severity-backfill-${{ github.run_id }}
+          path: severity-backfill-report/
+          if-no-files-found: error
+          retention-days: 90
