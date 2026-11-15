@@ -18,7 +18,7 @@ DECLARE
     v_before public.nav_warnings%ROWTYPE;
     v_after public.nav_warnings%ROWTYPE;
 BEGIN
-    IF p_severity NOT IN ('critical', 'high', 'moderate') THEN
+    IF p_severity IS NULL OR p_severity NOT IN ('critical', 'high', 'moderate') THEN
         RAISE EXCEPTION 'INVALID_SEVERITY' USING ERRCODE = '22023';
     END IF;
 
@@ -36,16 +36,11 @@ BEGIN
     END IF;
 
     IF v_before.severity IS NOT DISTINCT FROM p_severity THEN
-        RETURN jsonb_build_object(
-            'warning_id', p_warning_id,
-            'changed', false,
-            'severity', v_before.severity
-        );
+        RETURN jsonb_build_object('warning_id', p_warning_id, 'changed', false, 'severity', v_before.severity);
     END IF;
 
     UPDATE public.nav_warnings
-       SET severity = p_severity,
-           updated_at = now()
+       SET severity = p_severity, updated_at = now()
      WHERE id = p_warning_id
      RETURNING * INTO v_after;
 
@@ -59,24 +54,16 @@ BEGIN
         p_reason,
         v_before.triage_tier,
         v_after.triage_tier,
-        encode(convert_to(
-            p_warning_id::text || ':' || clock_timestamp()::text,
-            'UTF8'
-        ), 'base64'),
+        encode(convert_to(p_warning_id::text || ':' || clock_timestamp()::text, 'UTF8'), 'base64'),
         jsonb_build_object(
-            'field', 'severity',
-            'old', v_before.severity,
-            'new', v_after.severity,
-            'source', 'raw_text+categories',
-            'method', 'determine_hazard_severity'
+            'field', 'severity', 'old', v_before.severity, 'new', v_after.severity,
+            'source', 'raw_text+categories', 'method', 'determine_hazard_severity'
         )
     );
 
     RETURN jsonb_build_object(
-        'warning_id', p_warning_id,
-        'changed', true,
-        'old_severity', v_before.severity,
-        'severity', v_after.severity,
+        'warning_id', p_warning_id, 'changed', true,
+        'old_severity', v_before.severity, 'severity', v_after.severity,
         'updated_at', v_after.updated_at
     );
 END;
