@@ -102,6 +102,22 @@ def main() -> int:
                 "triage_tier": row.get("triage_tier"),
             })
 
+    out = Path(args.report_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    rollback_snapshot = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "scope": "severity only",
+        "rows": [
+            {"id": item["id"], "canonical_id": item["canonical_id"],
+             "old_severity": item["old"], "expected_severity": item["new"],
+             "updated_at": item["updated_at"]}
+            for item in changes
+        ],
+    }
+    (out / "rollback_snapshot.json").write_text(
+        json.dumps(rollback_snapshot, indent=2, default=str), encoding="utf-8"
+    )
+
     applied: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     if args.apply:
@@ -124,7 +140,17 @@ def main() -> int:
                         "p_operator": "severity-backfill",
                         "p_reason": "Canonical severity recalculation from raw_text and categories after resolver PR #125",
                     }).execute().data
-                    applied.append({"id": item["id"], "result": result})
+                    verify = (
+                        client.table("nav_warnings")
+                        .select("severity")
+                        .eq("id", item["id"])
+                        .single()
+                        .execute()
+                        .data
+                    )
+                    if not verify or verify.get("severity") != item["new"]:
+                        raise RuntimeError("Post-write severity verification failed.")
+                    applied.append({"id": item["id"], "result": result, "verified": True})
                 except Exception as exc:
                     failures.append({"id": item["id"], "error": str(exc)})
                     break
@@ -147,8 +173,6 @@ def main() -> int:
         "write_batch_size": WRITE_BATCH_SIZE,
         "write_scope": "severity column only via admin_set_nav_warning_severity RPC",
     }
-    out = Path(args.report_dir)
-    out.mkdir(parents=True, exist_ok=True)
     (out / "severity_backfill_report.json").write_text(
         json.dumps(report, indent=2, default=str), encoding="utf-8"
     )
