@@ -27,6 +27,8 @@ from shared.utils import (
     rejoin_wrapped_coords,
 )
 from shared.models import build_master_payload
+from shared.geometry_classifier import ring_is_simple
+from scripts import dry_run_six_warning_geometry as offline_geometry_dry_run
 
 
 def _load_universal_parser():
@@ -365,6 +367,10 @@ MARINERS ARE REQUESTED TO GIVE WIDE BERTH
                          ["LineString", "LineString"])
         self.assertEqual(len(features[0]["geometry"]["coordinates"]), 7)
         self.assertEqual(len(features[1]["geometry"]["coordinates"]), 22)
+        self.assertEqual(warning["data_quality"], "EXPLICIT")
+        for feature in features:
+            coords = feature["geometry"]["coordinates"]
+            self.assertNotEqual(coords[0], coords[-1])
         self.assertIn("DOTTED_LINE_ROUTE_REVIEW", warning["qa_flags"])
         self.assertEqual(build_master_payload(warning)["triage_tier"], "B")
 
@@ -391,6 +397,204 @@ MARINERS ARE REQUESTED TO GIVE WIDE BERTH
         self.assertEqual(build_master_payload(warning)["triage_tier"], "B")
 
 
+
+class TestStoredSixWarningGeometryContracts(unittest.TestCase):
+    """Verbatim stored-row contracts not already covered by identical fixtures."""
+
+    III_0124 = """NAVAREA III - 0124/22
+23 March 2022 00:00 UTC
+BLACK SEA
+WAR RISK AREA
+1. WAR RISK AREA, IN NORTHWESTERN PART OF BLACK SEA TO NORTHERN OF LINE 
+45-12.2N  029-41.1E
+45-11.5N  029-41.4E
+45-11.5N  033-10.5E
+FROM 19 MAR 22 UNTIL FURTHER NOTICE.
+2.- CANCEL NAVAREA III 0119/22 AND THIS PARAGRAPH"""
+
+    III_0171_STORED = """NAVAREA III - 0171/26
+06 November 2026 00:00 UTC
+EASTERN MEDITERRANEAN SEA
+CABLE OPERATIONS BY ABEILLE MARENGO (IMO 9388613)
+CABLE OPERATIONS BY ABEILLE MARENGO (IMO 9388613) 
+DAYS 06 NOV 26 TO 06 MAR 27
+ALONG THE DOTTED LINE:
+35 24.98N 024 56.13E
+35 28.18N 024 56.56E
+35 29.86N 024 59.46E
+35 30.28N 025 14.95E
+35 25.04N 025 57.13E
+35 26.62N 026 10.82E
+35 23.13N 026 17.24E
+35 21.44N 026 31.46E
+35 18.51N 026 47.22E
+35 18.15N 026 54.30E
+35 19.95N 027 11.84E
+35 19.34N 027 24.74E
+35 12.93N 027 34.55E
+35 00.96N 027 41.45E
+34 46.87N 028 09.64E
+34 41.74N 028 40.27E
+34 26.01N 029 24.87E
+34 22.57N 029 32.16E
+34 16.97N 029 51.75E
+34 11.28N 029 57.82E
+34 09.68N 030 04.31E
+2 MN OF BERTH IS REQUIRED
+CANCEL THIS MSG 062200 UTC MAR 27."""
+
+    IX_428 = """NAVAREA IX 428/26
+RED SEA
+SAUDI ARABIA (AMAALA TRIPLE BAY)
+BA CHART 159
+
+SEAPLANE LANDING AND OPERATIONAL ZONE ESTABLISHED IN FOLLOWING AREA:
+
+26-38.92N 036-13.32E
+26-36.80N 036-14.95E
+26-36.32N 036-14.15E
+26-38.40N 036-12.53E
+
+MARINERS CAUTIONED
+
+031500 UTC NOV 2026"""
+
+    IX_438 = """NAVAREA IX 438/26
+ARABIAN SEA
+PAKISTAN
+CHARTS PAK 33, 57 (INT 751), BA 38, 39 AND 707
+
+1. LIVE WEAPON FIRING SCHEDULED ON 14 NOV 26
+BETWEEN 0300 TO 1300 UTC IN FOLLOWING AREA:
+
+24-19.00N 066-58.00E
+24-00.00N 066-39.00E
+24-11.00N 066-27.00E
+24-24.30N 066-42.00E
+
+ MARINERS CAUTIONED
+
+2. CANCEL THIS MSG 141500 UTC NOV 26
+
+131855 UTC NOV 2026"""
+
+    IX_440_STORED = """NAVAREA IX 440/26
+ARABIAN SEA
+PAKISTAN
+CHARTS PAK 5 (INT 7314), 33, 57 (INT 751) AND BA 707
+
+1. CABLE REPAIR OPERATION IN PROGRESS BY CS MARAM IN FOLLOWING AREA:
+
+ 24-46.15N 066-51.13E
+ 24-42.08N 066-34.99E
+ 24-46.55N 066-50.41E
+ 24-42.58N 066-34.85E
+
+MARINERS ARE REQUESTED TO GIVE WIDE BERTH
+
+2. CANCEL NAVAREA WARNING 437/26
+
+140300 UTC NOV 2026"""
+
+    @staticmethod
+    def _parse_stored(raw_text, region, number):
+        header = raw_text.splitlines()[0]
+        return TestDottedLineRoutes._parse(
+            raw_text, region, header, number
+        )
+
+    def test_iii_0124_war_risk_line_does_not_invent_boundary(self):
+        warning = self._parse_stored(self.III_0124, "iii", "0124")
+        geometries = [
+            feature["geometry"]
+            for feature in (warning.get("spatial") or {}).get("features", [])
+        ]
+        self.assertTrue(geometries)
+        self.assertTrue(all(g["type"] not in ("Polygon", "MultiPolygon", "LineString")
+                            for g in geometries))
+        self.assertIn("AMBIGUOUS_FALLBACK", warning["qa_flags"])
+        self.assertEqual(warning["data_quality"], "AMBIGUOUS")
+
+    def test_iii_0171_exact_stored_text_remains_open_route(self):
+        warning = self._parse_stored(self.III_0171_STORED, "iii", "0171")
+        features = warning["spatial"]["features"]
+        self.assertEqual(len(features), 1)
+        geometry = features[0]["geometry"]
+        self.assertEqual(geometry["type"], "LineString")
+        self.assertEqual(len(geometry["coordinates"]), 21)
+        self.assertNotEqual(geometry["coordinates"][0], geometry["coordinates"][-1])
+        self.assertIn("DOTTED_LINE_ROUTE_REVIEW", warning["qa_flags"])
+        self.assertEqual(warning["data_quality"], "EXPLICIT")
+        self.assertEqual(build_master_payload(warning)["triage_tier"], "B")
+
+    def _assert_legacy_area_is_ambiguous(self, warning):
+        features = warning["spatial"]["features"]
+        self.assertEqual(len(features), 1)
+        geometry = features[0]["geometry"]
+        self.assertEqual(geometry["type"], "Polygon")
+        ring = geometry["coordinates"][0]
+        self.assertEqual(ring[0], ring[-1])
+        self.assertEqual(len(ring), 5)
+        self.assertTrue(ring_is_simple(ring))
+        self.assertEqual(warning["data_quality"], "AMBIGUOUS")
+        self.assertIn("geometry_basis:fallback:legacy_polygon", warning["qa_flags"])
+        self.assertEqual(build_master_payload(warning)["triage_tier"], "B")
+
+    def test_ix_428_following_area_is_valid_ambiguous_legacy_ring(self):
+        warning = self._parse_stored(self.IX_428, "ix", "428")
+        self._assert_legacy_area_is_ambiguous(warning)
+
+    def test_ix_438_following_area_is_valid_ambiguous_legacy_ring(self):
+        warning = self._parse_stored(self.IX_438, "ix", "438")
+        self._assert_legacy_area_is_ambiguous(warning)
+
+    def test_ix_440_exact_stored_text_bowtie_stays_ambiguous_points(self):
+        warning = self._parse_stored(self.IX_440_STORED, "ix", "440")
+        geometries = [
+            feature["geometry"]
+            for feature in (warning.get("spatial") or {}).get("features", [])
+        ]
+        self.assertEqual(len(geometries), 1)
+        self.assertEqual(geometries[0]["type"], "MultiPoint")
+        self.assertNotIn(geometries[0]["type"], ("Polygon", "MultiPolygon", "LineString"))
+        self.assertIn("AMBIGUOUS_FALLBACK", warning["qa_flags"])
+        self.assertIn("geometry_basis:fallback:bowtie", warning["qa_flags"])
+        self.assertEqual(warning["data_quality"], "AMBIGUOUS")
+        self.assertEqual(build_master_payload(warning)["triage_tier"], "B")
+
+
+    def test_offline_json_dry_run_processes_all_six_verbatim_inputs(self):
+        records = [
+            {"canonical_id": "NAVAREA III 0124/22", "raw_text": self.III_0124},
+            {"canonical_id": "NAVAREA III 0169/26", "raw_text": TestDottedLineRoutes.III_0169},
+            {"canonical_id": "NAVAREA III 0171/26", "raw_text": self.III_0171_STORED},
+            {"canonical_id": "NAVAREA IX 428/26", "raw_text": self.IX_428},
+            {"canonical_id": "NAVAREA IX 438/26", "raw_text": self.IX_438},
+            {"canonical_id": "NAVAREA IX 440/26", "raw_text": self.IX_440_STORED},
+        ]
+        report = offline_geometry_dry_run.run_json_inputs(records)
+        by_id = {item["canonical_id"]: item for item in report["results"]}
+        self.assertEqual(report["input_count"], 6)
+        self.assertEqual(
+            by_id["NAVAREA III 0169/26"]["geometry_type"],
+            ["LineString", "LineString"],
+        )
+        self.assertEqual(by_id["NAVAREA III 0169/26"]["coordinate_count"], 29)
+        self.assertEqual(by_id["NAVAREA III 0171/26"]["geometry_type"], "LineString")
+        self.assertEqual(by_id["NAVAREA III 0171/26"]["coordinate_count"], 21)
+        self.assertEqual(by_id["NAVAREA III 0124/22"]["geometry_type"], "MultiPoint")
+        self.assertEqual(by_id["NAVAREA IX 428/26"]["geometry_type"], "Polygon")
+        self.assertEqual(by_id["NAVAREA IX 438/26"]["geometry_type"], "Polygon")
+        self.assertEqual(by_id["NAVAREA IX 440/26"]["geometry_type"], "MultiPoint")
+        for canonical_id in (
+            "NAVAREA III 0124/22", "NAVAREA IX 428/26",
+            "NAVAREA IX 438/26", "NAVAREA IX 440/26",
+        ):
+            self.assertEqual(by_id[canonical_id]["data_quality"], "AMBIGUOUS")
+            self.assertEqual(by_id[canonical_id]["triage_tier"], "B")
+        for canonical_id in ("NAVAREA III 0169/26", "NAVAREA III 0171/26"):
+            self.assertEqual(by_id[canonical_id]["data_quality"], "EXPLICIT")
+            self.assertEqual(by_id[canonical_id]["triage_tier"], "B")
 
 
 if __name__ == "__main__":

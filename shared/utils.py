@@ -776,6 +776,10 @@ _ADJACENT_GAP = re.compile(r"^[\s,;.\-]{0,12}$")
 # rejected-token scan). One token per hemisphere letter attached to digits:
 # every extracted pair accounts for exactly two.
 RE_LOOSE_HEM_TOKEN = re.compile(r"\d[\d.,-]*\s*[NSEW]\b")
+# Space-separated DDM token, e.g. "91 00.000N", for invalid-token reporting.
+RE_LOOSE_SPACE_HEM_TOKEN = re.compile(
+    r"(?<![\d.])\d{1,3}[ \t]+\d{1,2}(?:[.,]\d+)?\s*[NSEW]\b"
+)
 # Decimal-minute value with NO hemisphere letter ('18-30.5 ' from a partial
 # or wrapped position): missing_hemisphere — never guessed (Rule 17).
 RE_MISSING_HEM_TOKEN = re.compile(
@@ -888,7 +892,7 @@ def _classify_loose_token(token: str):
     refused, or None when the token is well-formed (an unpaired axis
     value inside a 'BOUNDED WITHIN' range listing is not an error)."""
     t = token.strip()
-    m = re.match(r"^(\d{1,3})-(\d{1,2}(?:[.,]\d+)?)\s*([NSEW])$", t)
+    m = re.match(r"^(\d{1,3})(?:-|[ \t]+)(\d{1,2}(?:[.,]\d+)?)\s*([NSEW])$", t)
     if not m:
         return None
     deg_s, min_s, hem = m.groups()
@@ -913,6 +917,10 @@ def _scan_rejected_tokens(text: str) -> list:
     tokens (axis listings) are NOT errors and are skipped."""
     rejected = []
     for m in RE_LOOSE_HEM_TOKEN.finditer(text):
+        reason = _classify_loose_token(m.group(0))
+        if reason:
+            rejected.append({"token": m.group(0).strip(), "reason": reason})
+    for m in RE_LOOSE_SPACE_HEM_TOKEN.finditer(text):
         reason = _classify_loose_token(m.group(0))
         if reason:
             rejected.append({"token": m.group(0).strip(), "reason": reason})
