@@ -376,6 +376,7 @@ MARINERS ARE REQUESTED TO GIVE WIDE BERTH
         self.assertEqual(len(features), 1)
         self.assertEqual(features[0]["geometry"]["type"], "LineString")
         self.assertEqual(len(features[0]["geometry"]["coordinates"]), 21)
+        self.assertIsNone(features[0]["properties"]["sub_area"])
         self.assertIn("DOTTED_LINE_ROUTE_REVIEW", warning["qa_flags"])
         self.assertEqual(build_master_payload(warning)["triage_tier"], "B")
 
