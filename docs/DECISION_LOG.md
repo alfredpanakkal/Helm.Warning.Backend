@@ -256,3 +256,14 @@ enough to merge.
 **Where:** `migrations/20261115_spatial_ref_sys_read_only.sql`.
 
 **Production safety:** This PR only adds a migration. It does not apply it, alter Production permissions, change warning records, enable RLS, modify default privileges, or change PostGIS ownership.
+
+
+### Dotted-line route geometry and operator-review hold (PR pending)
+
+**Rule/contract:** The explicit source phrases "FOLLOWING THE DOTTED LINE" and "ALONG THE DOTTED LINE" identify open route geometry. Where a bulletin labels multiple routes on standalone lines (A, B, etc.) beneath that heading, each route is parsed independently and retains its source label. A QA flag keeps these newly classified routes in Tier B pending operator review; they are not automatically published to Tier A. No coordinates are inferred, joined across labels, or reordered.
+
+**Why:** NAVAREA III 0169/26 explicitly defines two dotted routes (A and B), while 0171/26 defines one dotted route. The previous classifier did not recognise dotted-line wording, and the universal parser did not split standalone route labels, allowing separate route segments to be represented as one fallback shape. NAVAREA IX 440/26 remains ambiguous because its four cable-operation positions do not establish a route or a boundary.
+
+**Where:** `shared/geometry_classifier.py`, `scripts/navarea_universal_parser.py`, and `tests/test_geometry_correctness_gaps.py`.
+
+**Safety:** Parser-only change. It does not update existing Production rows, promote Tier-B warnings, alter raw bulletin text, change lifecycle status, or modify geometry already stored in Supabase.

@@ -90,6 +90,11 @@ RE_LINEAR_OPS = re.compile(
     r"\b(?:TRACKS?|ROUTES?|TOWS?|TOWING|CABLE\s*LAY|PIPELINES?|SWEEPS?"
     r"|TRACKLINE|CENTRELINES?|ALONG\s+LINE\s+JOINING|FOLLOWING\s+ROUTES?)\b"
 )
+# NAVAREA bulletins explicitly describe ordered route coordinates as
+# "FOLLOWING/ALONG THE DOTTED LINE". This is a route, not an area boundary.
+RE_DOTTED_LINE_ROUTE = re.compile(
+    r"\b(?:FOLLOWING|ALONG)\s+THE\s+DOTTED\s+LINE\b"
+)
 RE_SURVEY = re.compile(r"\bSURVEY\b")
 RE_VICINITY = re.compile(r"VICINITY\s+OF")
 
@@ -367,6 +372,12 @@ def classify_geometry_archetype_detailed(
             flags.append("RIG_AREA_CONFLICT")
         else:
             return "multipoint", "keyword:rig", flags
+
+    # Explicit route wording takes precedence over the generic boundary rule.
+    # Dotted-line routes remain Tier B until an operator reviews the new rule.
+    if RE_DOTTED_LINE_ROUTE.search(text):
+        flags.append("DOTTED_LINE_ROUTE_REVIEW")
+        return "linestring", "keyword:linear", flags
 
     # 'ALONG LINE JOINING ...' is a route: must beat RE_BOUNDED's generic
     # 'LINES? JOINING', or a 4-waypoint route becomes a Polygon.

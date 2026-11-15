@@ -17,6 +17,7 @@ import os
 import sys
 import unittest
 import importlib.util
+from datetime import datetime, timezone
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, REPO)
@@ -252,6 +253,143 @@ class TestSilentDiscards(unittest.TestCase):
         # The 4-tuple wrapper must keep its contract for existing callers.
         result = parse_coordinates(III122_BOUNDED)
         self.assertEqual(len(result), 4)
+
+
+class TestDottedLineRoutes(unittest.TestCase):
+    """Source-worded dotted routes remain separate open lines and Tier B."""
+
+    III_0169 = """NAVAREA III - 0169/26
+03 November 2026 00:00 UTC
+CENTRAL MEDITERRANEAN SEA
+OCEANOGRAPHIC WORKS
+OCEANOGRAPHIC WORK ON THE BRITOIL CENTURION (IMO 9619177 / MMSI 566921000)
+DAYS 05 NOV 26 TO 15 FEB 27
+FOLLOWING THE DOTTED LINE:
+A
+42 11,718N 009 59,778E
+41 55.463N 010 06.575E
+41 48.921N 010 22.386E
+41 36.287N 010 32.817E
+41 18.762N 010 35.890E
+41 02.470N 010 42.350E
+40 51.515N 010 55.697E
+B
+41 24,536N 006 10,312E
+41 15,352N 006 42,299E
+41 04.447N 006 55.017E
+40 46.984N 006 58.881E
+40 29.057N 006 59.907E
+40 11.212N 007 01.863E
+39 53,531N 007 05,221E
+39 36.134N 007 09.841E
+39 23.905N 007 21.336E
+39 17.645N 007 32.114E
+39 07.245N 007 40.415E
+38 54.093N 007 44.943E
+38 47.211N 007 55.733E
+38 34.105N 008 08.816E
+38 24,404N 008 23,951E
+38 22.900N 008 37.252E
+38 27,204N 008 54.302E
+38 26.992N 009 12.300E
+38 27.619N 009 30.256E
+38 30,561N 009 53,983E
+38 25.976N 010 11.262E
+38 24.205N 010 30.113E
+WIDE RECEIPT IS REQUESTED"""
+
+    III_0171 = """NAVAREA III - 0171/26
+06 November 2026 00:00 UTC
+EASTERN MEDITERRANEAN SEA
+CABLE OPERATIONS BY ABEILLE MARENGO (IMO 9388613)
+DAYS 06 NOV 26 TO 06 MAR 27
+ALONG THE DOTTED LINE:
+35 24.98N 024 56.13E
+35 28.18N 024 56.56E
+35 29.86N 024 59.46E
+35 30.28N 025 14.95E
+35 25.04N 025 57.13E
+35 26.62N 026 10.82E
+35 23.13N 026 17.24E
+35 21.44N 026 31.46E
+35 18.51N 026 47.22E
+35 18.15N 026 54.30E
+35 19.95N 027 11.84E
+35 19.34N 027 24.74E
+35 12.93N 027 34.55E
+35 00.96N 027 41.45E
+34 46.87N 028 09.64E
+34 41.74N 028 40.27E
+34 26.01N 029 24.87E
+34 22.57N 029 32.16E
+34 16.97N 029 51.75E
+34 11.28N 029 57.82E
+34 09.68N 030 04.31E
+2 MN OF BERTH IS REQUIRED
+CANCEL THIS MSG 062200 UTC MAR 27."""
+
+    IX_0440 = """NAVAREA IX 440/26
+ARABIAN SEA
+PAKISTAN
+1. CABLE REPAIR OPERATION IN PROGRESS BY CS MARAM IN FOLLOWING AREA:
+24-46.15N 066-51.13E
+24-42.08N 066-34.99E
+24-46.55N 066-50.41E
+24-42.58N 066-34.85E
+MARINERS ARE REQUESTED TO GIVE WIDE BERTH
+2. CANCEL NAVAREA WARNING 437/26
+140300 UTC NOV 2026"""
+
+    @staticmethod
+    def _parse(raw_text, region, header, number):
+        mod = _load_universal_parser()
+        cfg = mod._region_config(region)
+        block = {
+            "number": number,
+            "year": "26",
+            "header_text": header,
+            "raw_text": raw_text,
+        }
+        _, warning = mod.parse_warning(
+            block, cfg, now_utc=datetime(2026, 11, 15, tzinfo=timezone.utc)
+        )
+        return warning
+
+    def test_0169_keeps_a_and_b_as_separate_lines_and_tier_b(self):
+        warning = self._parse(
+            self.III_0169, "iii", "NAVAREA III - 0169/26", "0169"
+        )
+        features = warning["spatial"]["features"]
+        self.assertEqual([f["properties"]["sub_area"] for f in features], ["A", "B"])
+        self.assertEqual([f["geometry"]["type"] for f in features],
+                         ["LineString", "LineString"])
+        self.assertEqual(len(features[0]["geometry"]["coordinates"]), 7)
+        self.assertEqual(len(features[1]["geometry"]["coordinates"]), 22)
+        self.assertIn("DOTTED_LINE_ROUTE_REVIEW", warning["qa_flags"])
+        self.assertEqual(build_master_payload(warning)["triage_tier"], "B")
+
+    def test_0171_along_dotted_line_is_open_linestring_and_tier_b(self):
+        warning = self._parse(
+            self.III_0171, "iii", "NAVAREA III - 0171/26", "0171"
+        )
+        features = warning["spatial"]["features"]
+        self.assertEqual(len(features), 1)
+        self.assertEqual(features[0]["geometry"]["type"], "LineString")
+        self.assertEqual(len(features[0]["geometry"]["coordinates"]), 21)
+        self.assertIn("DOTTED_LINE_ROUTE_REVIEW", warning["qa_flags"])
+        self.assertEqual(build_master_payload(warning)["triage_tier"], "B")
+
+    def test_ix_440_remains_ambiguous_and_is_not_promoted_to_line_or_polygon(self):
+        warning = self._parse(
+            self.IX_0440, "ix", "NAVAREA IX 440/26", "440"
+        )
+        geometry = warning["spatial"]["features"][0]["geometry"]
+        self.assertEqual(geometry["type"], "MultiPoint")
+        self.assertNotIn(geometry["type"], ("LineString", "Polygon"))
+        self.assertEqual(warning["data_quality"], "AMBIGUOUS")
+        self.assertEqual(build_master_payload(warning)["triage_tier"], "B")
+
+
 
 
 if __name__ == "__main__":
