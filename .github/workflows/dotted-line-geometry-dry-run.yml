@@ -1,0 +1,46 @@
+name: Dotted-line Geometry Dry Run
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dotted-line-geometry-dry-run
+  cancel-in-progress: false
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Reparse target raw bulletins (read-only)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m scripts.dry_run_dotted_line_geometry --output dotted-line-dry-run.json
+
+      - name: Upload dry-run report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotted-line-geometry-dry-run-${{ github.run_id }}
+          path: dotted-line-dry-run.json
+          if-no-files-found: warn
+          retention-days: 30
