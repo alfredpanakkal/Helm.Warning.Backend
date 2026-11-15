@@ -10,6 +10,18 @@ class HazardSeverityTests(unittest.TestCase):
         self.assertEqual(determine_hazard_severity("DISTRESS ALERT RECEIVED.", ["sar"]), "critical")
         self.assertEqual(determine_hazard_severity("TSUNAMI WARNING.", ["weather"]), "critical")
 
+    def test_rocket_launching_is_critical(self):
+        self.assertEqual(determine_hazard_severity("HAZARDOUS OPERATIONS, ROCKET LAUNCHING.", ["general"]), "critical")
+
+    def test_live_weapon_and_practice_firing_are_critical(self):
+        self.assertEqual(determine_hazard_severity("LIVE WEAPON FIRING SCHEDULED.", ["military"]), "critical")
+        self.assertEqual(determine_hazard_severity("FIRING PRACTICE BY NAVY SCHEDULED.", ["mil_fire", "military"]), "critical")
+        self.assertEqual(determine_hazard_severity("FIRING SCHEDULED IN DANGER AREA.", ["military"]), "critical")
+
+    def test_sar_index_is_not_an_active_sar_incident(self):
+        self.assertEqual(determine_hazard_severity("RADIO NAVIGATIONAL WARNINGS AND SAR IN FORCE. SAR: SAR 0171/26; SAR 0170/26.", ["general"]), "moderate")
+        self.assertEqual(determine_hazard_severity("SAR OPERATION FOR MISSING CREW IN PROGRESS.", ["general"]), "critical")
+
     def test_uxo_without_mine_is_high_not_critical(self):
         self.assertEqual(determine_hazard_severity("UNEXPLODED ORDNANCE DISPOSAL.", ["uxo", "military"]), "high")
 
@@ -17,6 +29,7 @@ class HazardSeverityTests(unittest.TestCase):
         self.assertEqual(determine_hazard_severity("DERELICT VESSEL ADRIFT.", ["drift", "drifting"]), "high")
         self.assertEqual(determine_hazard_severity("DANGEROUS WRECK.", ["wreck", "subsea"]), "high")
         self.assertEqual(determine_hazard_severity("LIGHT UNLIT.", ["aton"]), "high")
+        self.assertEqual(determine_hazard_severity("BUOY PERMANENTLY WITHDRAWN.", ["aton"]), "high")
 
     def test_moderate_operational_notices(self):
         self.assertEqual(determine_hazard_severity("SUBMARINE CABLE OPERATIONS.", ["cable", "subsea"]), "moderate")
