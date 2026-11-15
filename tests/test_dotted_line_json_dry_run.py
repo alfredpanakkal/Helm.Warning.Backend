@@ -69,9 +69,8 @@ class TestOfflineGeometryDryRun(unittest.TestCase):
 
         self.assertEqual(report["input_count"], 1)
         result = report["results"][0]
-        self.assertEqual(result["geometry_type"], "LineString")
-        self.assertEqual(result["coordinate_count"], 4)
         self.assertEqual(result["geometry_type"], ["LineString", "LineString"])
+        self.assertEqual(result["coordinate_count"], 4)
         comparison = result["persisted_comparison"]
         self.assertTrue(comparison["geometry_count_equal"])
         self.assertEqual(comparison["parsed_geometry_count"], 2)
