@@ -67,5 +67,31 @@ class TestAreaWordings(unittest.TestCase):
         self.assertNotIn("AMBIGUOUS_FALLBACK", report["flags"])
 
 
+    def test_space_decimal_comma_and_period_minutes_are_equivalent(self):
+        _, comma_lat, comma_lon, comma_spatial, comma_report = parse_coordinates_detailed(
+            "42 11,718N 009 59,778E"
+        )
+        _, period_lat, period_lon, period_spatial, period_report = parse_coordinates_detailed(
+            "42 11.718N 009 59.778E"
+        )
+        self.assertEqual(comma_spatial["type"], "Point")
+        self.assertEqual(period_spatial["type"], "Point")
+        self.assertAlmostEqual(comma_lat, period_lat, places=8)
+        self.assertAlmostEqual(comma_lon, period_lon, places=8)
+        self.assertEqual(comma_report["accepted"][0]["canonical"],
+                         period_report["accepted"][0]["canonical"])
+
+    def test_space_separated_out_of_range_latitude_is_rejected_not_clamped(self):
+        _, lat, lon, spatial, report = parse_coordinates_detailed(
+            "91 00.000N 010 00.000E"
+        )
+        self.assertIsNone(spatial)
+        self.assertIsNone(lat)
+        self.assertIsNone(lon)
+        self.assertIn("VALIDATION_FAILED", report["flags"])
+        rejected = {item["token"]: item["reason"] for item in report["rejected"]}
+        self.assertEqual(rejected.get("91 00.000N"), "validation_failed")
+
+
 if __name__ == '__main__':
     unittest.main()
