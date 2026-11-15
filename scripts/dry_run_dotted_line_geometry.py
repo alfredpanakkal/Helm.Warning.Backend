@@ -16,8 +16,6 @@ import os
 import sys
 from typing import Any, Dict, List
 
-from supabase import create_client
-
 from scripts import navarea_universal_parser
 from shared.models import build_master_payload
 
@@ -223,6 +221,7 @@ def main() -> int:
         return 2
 
     try:
+        from supabase import create_client
         client = create_client(url, key)
         report = run_dry_run(client)
     except Exception as exc:
