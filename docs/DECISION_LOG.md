@@ -246,3 +246,13 @@ enough to merge.
 
 ### Explicit bounded polygons crossing the antimeridian
 **Why:** NAVAREA XI 0504/26 (JCG, 2026-11-09) explicitly defines a 25-vertex North Pacific area crossing the Date Line twice. The planar longitude/latitude ring check treated the ±180° transitions as long segments and rejected the area, causing the parser to emit an open LineString. Explicit bounded-area rings with exactly two crossings of one antimeridian are now unwrapped, clipped at that meridian, and emitted as a two-part MultiPolygon while preserving every source vertex. Unsupported crossing topology fails closed as ambiguous rather than becoming a misleading line. The splitter assumes shortest-longitude transitions and is restricted to compact unwrapped spans under 180 degrees; it does not claim to support global or long-way-around boundaries. Regression coverage checks source-vertex preservation, planar area preservation after unwrapping, eastern and western Date Line crossings, reversed winding, ordinary non-crossing rings, unsupported repeated crossings, and global-span rejection. Axis-aligned range-box handling remains unchanged. Lives in `shared/geometry_classifier.py` and `shared/utils.py`; regression fixture in `tests/test_advanced_geometry_backend.py`.
+
+### Public read-only access to PostGIS SRID metadata (PR #127)
+
+**Rule/contract:** `anon` and `authenticated` may read `public.spatial_ref_sys` but must not insert, update, delete, truncate, add references, or create triggers on it. Keep RLS disabled for this extension metadata table and preserve the SELECT path required by PostGIS.
+
+**Why:** Production privilege inspection found both public roles had all table privileges on the 8,500-row PostGIS SRID metadata table. Public map clients need spatial lookups, not mutation rights. The migration verifies the privilege matrix and runs `ST_Transform(4326 → 3857)` under each public role before commit.
+
+**Where:** `migrations/20261115_spatial_ref_sys_read_only.sql`.
+
+**Production safety:** This PR only adds a migration. It does not apply it, alter Production permissions, change warning records, enable RLS, modify default privileges, or change PostGIS ownership.
