@@ -29,7 +29,7 @@ class TestOfflineGeometryDryRun(unittest.TestCase):
             "NAVAREA III 0169/26": {
                 "type": "LineString",
                 "coordinates": [
-                    [9 + 59.778 / 60, 42 + 11.718 / 60],
+                    [round(9 + 59.778 / 60, 6), round(42 + 11.718 / 60, 6)],
                     [10.0, 42.2],
                 ],
             }
