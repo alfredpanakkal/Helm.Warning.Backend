@@ -21,19 +21,36 @@ class TestOfflineGeometryDryRun(unittest.TestCase):
             "raw_text": (
                 "NAVAREA III - 0169/26\n"
                 "FOLLOWING THE DOTTED LINE:\n"
+                "A\n"
                 "42 11.718N 009 59.778E\n"
-                "42 12.000N 010 00.000E"
+                "42 12.000N 010 00.000E\n"
+                "B\n"
+                "42 13.000N 010 01.000E\n"
+                "42 14.000N 010 02.000E"
             ),
         }]
-        persisted = {
-            "NAVAREA III 0169/26": {
-                "type": "LineString",
-                "coordinates": [
-                    [round(9 + 59.778 / 60, 6), round(42 + 11.718 / 60, 6)],
-                    [10.0, 42.2],
-                ],
-            }
-        }
+        persisted = [
+            {
+                "canonical_id": "NAVAREA III 0169/26",
+                "geojson": {
+                    "type": "LineString",
+                    "coordinates": [
+                        [round(9 + 59.778 / 60, 6), round(42 + 11.718 / 60, 6)],
+                        [10.0, 42.2],
+                    ],
+                },
+            },
+            {
+                "canonical_id": "NAVAREA III 0169/26",
+                "geojson": {
+                    "type": "LineString",
+                    "coordinates": [
+                        [round(10 + 1 / 60, 6), round(42 + 13 / 60, 6)],
+                        [round(10 + 2 / 60, 6), round(42 + 14 / 60, 6)],
+                    ],
+                },
+            },
+        ]
         original_import = builtins.__import__
 
         def reject_network_or_database_import(name, *args, **kwargs):
@@ -53,10 +70,12 @@ class TestOfflineGeometryDryRun(unittest.TestCase):
         self.assertEqual(report["input_count"], 1)
         result = report["results"][0]
         self.assertEqual(result["geometry_type"], "LineString")
-        self.assertEqual(result["coordinate_count"], 2)
+        self.assertEqual(result["coordinate_count"], 4)
+        self.assertEqual(result["geometry_type"], ["LineString", "LineString"])
         comparison = result["persisted_comparison"]
         self.assertTrue(comparison["geometry_count_equal"])
-        self.assertTrue(comparison["comparisons"][0]["exact_coordinate_equality"])
+        self.assertEqual(comparison["parsed_geometry_count"], 2)
+        self.assertTrue(all(item["exact_coordinate_equality"] for item in comparison["comparisons"]))
         self.assertEqual(
             comparison["comparisons"][0]["parsed_first_coordinate"],
             comparison["comparisons"][0]["persisted_first_coordinate"],
