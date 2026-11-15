@@ -72,6 +72,13 @@ RE_ITEM_LINE = re.compile(r"^[ \t]*(\d{1,2})\.[\s]+(?=[A-Z])", re.MULTILINE)
 # coordinates (lookahead digit). NAVAREA XI 0475/26 style: areas A./B./C.
 # must parse as SEPARATE geometries, never one merged shape.
 RE_LETTERED_LINE = re.compile(r"^[ \t]*([A-Z])\.[\s]+(?=\d)", re.MULTILINE)
+# Some NAVAREA notices put route labels on their own lines ("A", "B")
+# beneath an explicit dotted-line heading instead of using "A." / "B.".
+RE_DOTTED_ROUTE_HEADER = re.compile(
+    r"^[ \t]*(?:FOLLOWING|ALONG)\s+THE\s+DOTTED\s+LINE\s*:[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+RE_BARE_ROUTE_LABEL = re.compile(r"^[ \t]*([A-Z])[ \t]*$", re.MULTILINE)
 # 'WARNINGS IN FORCE AS ON 13 OCTOBER 2026' (Australia X bulletin header).
 RE_AS_ON = re.compile(
     r"WARNINGS?\s+IN\s+FORCE\s+AS\s+ON\s+(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})",
@@ -406,6 +413,8 @@ def _segment_clauses(body: str):
         shared/navarea_universal_text: a marker splits only when it
         directly introduces a coordinate and its family is strictly
         increasing).
+      - standalone A/B route labels beneath "FOLLOWING/ALONG THE DOTTED
+        LINE:" are separate route clauses (NAVAREA III 0169/26).
       - otherwise a single clause with the full body.
     Returns a list of {label, text}; inline sub-area clauses carry the
     preamble as 'context' so the governing bounded-area phrase outside
@@ -421,6 +430,20 @@ def _segment_clauses(body: str):
         {"start": start, "label": label, "subarea": True}
         for start, label in subarea_marks(body)
     ]
+
+    # Dotted-line route labels are bare standalone letters in some source
+    # bulletins. Only recognize them after the explicit route heading, and
+    # only when at least two distinct labels appear in source order.
+    dotted_header = RE_DOTTED_ROUTE_HEADER.search(body)
+    if dotted_header:
+        route_labels = list(RE_BARE_ROUTE_LABEL.finditer(body, dotted_header.end()))
+        labels = [match.group(1) for match in route_labels]
+        if (len(route_labels) >= 2 and len(set(labels)) == len(labels)
+                and labels == sorted(labels)):
+            marks.extend(
+                {"start": match.start(), "label": match.group(1), "subarea": True}
+                for match in route_labels
+            )
     if not marks:
         return [{"label": "Area", "text": body}]
     marks.sort(key=lambda x: x["start"])
