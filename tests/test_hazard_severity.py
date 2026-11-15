@@ -22,8 +22,24 @@ class HazardSeverityTests(unittest.TestCase):
         self.assertEqual(determine_hazard_severity("SUBMARINE CABLE OPERATIONS.", ["cable", "subsea"]), "moderate")
         self.assertEqual(determine_hazard_severity("CHART CORRECTION.", ["general_chart", "general"]), "moderate")
 
-    def test_critical_secondary_category_takes_precedence(self):
+    def test_critical_text_overrides_noisy_secondary_category(self):
         self.assertEqual(determine_hazard_severity("Cable operations and military firing.", ["cable", "mil_fire"]), "critical")
+
+    def test_space_debris_with_noisy_military_category_is_moderate(self):
+        self.assertEqual(determine_hazard_severity(
+            "HAZARDOUS OPERATIONS, SPACE DEBRIS.", ["mil_fire", "military"]
+        ), "moderate")
+
+    def test_weather_category_alone_does_not_promote_to_critical(self):
+        self.assertEqual(determine_hazard_severity(
+            "ROUTINE WEATHER OBSERVATION.", ["weather"]
+        ), "moderate")
+
+    def test_sunken_vessel_security_incident_is_high(self):
+        self.assertEqual(determine_hazard_severity(
+            "TUG BOAT REPORTED INVOLVED IN A SECURITY INCIDENT AND SUNK.",
+            ["weather", "general"]
+        ), "high")
 
     def test_master_payload_persists_derived_severity_without_geometry_guessing(self):
         payload = build_master_payload({
@@ -37,7 +53,7 @@ class HazardSeverityTests(unittest.TestCase):
         self.assertEqual(payload["triage_tier"], "C")
         self.assertEqual(payload["unplotted_reason"], "no_valid_geometry")
 
-    def test_valid_explicit_severity_is_preserved(self):
+    def test_stale_explicit_severity_cannot_override_source_text(self):
         payload = build_master_payload({
             "navarea": "NAVAREA I",
             "warning_id": "0002/26",
@@ -45,7 +61,7 @@ class HazardSeverityTests(unittest.TestCase):
             "categories": ["mil_fire"],
             "severity": "moderate",
         })
-        self.assertEqual(payload["severity"], "moderate")
+        self.assertEqual(payload["severity"], "critical")
 
 
 if __name__ == "__main__":

@@ -592,9 +592,9 @@ def build_master_payload(record: Dict[str, Any]) -> Dict[str, Any]:
         triage_tier = "B" if requested_tier in ("B", "C") or not tier_a_eligible else "A"
 
     raw_text = record.get("raw_text") or record.get("warning_text") or ""
-    severity = record.get("severity")
-    if severity not in {"critical", "high", "moderate"}:
-        severity = determine_hazard_severity(raw_text, cleaned_cats)
+    # Recompute from the source bulletin on every ingestion. A previously
+    # persisted/manual value must not mask a stale or incorrect classification.
+    severity = determine_hazard_severity(raw_text, cleaned_cats)
 
     issued_at = parse_safe_iso_timestamp(
         record.get("issued_at") or record.get("issued_text")
