@@ -28,6 +28,7 @@ from shared.utils import (
 )
 from shared.models import build_master_payload
 from shared.geometry_classifier import ring_is_simple
+from scripts import dry_run_six_warning_geometry as offline_geometry_dry_run
 
 
 def _load_universal_parser():
@@ -560,6 +561,40 @@ MARINERS ARE REQUESTED TO GIVE WIDE BERTH
         self.assertIn("geometry_basis:fallback:bowtie", warning["qa_flags"])
         self.assertEqual(warning["data_quality"], "AMBIGUOUS")
         self.assertEqual(build_master_payload(warning)["triage_tier"], "B")
+
+
+    def test_offline_json_dry_run_processes_all_six_verbatim_inputs(self):
+        records = [
+            {"canonical_id": "NAVAREA III 0124/22", "raw_text": self.III_0124},
+            {"canonical_id": "NAVAREA III 0169/26", "raw_text": TestDottedLineRoutes.III_0169},
+            {"canonical_id": "NAVAREA III 0171/26", "raw_text": self.III_0171_STORED},
+            {"canonical_id": "NAVAREA IX 428/26", "raw_text": self.IX_428},
+            {"canonical_id": "NAVAREA IX 438/26", "raw_text": self.IX_438},
+            {"canonical_id": "NAVAREA IX 440/26", "raw_text": self.IX_440_STORED},
+        ]
+        report = offline_geometry_dry_run.run_json_inputs(records)
+        by_id = {item["canonical_id"]: item for item in report["results"]}
+        self.assertEqual(report["input_count"], 6)
+        self.assertEqual(
+            by_id["NAVAREA III 0169/26"]["geometry_type"],
+            ["LineString", "LineString"],
+        )
+        self.assertEqual(by_id["NAVAREA III 0169/26"]["coordinate_count"], 29)
+        self.assertEqual(by_id["NAVAREA III 0171/26"]["geometry_type"], "LineString")
+        self.assertEqual(by_id["NAVAREA III 0171/26"]["coordinate_count"], 21)
+        self.assertEqual(by_id["NAVAREA III 0124/22"]["geometry_type"], "MultiPoint")
+        self.assertEqual(by_id["NAVAREA IX 428/26"]["geometry_type"], "Polygon")
+        self.assertEqual(by_id["NAVAREA IX 438/26"]["geometry_type"], "Polygon")
+        self.assertEqual(by_id["NAVAREA IX 440/26"]["geometry_type"], "MultiPoint")
+        for canonical_id in (
+            "NAVAREA III 0124/22", "NAVAREA IX 428/26",
+            "NAVAREA IX 438/26", "NAVAREA IX 440/26",
+        ):
+            self.assertEqual(by_id[canonical_id]["data_quality"], "AMBIGUOUS")
+            self.assertEqual(by_id[canonical_id]["triage_tier"], "B")
+        for canonical_id in ("NAVAREA III 0169/26", "NAVAREA III 0171/26"):
+            self.assertEqual(by_id[canonical_id]["data_quality"], "EXPLICIT")
+            self.assertEqual(by_id[canonical_id]["triage_tier"], "B")
 
 
 if __name__ == "__main__":
