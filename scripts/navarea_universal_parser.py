@@ -445,7 +445,8 @@ def _segment_clauses(body: str):
                 for match in route_labels
             )
     if not marks:
-        return [{"label": "Area", "text": body}]
+        # A single dotted-line route has no source label; do not invent "Area".
+        return [{"label": None if dotted_header else "Area", "text": body}]
     marks.sort(key=lambda x: x["start"])
     clauses = []
     preamble = body[:marks[0]["start"]].strip()
