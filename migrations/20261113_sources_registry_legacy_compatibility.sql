@@ -145,6 +145,36 @@ BEGIN
         RAISE EXCEPTION 'Frontend-omitted source registry columns must be nullable';
     END IF;
 
+    -- Every NOT NULL column omitted by the frontend upsert must have a
+    -- database default (or be generated). This catches legacy-only required
+    -- columns such as status/warning_count if a deployment lacks defaults.
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns AS c
+        WHERE c.table_schema = 'public'
+          AND c.table_name = 'sources_registry'
+          AND c.is_nullable = 'NO'
+          AND c.column_default IS NULL
+          AND c.is_identity = 'NO'
+          AND c.is_generated = 'NEVER'
+          AND c.column_name NOT IN (
+              'source_id',
+              'publisher_id',
+              'publisher_name',
+              'navareas',
+              'scope',
+              'discovery_url',
+              'format',
+              'publication_semantics',
+              'enabled',
+              'verification',
+              'health',
+              'updated_at'
+          )
+    ) THEN
+        RAISE EXCEPTION 'sources_registry has a required column omitted by frontend upsert';
+    END IF;
+
     IF NOT EXISTS (
         SELECT 1
         FROM pg_catalog.pg_constraint AS con
