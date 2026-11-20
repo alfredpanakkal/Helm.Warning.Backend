@@ -75,6 +75,10 @@ class TestInternalTablePrivilegeMigration(unittest.TestCase):
         )
 
     def test_public_read_contract_and_rls_policies_are_unchanged(self):
+        revoke_statements = re.findall(
+            r"revoke all privileges on table[\s\S]*?;",
+            self.normalized,
+        )
         for table in (
             "public.nav_warnings",
             "public.nav_warning_geometries",
@@ -84,9 +88,8 @@ class TestInternalTablePrivilegeMigration(unittest.TestCase):
             "public.sources_registry",
         ):
             with self.subTest(table=table):
-                self.assertNotRegex(
-                    self.normalized,
-                    rf"revoke all privileges on table[\s\S]*?{re.escape(table)}",
+                self.assertFalse(
+                    any(re.search(rf"\b{re.escape(table)}\b", statement) for statement in revoke_statements)
                 )
 
         self.assertNotRegex(self.normalized, r"\b(?:create|drop)\s+policy\b")
