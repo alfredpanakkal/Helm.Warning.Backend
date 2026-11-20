@@ -6,7 +6,7 @@
 
 # Helm.Warning.Backend — NAVAREA Maritime Safety Information Pipeline
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE)
 [![Tests: 960 Passed, 3 Skipped](https://img.shields.io/badge/Tests-960_passed%2C_3_skipped-brightgreen.svg)](#-running-tests)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![Database: PostGIS 3.x](https://img.shields.io/badge/Database-PostGIS_3.x-336791.svg?logo=postgresql&logoColor=white)](https://postgis.net/)
@@ -697,7 +697,7 @@ Follow these ten steps to onboard a new NAVAREA coordinator or national hydrogra
 Contributions are welcome! Please adhere to the following conventions:
 - **Commit Messages**: Use Conventional Commits (e.g., `feat(navarea-iv): add boundary regex for firing zone`, `fix(sync): adjust cancel guard fraction`).
 - **Tests**: Every new scraper or parser must include unit test coverage under `tests/`.
-- **License**: This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for complete terms.
+- **License**: This project is licensed under the **PolyForm Noncommercial License 1.0.0**. See the [LICENSE](LICENSE) file for complete terms.
 
 ---
 
