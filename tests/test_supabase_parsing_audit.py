@@ -692,6 +692,26 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             report = run_audit(mode="audit_only", client=client, report_dir=tmp_dir)
         self.assertEqual(cancelled_warn["status"], "cancelled")
         self.assertEqual(report["examined_count"], 1)
+        historical = [
+            issue for issue in report["issues"]
+            if issue["code"] == "HISTORICAL_TIER_A_ZERO_GEOMETRIES"
+        ]
+        self.assertEqual(len(historical), 1)
+        self.assertEqual(historical[0]["severity"], "INFO")
+        self.assertFalse(any(
+            issue["code"] == "TIER_A_ZERO_GEOMETRIES"
+            for issue in report["issues"]
+        ))
+
+    # Active Tier A warnings still fail when child geometry is absent.
+    def test_active_tier_a_zero_geometries_remains_error(self):
+        record = dict(self.sample_active_warning)
+        issues = validate_warning_geometry(record, [])
+        zero_geometry = [
+            issue for issue in issues if issue["code"] == "TIER_A_ZERO_GEOMETRIES"
+        ]
+        self.assertEqual(len(zero_geometry), 1)
+        self.assertEqual(zero_geometry[0]["severity"], "ERROR")
 
     # 14. Tier A Invariant violation detection
     def test_tier_a_invariant_violations_flagged(self):
