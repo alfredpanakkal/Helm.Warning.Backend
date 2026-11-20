@@ -40,9 +40,9 @@ BEGIN
 END;
 $revoke_non_crud$;
 
--- The parser audit, operator audit and ingestion child tables are backend
--- records. Their RLS policies intentionally provide no direct API-role access;
--- service_role is the only supported application access path.
+-- These audit and ingestion records are accessed through server-side
+-- service_role paths. Existing RLS policies are left intact, but direct table
+-- grants to anon/authenticated are not part of the supported access contract.
 REVOKE ALL PRIVILEGES ON TABLE
     public.nav_warning_audits,
     public.parsing_audit_runs,
