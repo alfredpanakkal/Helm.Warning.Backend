@@ -300,15 +300,23 @@ enough to merge.
 ### Explicit bounded polygons crossing the antimeridian
 **Why:** NAVAREA XI 0504/26 (JCG, 2026-11-09) explicitly defines a 25-vertex North Pacific area crossing the Date Line twice. The planar longitude/latitude ring check treated the ±180° transitions as long segments and rejected the area, causing the parser to emit an open LineString. Explicit bounded-area rings with exactly two crossings of one antimeridian are now unwrapped, clipped at that meridian, and emitted as a two-part MultiPolygon while preserving every source vertex. Unsupported crossing topology fails closed as ambiguous rather than becoming a misleading line. The splitter assumes shortest-longitude transitions and is restricted to compact unwrapped spans under 180 degrees; it does not claim to support global or long-way-around boundaries. Regression coverage checks source-vertex preservation, planar area preservation after unwrapping, eastern and western Date Line crossings, reversed winding, ordinary non-crossing rings, unsupported repeated crossings, and global-span rejection. Axis-aligned range-box handling remains unchanged. Lives in `shared/geometry_classifier.py` and `shared/utils.py`; regression fixture in `tests/test_advanced_geometry_backend.py`.
 
-### Public read-only access to PostGIS SRID metadata (PR #127)
+### PostGIS SRID metadata protection — direct privilege attempt (PR #127)
 
-**Rule/contract:** `anon` and `authenticated` may read `public.spatial_ref_sys` but must not insert, update, delete, truncate, add references, or create triggers on it. Keep RLS disabled for this extension metadata table and preserve the SELECT path required by PostGIS.
+**Original intent:** `anon` and `authenticated` should retain SELECT access to `public.spatial_ref_sys` but should not have direct write privileges. RLS remains disabled for this PostGIS-owned catalogue.
 
-**Why:** Production privilege inspection found both public roles had all table privileges on the 8,500-row PostGIS SRID metadata table. Public map clients need spatial lookups, not mutation rights. The migration verifies the privilege matrix and runs `ST_Transform(4326 → 3857)` under each public role before commit.
+**Production finding:** The direct `REVOKE` migration in `migrations/20261115_spatial_ref_sys_read_only.sql` is not effective on the Free-tier Production project. The table is owned by `supabase_admin`; the SQL Editor runs as `postgres`, which cannot assume `supabase_admin`. A successful SQL response from REVOKE did not change the effective ACL, and the migration assertion correctly failed. Do not treat PR #127 as having removed the Production grants, and do not repeatedly rerun that migration.
 
-**Where:** `migrations/20261115_spatial_ref_sys_read_only.sql`.
+**Where:** Historical direct-privilege attempt: `migrations/20261115_spatial_ref_sys_read_only.sql`.
 
-**Production safety:** This PR only adds a migration. It does not apply it, alter Production permissions, change warning records, enable RLS, modify default privileges, or change PostGIS ownership.
+### PostgREST guard for spatial_ref_sys writes (Production workaround)
+
+**Rule/contract:** Reject POST, PUT, PATCH, and DELETE Data API requests targeting `spatial_ref_sys` when the JWT role is `anon` or `authenticated`. Preserve reads, unrelated table requests, and service-role requests.
+
+**Why:** Supabase-managed ownership prevents the project SQL Editor role from revoking the platform-issued table grants. A narrowly scoped PostgREST pre-request function provides an API-boundary safeguard without changing PostGIS ownership, table ACLs, or RLS.
+
+**Where:** `migrations/20261120_spatial_ref_sys_api_write_guard.sql` installs `private.block_spatial_ref_sys_writes()` and configures `pgrst.db_pre_request`.
+
+**Limitations:** This is not a PostgreSQL privilege revocation. It protects requests passing through the PostgREST Data API only; it does not cover direct database connections, Realtime, Storage, or other products. The underlying ACL and Security Advisor findings remain. The Production hook was installed through the Supabase connector under migration name `block_spatial_ref_sys_api_writes`; the repository migration records the same intended state and must not be blindly re-applied to Production.
 
 
 ### Dotted-line route geometry and operator-review hold (PR #128)

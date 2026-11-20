@@ -336,7 +336,8 @@ The read-only Production snapshot is recorded in [`docs/READ_ONLY_AUDIT_20261113
 - Production's current SQL CHECK is narrower than Python. PR #113 proposes parity for new/changed publication decisions. It intentionally preserves unchanged legacy Tier-A rows; do not bulk-demote flagged exceptions. The initial snapshot counted 28; the later 2026-11-13 read-only refresh counted 25 distinct warnings (12 active, 13 non-active). See `docs/READ_ONLY_AUDIT_20261113.md` for the query scope.
 - Atomic warning persistence is master + child geometry in `upsert_nav_warning`. If the RPC fails, fail closed. Never write the master table directly as a fallback (PR #112).
 - Preserve geometry metadata exactly as supplied, including explicit zero values. Do not fabricate missing corridor/sweep values. PR #114 adds payload and migration-mapping regression tests; it is not a live PostGIS round-trip.
-- `spatial_ref_sys` client-write revocation (PR #115) and legacy `sources_registry` compatibility (PR #116) are proposed migrations only. Do not apply them without review.
+- `spatial_ref_sys` direct client-write revocation (PRs #115/#127) cannot clear Supabase-managed grants on Free-tier Production. The Production workaround is the PostgREST pre-request guard in `migrations/20261120_spatial_ref_sys_api_write_guard.sql`; it does not revoke PostgreSQL ACLs and protects only the Data API. See `docs/PRODUCTION_ROLLOUT.md`.
+- Legacy `sources_registry` compatibility (PR #116) remains a separate migration; do not apply it without review.
 
 ### Production audit observations (2026-11-13)
 

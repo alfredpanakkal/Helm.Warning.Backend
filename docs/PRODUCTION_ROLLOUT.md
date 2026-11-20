@@ -119,3 +119,38 @@ The 2026-11-13 audit snapshot above remains historical and has not been refreshe
 Merge status is not deployment status: PR #113's migration was validated in Prototype only; PRs #115 and #116 have not been applied to Production. No Production data or schema changes are recorded by this documentation update. PR #118 remains open for caller-RLS warning-view security.
 
 The full `audit_only` report and isolated PostGIS RPC round-trip remain outstanding. The NAVAREA XIX workflow fix merged in #111 still requires a safely controlled successful execution before the ingestion fleet is declared healthy.
+
+
+---
+
+## 7. Production PostGIS SRID API guard — 2026-11-20
+
+**Project:** NAVAREA PRODUCTION  
+**Database:** PostgreSQL 17.6; PostGIS 3.3.7  
+**Table:** `public.spatial_ref_sys`
+
+### Root cause
+
+The table is owned by `supabase_admin`, while the SQL Editor executes as `postgres`. The Production SQL Editor role cannot assume `supabase_admin`. Direct REVOKE statements therefore did not remove the platform-issued grants to `anon` and `authenticated`; the privilege assertions in the original read-only migration failed. This is a Supabase-managed ownership limitation, not an old PostgreSQL version.
+
+### Applied workaround
+
+The Supabase connector successfully applied migration `block_spatial_ref_sys_api_writes`:
+
+- Created `private.block_spatial_ref_sys_writes()`.
+- Registered it as `pgrst.db_pre_request` for `authenticator`.
+- Blocks POST, PUT, PATCH, and DELETE requests to `spatial_ref_sys` for `anon` and `authenticated`.
+- Preserves GET/read requests, unrelated table requests, and service-role requests.
+- Does not change table ACLs, PostGIS ownership, extension placement, or RLS.
+
+Read-only verification confirmed the function exists, required EXECUTE/USAGE grants are present, and the authenticator role has the expected pre-request setting. A transaction-local simulation confirmed the guard raises the expected PostgREST exception for an anonymous write and permits a read, an unrelated-table write, and a service-role request.
+
+**Not yet verified:** A real HTTP request against the Production Data API has not yet been exercised. The simulation validates the function logic, not the entire PostgREST runtime path.
+
+### Limits and follow-up
+
+- The original table-level write grants remain effective at PostgreSQL level.
+- The pre-request hook protects only the PostgREST Data API; it does not cover direct database connections, Realtime, Storage, or other Supabase products.
+- The Security Advisor will continue to report RLS disabled on `spatial_ref_sys` and PostGIS installed in `public`.
+- The matching repository migration is `migrations/20261120_spatial_ref_sys_api_write_guard.sql`. It is idempotent for this hook and fails rather than silently replacing a different pre-request hook.
+- Do not reapply the direct-revoke migration from PR #127 as a Production fix. Do not claim that the underlying PostgreSQL ACLs are read-only.
