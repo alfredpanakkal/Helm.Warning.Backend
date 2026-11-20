@@ -244,6 +244,59 @@ enough to merge.
 
 **Operational follow-up:** post-merge Unit tests and the triggered NAVAREA X, IX, XII, III, VII and IV workflows succeeded on commit `0953c6f`. NAVAREA XIX Sync failed three times with zero jobs. Static inspection suggests the artifact upload step's `path`, `retention-days` and `if-no-files-found` keys are incorrectly indented outside `with:`; this is a likely cause, not a diagnosis confirmed by logs. Track correction and successful rerun in [`PRODUCTION_ROLLOUT.md`](PRODUCTION_ROLLOUT.md).
 
+---
+
+## 2026-11-13 follow-up decisions and audit findings
+
+### Atomic persistence failure must fail closed (PR #112)
+
+**Rule:** If `upsert_nav_warning(p_payload)` fails, return failure and do not fall back to a direct master-table upsert. Raw-message archival may already have occurred, but the warning master and child geometry must remain atomic.
+
+**Why:** A direct fallback can update `nav_warnings` while leaving `nav_warning_geometries` stale or absent. This violates the master-child persistence contract.
+
+**Where:** `shared/sync_engine.py::upsert_warning_atomic`, `tests/test_e2e_sync.py`. PR #112 adds a regression asserting the table fallback is never called.
+
+### Database QA flags must match the Python publication gate (PR #113)
+
+**Rule:** Only `geometry_basis:*` flags are informational. Any other non-empty QA flag requires review and must not be newly assigned to Tier A.
+
+**Why:** The Production SQL CHECK only blocks `has_incomplete_zone` and `has_repairs`, while Python blocks every non-informational flag. The 2026-11-13 read-only snapshot found 28 Tier-A rows that pass the narrow SQL CHECK but fail the Python policy.
+
+**Where:** `shared.models.qa_flags_require_review`, proposed `migrations/20261113_tier_a_qa_flag_parity.sql`, and `tests/test_tier_a_invariants.py`. The proposed trigger preserves unchanged historical exceptions during unrelated updates. It has not been applied to Production; no automatic historical demotion is authorized.
+
+### PostGIS CRS catalogue is read-only to client roles (PR #115)
+
+**Rule:** `anon` and `authenticated` need SELECT on `public.spatial_ref_sys`, not direct write privileges. Preserve owner and service-role grants.
+
+**Why:** The read-only Production audit found direct client INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER and MAINTAIN privileges on a PostGIS system catalogue.
+
+**Where:** Proposed `migrations/20261113_spatial_ref_sys_client_read_only.sql`. Not applied to Production.
+
+### Source registry schema evolution is additive (PR #116)
+
+**Rule:** Evolve the existing legacy `sources_registry` table by adding the current frontend and backend contract fields; retain legacy columns and data.
+
+**Why:** Production has a six-column table with zero rows. `CREATE TABLE IF NOT EXISTS` does not add fields to an existing table, and the frontend upsert does not send the legacy NOT NULL `region` column.
+
+**Where:** Proposed `migrations/20261113_sources_registry_legacy_compatibility.sql` and `tests/test_sources_registry_compatibility.py`. No source rows are backfilled or changed.
+
+### Read-only historical audit scope (2026-11-13)
+
+**Rule:** Direct SQL snapshots are supplemental only. The complete parser-vs-source audit must use `scripts.audit_supabase_parsing --mode audit_only`, whose contract is zero database writes.
+
+**Why:** The SQL snapshot can identify geometry, provenance, and schema anomalies but cannot reproduce the parser audit's deterministic validation and report coverage checks.
+
+**Where:** [`docs/READ_ONLY_AUDIT_20261113.md`](READ_ONLY_AUDIT_20261113.md). The manual workflow was not dispatched in this session.
+
+
+### Public warning views should respect caller RLS (PR #118)
+
+**Rule:** Set `security_invoker = true` on `nav_warnings_active_spatial` and `nav_warnings_review_queue`. Preserve current public SELECT grants and base-table policies.
+
+**Why:** The views are owned by `postgres` and currently have no security-invoker option. Invoker mode prevents future RLS tightening from being bypassed by view-owner privileges. PostgreSQL 17.6 supports this option, and the public frontend retains SELECT on the underlying warning/geometry tables.
+
+**Where:** Proposed `migrations/20261113_views_security_invoker.sql` and `tests/test_view_security_migration.py`. Not applied to Production.
+
 ### Explicit bounded polygons crossing the antimeridian
 **Why:** NAVAREA XI 0504/26 (JCG, 2026-11-09) explicitly defines a 25-vertex North Pacific area crossing the Date Line twice. The planar longitude/latitude ring check treated the ±180° transitions as long segments and rejected the area, causing the parser to emit an open LineString. Explicit bounded-area rings with exactly two crossings of one antimeridian are now unwrapped, clipped at that meridian, and emitted as a two-part MultiPolygon while preserving every source vertex. Unsupported crossing topology fails closed as ambiguous rather than becoming a misleading line. The splitter assumes shortest-longitude transitions and is restricted to compact unwrapped spans under 180 degrees; it does not claim to support global or long-way-around boundaries. Regression coverage checks source-vertex preservation, planar area preservation after unwrapping, eastern and western Date Line crossings, reversed winding, ordinary non-crossing rings, unsupported repeated crossings, and global-span rejection. Axis-aligned range-box handling remains unchanged. Lives in `shared/geometry_classifier.py` and `shared/utils.py`; regression fixture in `tests/test_advanced_geometry_backend.py`.
 
@@ -288,3 +341,14 @@ enough to merge.
 **Why:** Unit fixtures establish the parser rule, but the production rows must be checked against their exact stored raw text before considering a data correction. The existing full-dataset parsing audit validates stored rows; it does not re-run this universal parser to generate proposed geometry.
 
 **Safety:** Read-only Supabase SELECT only. No production geometry writes are authorized by this workflow. Any subsequent update requires a separate reviewed and explicitly approved operation.
+
+
+---
+
+## Backend follow-up status — 2026-11-20
+
+The 2026-11-13 audit snapshot above remains historical and has not been refreshed. The related implementation PRs subsequently merged to `main`: #111 (NAVAREA XIX artifact-upload configuration), #112 (fail-closed atomic persistence), #113 (Python/SQL QA-flag parity), #114 (geometry metadata regression tests), #115 (client privilege reduction on `spatial_ref_sys`), and #116 (legacy `sources_registry` compatibility).
+
+Merge status is not deployment status: PR #113's migration was validated in Prototype only; PRs #115 and #116 have not been applied to Production. No Production data or schema changes are recorded by this documentation update. PR #118 remains open for caller-RLS warning-view security.
+
+The full `audit_only` report and isolated PostGIS RPC round-trip remain outstanding. The NAVAREA XIX workflow fix merged in #111 still requires a safely controlled successful execution before the ingestion fleet is declared healthy.

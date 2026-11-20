@@ -76,3 +76,46 @@ Do not declare the entire ingestion fleet operationally green until the NAVAREA 
 - Do not disable triggers, bypass RLS/write guards, or use SQL Editor workarounds to force data writes.
 - Never paste or log Supabase service-role credentials.
 - Any further Production data write requires explicit authorization and a scoped, reviewed plan.
+
+
+---
+
+## 6. Read-only Production follow-up — 2026-11-13
+
+A further read-only SQL snapshot was completed. No Production writes or migrations were performed. Full results and query scope are in [`READ_ONLY_AUDIT_20261113.md`](READ_ONLY_AUDIT_20261113.md).
+
+Key findings:
+
+- 900 warning rows; 491 active Tier A, 4 active Tier B, 59 active Tier C.
+- 1,925 geometry rows; two invalid self-intersecting polygons belong to cancelled NAVAREA VIII warnings. No active Tier-A invalid geometry was found.
+- 478 point geometries have non-zero `buffer_nm`; corridor/sweep metadata columns currently contain no non-null values.
+- Seven raw messages lack checksums (four manual NAVAREA X, three manual NAVAREA XIX); eleven older cancelled warnings have no matching raw-message row under canonical/numeric-ID matching.
+- 28 Tier-A warnings carry QA flags that Python considers review-required; the current SQL CHECK does not cover those flags. PR #113 proposes a guard without bulk-changing historical rows.
+- Production `sources_registry` has six legacy columns and zero rows; PR #116 proposes additive compatibility.
+- `anon` and `authenticated` have direct write privileges on `spatial_ref_sys`; PR #115 proposes read-only client access.
+- The migration ledger has eight entries through 2026-10-05; later schema changes were separately applied, so the ledger alone is not authoritative.
+
+### Current open PR verification
+
+PRs #111–#118 all have passing Unit tests workflows. PR #118 had an initial test-only assertion failure, which was corrected; the subsequent run passed. All PRs remain draft/open and unmerged.
+
+### Remaining gates
+
+- Run the full `audit_only` workflow and review its artifact; this connection did not expose a workflow-dispatch action.
+- Run a true geometry RPC round-trip against an isolated PostGIS database. PR #114 covers payload and SQL mapping, not live database integration.
+- Confirm NAVAREA XIX workflow execution only when it can be safely run after merge; PR #111's Unit tests do not validate a Production ingestion run.
+- Individually review historical QA/geometry/provenance exceptions. No bulk corrections are authorized.
+- Do not rerun migrations or edit the migration ledger to make it appear current.
+
+- PR #118 separately proposes `security_invoker = true` for both public warning views while preserving current grants and RLS policies; no view option has been changed in Production.
+
+
+---
+
+## Backend follow-up status — 2026-11-20
+
+The 2026-11-13 audit snapshot above remains historical and has not been refreshed. The related implementation PRs subsequently merged to `main`: #111 (NAVAREA XIX artifact-upload configuration), #112 (fail-closed atomic persistence), #113 (Python/SQL QA-flag parity), #114 (geometry metadata regression tests), #115 (client privilege reduction on `spatial_ref_sys`), and #116 (legacy `sources_registry` compatibility).
+
+Merge status is not deployment status: PR #113's migration was validated in Prototype only; PRs #115 and #116 have not been applied to Production. No Production data or schema changes are recorded by this documentation update. PR #118 remains open for caller-RLS warning-view security.
+
+The full `audit_only` report and isolated PostGIS RPC round-trip remain outstanding. The NAVAREA XIX workflow fix merged in #111 still requires a safely controlled successful execution before the ingestion fleet is declared healthy.
