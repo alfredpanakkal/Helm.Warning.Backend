@@ -722,3 +722,16 @@ All implementation PRs, including PR #109, are merged to `main` at `0953c6fca00c
 **Operational status is not fully green yet.** The post-merge Unit tests workflow and the triggered NAVAREA X, IX, XII, III, VII and IV ingestion workflows succeeded on the merge commit. NAVAREA XIX Sync failed on three attempts and reported zero jobs. Static inspection found a likely workflow-definition issue in `.github/workflows/navarea-xix-sync.yml`: the `path`, `retention-days` and `if-no-files-found` inputs appear outside the step's `with:` block. This is a suspected cause, not a confirmed diagnosis from job logs. See [B4 Production rollout record](docs/PRODUCTION_ROLLOUT.md).
 
 Do not rerun the B4 migration. The remaining operational task is to correct and validate the NAVAREA XIX workflow definition, then confirm a successful run and normal scheduled ingestion.
+
+---
+
+## Backend follow-up status — November 13, 2026
+
+The current read-only Production findings and outstanding release gates are recorded in [`docs/READ_ONLY_AUDIT_20261113.md`](docs/READ_ONLY_AUDIT_20261113.md). No Production data or schema changes were made during this audit.
+
+Backend follow-up status — November 20, 2026:
+
+- **Merged to main:** [#111](https://github.com/alfredpanakkal/Helm.Warning.Backend/pull/111) (NAVAREA XIX artifact-upload configuration), [#112](https://github.com/alfredpanakkal/Helm.Warning.Backend/pull/112) (fail-closed atomic persistence), [#113](https://github.com/alfredpanakkal/Helm.Warning.Backend/pull/113) (Python/SQL QA-flag parity), [#114](https://github.com/alfredpanakkal/Helm.Warning.Backend/pull/114) (geometry metadata regression tests), [#115](https://github.com/alfredpanakkal/Helm.Warning.Backend/pull/115) (client writes to `spatial_ref_sys`), and [#116](https://github.com/alfredpanakkal/Helm.Warning.Backend/pull/116) (legacy `sources_registry` compatibility).
+- **Open follow-up:** [#118](https://github.com/alfredpanakkal/Helm.Warning.Backend/pull/118) (caller-RLS warning views). PR #117 carries this documentation update.
+- Merging implementation PRs to Git does not mean their migrations were applied to Production. The #113 migration was validated in Prototype only; #115 and #116 remain unapplied to Production.
+- The complete `audit_only` report and isolated PostGIS RPC round-trip remain outstanding. The NAVAREA XIX workflow fix in #111 still needs a safely controlled successful execution before the ingestion fleet is declared healthy.

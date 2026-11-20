@@ -323,3 +323,38 @@ This addendum is authoritative where earlier sections describe the pre-B4 triage
 **Production verification:** the maintainer applied `migrations/20261112_triage_contract_alignment.sql`. Read-only checks confirmed `corridor_clearance_nm`, the active spatial metadata columns, the 14-column review queue, and `upsert_nav_warning(p_payload jsonb)` with SECURITY DEFINER and `search_path=public, pg_temp`. The Tier-A QA guard was validated successfully after a zero-violation check. See [`docs/PRODUCTION_ROLLOUT.md`](docs/PRODUCTION_ROLLOUT.md).
 
 **Outstanding workflow issue:** post-merge Unit tests and the triggered NAVAREA X, IX, XII, III, VII and IV sync workflows succeeded on merge commit `0953c6f`. NAVAREA XIX Sync failed three times with zero jobs. The workflow file currently appears to place artifact `path`, `retention-days` and `if-no-files-found` outside the `with:` mapping. Treat this as a likely workflow YAML/input indentation defect pending a validated correction and successful rerun. Do not claim the entire ingestion fleet is healthy until this is resolved.
+
+---
+
+## 2026-11-13 backend follow-up audit and release guardrails
+
+The read-only Production snapshot is recorded in [`docs/READ_ONLY_AUDIT_20261113.md`](docs/READ_ONLY_AUDIT_20261113.md). It is a bounded SQL audit, **not** a completed parser-vs-source audit.
+
+### Current publication and persistence rules
+
+- Python Tier A permits only clean explicit RULE-parsed geometry with no review-required QA flags. `geometry_basis:*` is the only informational flag family; every other non-empty flag requires review.
+- Production's current SQL CHECK is narrower than Python. PR #113 proposes parity for new/changed publication decisions. It intentionally preserves unchanged legacy Tier-A rows; do not bulk-demote flagged exceptions. The initial snapshot counted 28; the later 2026-11-13 read-only refresh counted 25 distinct warnings (12 active, 13 non-active). See `docs/READ_ONLY_AUDIT_20261113.md` for the query scope.
+- Atomic warning persistence is master + child geometry in `upsert_nav_warning`. If the RPC fails, fail closed. Never write the master table directly as a fallback (PR #112).
+- Preserve geometry metadata exactly as supplied, including explicit zero values. Do not fabricate missing corridor/sweep values. PR #114 adds payload and migration-mapping regression tests; it is not a live PostGIS round-trip.
+- `spatial_ref_sys` client-write revocation (PR #115) and legacy `sources_registry` compatibility (PR #116) are proposed migrations only. Do not apply them without review.
+
+### Production audit observations (2026-11-13)
+
+- 900 warnings; 491 active Tier A, 4 active Tier B, 59 active Tier C.
+- 1,925 geometry rows; two invalid polygons belong to cancelled NAVAREA VIII warnings; no active Tier-A invalid geometry was found.
+- Seven raw messages lack checksums (manual NAVAREA X/XIX); eleven older cancelled warnings have no matching raw-message row under canonical/numeric-ID matching.
+- 28 Tier-A rows carry flags the Python gate classifies as review-required.
+- `sources_registry` has six legacy columns and zero rows; the existing `CREATE TABLE IF NOT EXISTS` does not evolve it.
+- The migration ledger has eight rows through 2026-10-05, but later schema changes were manually applied. Never infer migration state from the ledger alone.
+
+### Outstanding execution gates
+
+1. Run the complete `audit_only` workflow and inspect its artifact. The current connection did not expose a workflow-dispatch action.
+2. Run a true RPC round-trip on an isolated PostGIS database, never with synthetic Production writes.
+3. Keep NAVAREA XIX ingestion validation pending until the corrected workflow can be safely run after merge; do not dispatch a Production ingestion merely to test a PR.
+4. Review legacy QA and geometry exceptions individually. No automatic data corrections.
+5. Keep all PRs open for human review; do not merge automatically.
+
+- PR #118 proposes caller-privilege execution for both public warning views. It preserves current public SELECT grants and RLS policies; it is not applied to Production.
+
+- Unit tests CI is passing on open draft PRs #111–#118. PR #118's first run exposed only a comment-matching test assertion; the corrected follow-up run passed. This is not a substitute for live workflow or Production verification.
