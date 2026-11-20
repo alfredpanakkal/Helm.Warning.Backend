@@ -23,7 +23,7 @@ DECLARE
     v_relation record;
 BEGIN
     FOR v_relation IN
-        SELECT c.oid::regclass AS relation_name
+        SELECT n.nspname AS schema_name, c.relname AS table_name
         FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public'
@@ -32,8 +32,9 @@ BEGIN
           AND c.relname <> 'spatial_ref_sys'
     LOOP
         EXECUTE format(
-            'REVOKE TRUNCATE, REFERENCES, TRIGGER, MAINTAIN ON TABLE %s FROM anon, authenticated',
-            v_relation.relation_name
+            'REVOKE TRUNCATE, REFERENCES, TRIGGER, MAINTAIN ON TABLE %I.%I FROM anon, authenticated',
+            v_relation.schema_name,
+            v_relation.table_name
         );
     END LOOP;
 END;
