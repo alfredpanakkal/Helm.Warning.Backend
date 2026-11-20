@@ -66,6 +66,24 @@ class TestSourcesRegistryCompatibilityMigration(unittest.TestCase):
         self.assertIn("con.contype IN ('p', 'u')", migration)
         self.assertIn("pg_get_constraintdef(con.oid) LIKE '%(source_id)%'", migration)
 
+    def test_omitted_not_null_columns_must_have_defaults_or_be_generated(self):
+        migration = (
+            Path(__file__).resolve().parents[1]
+            / "migrations"
+            / "20261113_sources_registry_legacy_compatibility.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn("c.is_nullable = 'NO'", migration)
+        self.assertIn("c.column_default IS NULL", migration)
+        self.assertIn("c.is_identity = 'NO'", migration)
+        self.assertIn("c.is_generated = 'NEVER'", migration)
+        self.assertIn(
+            "sources_registry has a required column omitted by frontend upsert",
+            migration,
+        )
+        # The legacy-only columns are intentionally absent from the frontend
+        # payload allowlist and therefore must be nullable or have defaults.
+        self.assertIn("'source_id',", migration)
+        self.assertIn("'updated_at'", migration)
 
     def test_operational_check_constraints_are_added_idempotently(self):
         migration = (
