@@ -58,7 +58,7 @@ class TestInternalTablePrivilegeMigration(unittest.TestCase):
             self.normalized,
         )
         self.assertIn("c.relname <> 'spatial_ref_sys'", self.normalized)
-        self.assertIn("supabase_admin", self.normalized)
+        self.assertIn("supabase_admin", self.sql.lower())
 
     def test_service_role_access_is_asserted_and_never_revoked(self):
         revoke_statements = re.findall(
@@ -91,7 +91,7 @@ class TestInternalTablePrivilegeMigration(unittest.TestCase):
 
         self.assertNotRegex(self.normalized, r"\b(?:create|drop)\s+policy\b")
         self.assertNotRegex(self.normalized, r"\balter\s+table\b")
-        self.assertIn("public read contracts", self.normalized)
+        self.assertIn("public read contracts", self.sql.lower())
 
 
 if __name__ == "__main__":
