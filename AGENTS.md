@@ -24,7 +24,7 @@ See [docs/DECISION_LOG.md](docs/DECISION_LOG.md) for *why* each safety rule exis
 
 - An atomic warning upsert must fail closed if `upsert_nav_warning` fails. Never fall back to a direct `nav_warnings` table write that can leave master and geometry rows inconsistent (PR #112).
 - Treat the SQL QA-flag parity guard in PR #113 as **proposed**, not applied. Preserve existing Production Tier-A exceptions for individual evidence review; never bulk-demote or rewrite them. The initial 2026-11-13 snapshot counted 28; a later read-only refresh returned 25 distinct rows (12 active, 13 non-active). See `docs/READ_ONLY_AUDIT_20261113.md` for both snapshots.
-- `spatial_ref_sys` client privilege reduction was merged in PR #115; its migration has not been applied to Production.
+- `spatial_ref_sys` direct privilege revocation (PRs #115/#127) is ineffective on Free-tier Production because `supabase_admin` owns the PostGIS table. Production uses the PostgREST pre-request guard recorded in `docs/PRODUCTION_ROLLOUT.md`; it is API-layer protection, not PostgreSQL ACL revocation.
 - The additive legacy `sources_registry` compatibility migration was merged in PR #116; it has not been applied to Production. Retain legacy columns and records.
 - The 2026-11-13 SQL snapshot is not a full parser audit. A complete `audit_only` workflow report and isolated PostGIS RPC round-trip remain outstanding.
 - All follow-up PRs are review-only until the maintainer chooses to merge them. No PR is to be merged automatically.
