@@ -49,5 +49,43 @@ class TestViewSecurityInvokerMigration(unittest.TestCase):
         self.assertIn("has_table_privilege('authenticated', 'public.nav_warning_geometries', 'SELECT')", migration)
 
 
+class TestRemainingPublicViewsSecurityInvokerMigration(unittest.TestCase):
+    def setUp(self):
+        self.migration = (
+            Path(__file__).resolve().parents[1]
+            / "migrations"
+            / "20261120180000_harden_remaining_public_views.sql"
+        ).read_text(encoding="utf-8")
+
+    def test_archive_and_unverified_views_are_security_invoker(self):
+        for view in (
+            "public.nav_warnings_archive",
+            "public.nav_warnings_unverified_spatial",
+        ):
+            with self.subTest(view=view):
+                self.assertIn(
+                    "ALTER VIEW " + view + "\n    SET (security_invoker = true)",
+                    self.migration,
+                )
+
+    def test_migration_preserves_base_rls_and_public_select_contract(self):
+        for expected in (
+            "nav_warnings RLS must remain enabled",
+            "nav_warning_geometries RLS must remain enabled",
+            "nav_warnings public SELECT policy must remain available",
+            "nav_warning_geometries public SELECT policy must remain available",
+            "Public archive and unverified view SELECT privileges must remain available",
+            "has_table_privilege('anon', 'public.nav_warnings_archive', 'SELECT')",
+            "has_table_privilege('authenticated', 'public.nav_warnings_unverified_spatial', 'SELECT')",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, self.migration)
+
+    def test_migration_does_not_change_grants_or_policies(self):
+        sql = re.sub(r"--.*?$", "", self.migration, flags=re.MULTILINE).upper()
+        self.assertNotRegex(sql, r"(?m)^\s*(?:REVOKE|GRANT)\b")
+        self.assertNotRegex(sql, r"(?m)^\s*(?:CREATE|DROP)\s+POLICY\b")
+
+
 if __name__ == "__main__":
     unittest.main()
