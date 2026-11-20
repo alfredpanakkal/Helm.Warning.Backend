@@ -736,13 +736,13 @@ RE_PAIR_DMS = re.compile(
 # and single-digit minutes (SWEDISH 175/26 '018-4.7E') share this
 # pattern: ',' is normalized to '.' at extraction.
 RE_PAIR_DMM = re.compile(
-    r"(\d{1,2})-(\d{1,2}(?:[.,]\d+)?)\s*([NS])" + _PAIR_SEP +
-    r"(\d{1,3})-(\d{1,2}(?:[.,]\d+)?)\s*([EW])",
+    r"(\d{1,2})-(\d{1,2}(?:[.,]\d+)?)\s*`?\s*([NS])" + _PAIR_SEP +
+    r"(\d{1,3})-(\d{1,2}(?:[.,]\d+)?)\s*`?\s*([EW])",
     re.IGNORECASE,
 )
 RE_PAIR_DMM_SPACED = re.compile(
-    r"(\d{1,3})\s*-\s*(\d{1,2}(?:[.,]\d+)?)\s+([NS])\s+"
-    r"(\d{1,3})\s*-\s*(\d{1,2}(?:[.,]\d+)?)\s+([EW])",
+    r"(\d{1,3})\s*-\s*(\d{1,2}(?:[.,]\d+)?)`?\s+([NS])\s+"
+    r"(\d{1,3})\s*-\s*(\d{1,2}(?:[.,]\d+)?)`?\s+([EW])",
     re.IGNORECASE,
 )
 # Space-separated DMS with seconds (IX 118/26 '25 02 37.67N 054 59 18.27E'):
@@ -766,16 +766,16 @@ RE_PAIR_SPACE = re.compile(
 # the gap between lat and lon may hold nothing but whitespace/comma/
 # dash — a word ('TO', 'AND', 'LONG.') rejects the pairing.
 RE_TOKEN_LAT = re.compile(
-    r"(\d{1,2})(?:[ \t]+|-\s*)(\d{1,2}(?:[.,]\d+)?)\s*([NS])", re.IGNORECASE)
+    r"(\d{1,2})(?:[ \t]+|-\s*)(\d{1,2}(?:[.,]\d+)?)`?\s*([NS])", re.IGNORECASE)
 RE_TOKEN_LON = re.compile(
-    r"(\d{1,3})(?:[ \t]+|-\s*)(\d{1,2}(?:[.,]\d+)?)\s*([EW])", re.IGNORECASE)
+    r"(\d{1,3})(?:[ \t]+|-\s*)(\d{1,2}(?:[.,]\d+)?)`?\s*([EW])", re.IGNORECASE)
 _ADJACENT_GAP = re.compile(r"^[\s,;.\-]{0,12}$")
 
 
 # Hemisphere-bearing coordinate-looking token (loose completeness count and
 # rejected-token scan). One token per hemisphere letter attached to digits:
 # every extracted pair accounts for exactly two.
-RE_LOOSE_HEM_TOKEN = re.compile(r"\d[\d.,-]*\s*[NSEW]\b")
+RE_LOOSE_HEM_TOKEN = re.compile(r"\d[\d.,-]*`?\s*[NSEW]\b")
 # Space-separated DDM token, e.g. "91 00.000N", for invalid-token reporting.
 RE_LOOSE_SPACE_HEM_TOKEN = re.compile(
     r"(?<![\d.])\d{1,3}[ \t]+\d{1,2}(?:[.,]\d+)?\s*[NSEW]\b"
@@ -783,7 +783,7 @@ RE_LOOSE_SPACE_HEM_TOKEN = re.compile(
 # Decimal-minute value with NO hemisphere letter ('18-30.5 ' from a partial
 # or wrapped position): missing_hemisphere — never guessed (Rule 17).
 RE_MISSING_HEM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9.-])(\d{1,3}-\d{1,2}\.\d{1,4})(?!\s*[NSEW])(?=[\s,;]|$)"
+    r"(?<![A-Za-z0-9.-])(\d{1,3}-\d{1,2}\.\d{1,4})(?!`?\s*[NSEW])(?=`?[\s,;]|$)"
 )
 
 
@@ -892,7 +892,7 @@ def _classify_loose_token(token: str):
     refused, or None when the token is well-formed (an unpaired axis
     value inside a 'BOUNDED WITHIN' range listing is not an error)."""
     t = token.strip()
-    m = re.match(r"^(\d{1,3})(?:-|[ \t]+)(\d{1,2}(?:[.,]\d+)?)\s*([NSEW])$", t)
+    m = re.match(r"^(\d{1,3})(?:-|[ \t]+)(\d{1,2}(?:[.,]\d+)?)`?\s*([NSEW])$", t)
     if not m:
         return None
     deg_s, min_s, hem = m.groups()
