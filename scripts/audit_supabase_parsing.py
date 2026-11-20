@@ -485,17 +485,29 @@ def validate_warning_geometry(
     """
     issues: List[Dict[str, Any]] = []
     tier = record.get("triage_tier")
+    status = record.get("status")
     allowed_types = {"POINT", "LINE", "POLYGON", "CORRIDOR", "SWEEP_ARC", "BOUNDING_BOX"}
 
-    # Tier A record must have at least one valid geometry row
-    if tier == "A" and (not geometry_data or len(geometry_data) == 0):
-        issues.append({
-            "code": "TIER_A_ZERO_GEOMETRIES",
-            "field": "geometries",
-            "severity": "ERROR",
-            "message": "Tier A warning has zero associated child geometries in nav_warning_geometries.",
-            "current_value": 0,
-        })
+    # Only active Tier A warnings are required to have plot-ready geometry.
+    # Inactive Tier A records remain visible through a separate informational
+    # diagnostic; their historical geometry must not be recreated or discarded.
+    if tier == "A" and not geometry_data:
+        if status == "active":
+            issues.append({
+                "code": "TIER_A_ZERO_GEOMETRIES",
+                "field": "geometries",
+                "severity": "ERROR",
+                "message": "Active Tier A warning has zero associated child geometries in nav_warning_geometries.",
+                "current_value": 0,
+            })
+        else:
+            issues.append({
+                "code": "HISTORICAL_TIER_A_ZERO_GEOMETRIES",
+                "field": "geometries",
+                "severity": "INFO",
+                "message": f"Inactive Tier A warning (status='{status}') has no associated child geometries; retained as a historical diagnostic.",
+                "current_value": 0,
+            })
 
     for idx, geom in enumerate(geometry_data):
         ftype = (geom.get("feature_type") or "").strip().upper()
