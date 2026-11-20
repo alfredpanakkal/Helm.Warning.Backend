@@ -579,7 +579,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             "original_value": "EXPLICIT",  # Does not match DB!
             "proposed_value": "INVALID",
             "raw_evidence": "GULF OF MEXICO",
-            "validation": {"record_updated_at": current_warn["updated_at"]},
+            "validation": {"record_updated_at": self.sample_active_warning["updated_at"]},
         }
         client = MockSupabaseClient({
             "nav_warnings": [current_warn],
@@ -608,7 +608,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             "original_value": "AMBIGUOUS",
             "proposed_value": "EXPLICIT",
             "raw_evidence": "DRILLING RIG AT 27-45.0N 091-15.0W",
-            "validation": {"record_updated_at": current_warn["updated_at"]},
+            "validation": {"record_updated_at": self.sample_active_warning["updated_at"]},
         }
         client = MockSupabaseClient({
             "nav_warnings": [current_warn],
@@ -692,7 +692,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             "original_value": None,
             "proposed_value": "no_coordinates",
             "raw_evidence": "GULF OF MEXICO",
-            "validation": {"record_updated_at": current_warn["updated_at"]},
+            "validation": {"record_updated_at": self.sample_active_warning["updated_at"]},
         }
         client = MockSupabaseClient({
             "nav_warnings": [current_warn],
@@ -714,7 +714,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             "original_value": "OLD TITLE",
             "proposed_value": "AI-PROPOSED TITLE",
             "raw_evidence": "GULF OF MEXICO",
-            "validation": {"record_updated_at": current_warn["updated_at"]},
+            "validation": {"record_updated_at": self.sample_active_warning["updated_at"]},
         }
         client = MockSupabaseClient({
             "nav_warnings": [dict(self.sample_active_warning)],
@@ -818,7 +818,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             "original_value": "AMBIGUOUS",
             "proposed_value": "EXPLICIT",
             "raw_evidence": "DRILLING RIG AT 27-45.0N 091-15.0W",
-            "validation": {"record_updated_at": current_warn["updated_at"]},
+            "validation": {"record_updated_at": self.sample_active_warning["updated_at"]},
         }
         client = MockSupabaseClient({
             "nav_warnings": [current_warn],
@@ -864,7 +864,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             "original_value": None,
             "proposed_value": {"type": "Point", "coordinates": [-90.0, 25.0]},
             "raw_evidence": "GULF OF MEXICO",
-            "validation": {"record_updated_at": current_warn["updated_at"]},
+            "validation": {"record_updated_at": self.sample_active_warning["updated_at"]},
         }
         client = MockSupabaseClient({
             "nav_warnings": [dict(self.sample_active_warning)],
@@ -895,7 +895,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             "original_value": "AMBIGUOUS",
             "proposed_value": "EXPLICIT",
             "raw_evidence": "DRILLING RIG AT 27-45.0N 091-15.0W",
-            "validation": {"record_updated_at": current_warn["updated_at"]},
+            "validation": {"record_updated_at": self.sample_active_warning["updated_at"]},
         }
         proposal2 = {
             "id": prop2_id,
@@ -906,7 +906,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             "original_value": "AMBIGUOUS",
             "proposed_value": "INVALID",
             "raw_evidence": "DRILLING RIG AT 27-45.0N 091-15.0W",
-            "validation": {"record_updated_at": current_warn["updated_at"]},
+            "validation": {"record_updated_at": self.sample_active_warning["updated_at"]},
         }
         client = MockSupabaseClient({
             "nav_warnings": [current_warn],
@@ -944,7 +944,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             "original_value": "AMBIGUOUS",  # Stale snapshot: field already moved on
             "proposed_value": "EXPLICIT",
             "raw_evidence": "DRILLING RIG AT 27-45.0N 091-15.0W",
-            "validation": {"record_updated_at": current_warn["updated_at"]},
+            "validation": {"record_updated_at": self.sample_active_warning["updated_at"]},
         }
         client = MockSupabaseClient({
             "nav_warnings": [current_warn],
