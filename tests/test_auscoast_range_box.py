@@ -17,6 +17,19 @@ AUSCOAST_270_26 = (
     "UNDERWATER OPERATIONS IN AN AREA BOUNDED BY 19-12.00 S TO 19-21.00 S "
     "AND 116-30.00 E TO 116-50.00 E 0.5NM CLEARANCE REQUESTED."
 )
+# Live AMSA AUSCOAST moving-operation wording with a backtick minute marker.
+AUSCOAST_347_26 = (
+    "AUSCOAST WARNING 347/26\n"
+    "SPECIAL PURPOSE VESSEL NORDNES / PHOG / 244962000 CONDUCTING "
+    "FROM 20-15.96` S 114-53.96` E TO 20-41.38` S 115-24.69` E "
+    "500M CLEARANCE REQUESTED."
+)
+AUSCOAST_341_26 = (
+    "AUSCOAST WARNING 341/26\n"
+    "SPECIAL PURPOSE VESSEL RT BEAGLE BAY / VNUN / 503697000 CONDUCTING "
+    "TOWING OPERATIONS FROM 12-19.96` S 130-33.02` E "
+    "TO 13-47.37` S 123-19.16` E 1.0NM CLEARANCE REQUESTED."
+)
 # NAVAREA VIII 1102/26 shape: the pre-existing WITHIN format.
 VIII_1102_26 = (
     "AREA BOUNDED WITHIN 14-47.2N TO 14-50.9N AND "
@@ -33,6 +46,39 @@ II_362_26 = (
 
 
 class TestAuscoastRangeBox(unittest.TestCase):
+    def test_backtick_minutes_parse_g347_moving_track(self):
+        coords, lat, lon, spatial = parse_coordinates(AUSCOAST_347_26)
+        self.assertEqual(len(coords), 2)
+        self.assertEqual(spatial["type"], "LineString")
+        self.assertAlmostEqual(spatial["coordinates"][0][0], 114.899333, places=6)
+        self.assertAlmostEqual(spatial["coordinates"][0][1], -20.266, places=6)
+        self.assertAlmostEqual(spatial["coordinates"][1][0], 115.4115, places=6)
+        self.assertAlmostEqual(spatial["coordinates"][1][1], -20.689667, places=6)
+        _, _, _, _, report = parse_coordinates_detailed(AUSCOAST_347_26)
+        # "FROM ... TO ..." is retained as a two-point fallback, so it
+        # remains AMBIGUOUS for human review rather than being promoted.
+        self.assertEqual(report["basis"], "fallback:two_point_line")
+        self.assertEqual(report["data_quality"], "AMBIGUOUS")
+        self.assertNotIn("MISSING_HEM", report["flags"])
+
+    def test_backtick_minutes_parse_h341_towing_track(self):
+        coords, lat, lon, spatial = parse_coordinates(AUSCOAST_341_26)
+        self.assertEqual(len(coords), 2)
+        self.assertEqual(spatial["type"], "LineString")
+        self.assertAlmostEqual(spatial["coordinates"][0][0], 130.550333, places=6)
+        self.assertAlmostEqual(spatial["coordinates"][0][1], -12.332667, places=6)
+        self.assertAlmostEqual(spatial["coordinates"][1][0], 123.319333, places=6)
+        self.assertAlmostEqual(spatial["coordinates"][1][1], -13.7895, places=6)
+        _, _, _, _, report = parse_coordinates_detailed(AUSCOAST_341_26)
+        self.assertEqual(report["data_quality"], "EXPLICIT")
+        self.assertNotIn("MISSING_HEM", report["flags"])
+
+    def test_backtick_without_hemisphere_remains_unresolved(self):
+        text = "POSITION 20-15.96` 114-53.96` E"
+        _, _, _, spatial, report = parse_coordinates_detailed(text)
+        self.assertIsNone(spatial)
+        self.assertIn("MISSING_HEM", report["flags"])
+
     def test_auscoast_range_box_builds_rectangle(self):
         coords, lat, lon, spatial = parse_coordinates(AUSCOAST_330_26)
         self.assertEqual(spatial["type"], "Polygon")
