@@ -538,6 +538,11 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertEqual(len(proposals), 1)
         self.assertEqual(proposals[0]["status"], "pending")
         self.assertEqual(proposals[0]["field_name"], "data_quality")
+        # The DB snapshot, not the model's claimed original value, is authoritative.
+        self.assertEqual(proposals[0]["original_value"], rec["data_quality"])
+        self.assertEqual(
+            proposals[0]["validation"]["record_updated_at"], rec["updated_at"]
+        )
 
     # 10. Proposal not approved: apply is REJECTED
     def test_apply_rejected_if_not_approved(self):
@@ -574,6 +579,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             "original_value": "EXPLICIT",  # Does not match DB!
             "proposed_value": "INVALID",
             "raw_evidence": "GULF OF MEXICO",
+            "validation": {"record_updated_at": current_warn["updated_at"]},
         }
         client = MockSupabaseClient({
             "nav_warnings": [current_warn],
@@ -602,6 +608,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             "original_value": "AMBIGUOUS",
             "proposed_value": "EXPLICIT",
             "raw_evidence": "DRILLING RIG AT 27-45.0N 091-15.0W",
+            "validation": {"record_updated_at": current_warn["updated_at"]},
         }
         client = MockSupabaseClient({
             "nav_warnings": [current_warn],
@@ -625,6 +632,78 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         self.assertIn("edited_by_admin", current_warn["qa_flags"])
         self.assertIn("ai_correction_applied", current_warn["qa_flags"])
 
+    # A legacy proposal without a captured warning version must never be applied.
+    def test_apply_marks_legacy_proposal_stale_without_snapshot(self):
+        current_warn = dict(self.sample_active_warning)
+        proposal = {
+            "id": "55555555-5555-5555-5555-555555555557",
+            "status": "approved",
+            "canonical_id": current_warn["canonical_id"],
+            "warning_record_id": current_warn["id"],
+            "field_name": "data_quality",
+            "original_value": current_warn["data_quality"],
+            "proposed_value": "AMBIGUOUS",
+            "raw_evidence": "DRILLING RIG AT 27-45.0N 091-15.0W",
+        }
+        client = MockSupabaseClient({
+            "nav_warnings": [current_warn],
+            "parsing_correction_proposals": [proposal],
+        })
+
+        res = apply_approved_corrections(client, [proposal["id"]])
+        self.assertEqual(len(res["stale"]), 1)
+        self.assertEqual(proposal["status"], "stale")
+        self.assertEqual(len(client.recorded_rpcs), 0)
+
+    # A warning update to any field invalidates the proposal's full-row snapshot.
+    def test_apply_marks_stale_when_warning_updated_after_proposal(self):
+        current_warn = dict(self.sample_active_warning)
+        proposal = {
+            "id": "55555555-5555-5555-5555-555555555558",
+            "status": "approved",
+            "canonical_id": current_warn["canonical_id"],
+            "warning_record_id": current_warn["id"],
+            "field_name": "data_quality",
+            "original_value": current_warn["data_quality"],
+            "proposed_value": "AMBIGUOUS",
+            "raw_evidence": "DRILLING RIG AT 27-45.0N 091-15.0W",
+            "validation": {"record_updated_at": "2026-10-25T00:00:00Z"},
+        }
+        client = MockSupabaseClient({
+            "nav_warnings": [current_warn],
+            "parsing_correction_proposals": [proposal],
+        })
+
+        res = apply_approved_corrections(client, [proposal["id"]])
+        self.assertEqual(len(res["stale"]), 1)
+        self.assertEqual(proposal["status"], "stale")
+        self.assertEqual(len(client.recorded_rpcs), 0)
+
+    # Null original values are compared too; a changed field is not treated as unchanged.
+    def test_apply_marks_stale_when_null_original_value_changed(self):
+        current_warn = dict(self.sample_active_warning)
+        current_warn["unplotted_reason"] = "parse_failure"
+        proposal = {
+            "id": "55555555-5555-5555-5555-555555555559",
+            "status": "approved",
+            "canonical_id": current_warn["canonical_id"],
+            "warning_record_id": current_warn["id"],
+            "field_name": "unplotted_reason",
+            "original_value": None,
+            "proposed_value": "no_coordinates",
+            "raw_evidence": "GULF OF MEXICO",
+            "validation": {"record_updated_at": current_warn["updated_at"]},
+        }
+        client = MockSupabaseClient({
+            "nav_warnings": [current_warn],
+            "parsing_correction_proposals": [proposal],
+        })
+
+        res = apply_approved_corrections(client, [proposal["id"]])
+        self.assertEqual(len(res["stale"]), 1)
+        self.assertEqual(proposal["status"], "stale")
+        self.assertEqual(len(client.recorded_rpcs), 0)
+
     # 12b. Allowlist enforcement: title/dates are NOT AI-correctable
     def test_apply_rejects_non_allowlisted_field(self):
         proposal = {
@@ -635,6 +714,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             "original_value": "OLD TITLE",
             "proposed_value": "AI-PROPOSED TITLE",
             "raw_evidence": "GULF OF MEXICO",
+            "validation": {"record_updated_at": current_warn["updated_at"]},
         }
         client = MockSupabaseClient({
             "nav_warnings": [dict(self.sample_active_warning)],
@@ -738,6 +818,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             "original_value": "AMBIGUOUS",
             "proposed_value": "EXPLICIT",
             "raw_evidence": "DRILLING RIG AT 27-45.0N 091-15.0W",
+            "validation": {"record_updated_at": current_warn["updated_at"]},
         }
         client = MockSupabaseClient({
             "nav_warnings": [current_warn],
@@ -783,6 +864,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             "original_value": None,
             "proposed_value": {"type": "Point", "coordinates": [-90.0, 25.0]},
             "raw_evidence": "GULF OF MEXICO",
+            "validation": {"record_updated_at": current_warn["updated_at"]},
         }
         client = MockSupabaseClient({
             "nav_warnings": [dict(self.sample_active_warning)],
@@ -813,6 +895,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             "original_value": "AMBIGUOUS",
             "proposed_value": "EXPLICIT",
             "raw_evidence": "DRILLING RIG AT 27-45.0N 091-15.0W",
+            "validation": {"record_updated_at": current_warn["updated_at"]},
         }
         proposal2 = {
             "id": prop2_id,
@@ -823,6 +906,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             "original_value": "AMBIGUOUS",
             "proposed_value": "INVALID",
             "raw_evidence": "DRILLING RIG AT 27-45.0N 091-15.0W",
+            "validation": {"record_updated_at": current_warn["updated_at"]},
         }
         client = MockSupabaseClient({
             "nav_warnings": [current_warn],
@@ -860,6 +944,7 @@ class TestSupabaseParsingAudit(unittest.TestCase):
             "original_value": "AMBIGUOUS",  # Stale snapshot: field already moved on
             "proposed_value": "EXPLICIT",
             "raw_evidence": "DRILLING RIG AT 27-45.0N 091-15.0W",
+            "validation": {"record_updated_at": current_warn["updated_at"]},
         }
         client = MockSupabaseClient({
             "nav_warnings": [current_warn],
