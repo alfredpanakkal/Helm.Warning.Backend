@@ -55,7 +55,10 @@ class TestAuscoastRangeBox(unittest.TestCase):
         self.assertAlmostEqual(spatial["coordinates"][1][0], 115.4115, places=6)
         self.assertAlmostEqual(spatial["coordinates"][1][1], -20.689667, places=6)
         _, _, _, _, report = parse_coordinates_detailed(AUSCOAST_347_26)
-        self.assertEqual(report["data_quality"], "EXPLICIT")
+        # "FROM ... TO ..." is retained as a two-point fallback, so it
+        # remains AMBIGUOUS for human review rather than being promoted.
+        self.assertEqual(report["basis"], "fallback:two_point_line")
+        self.assertEqual(report["data_quality"], "AMBIGUOUS")
         self.assertNotIn("MISSING_HEM", report["flags"])
 
     def test_backtick_minutes_parse_h341_towing_track(self):
