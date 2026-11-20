@@ -51,7 +51,11 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from shared.validation import validate_lat_lon, validate_warning_id
-from shared.utils import parse_coordinates, repair_coordinate_token
+from shared.utils import (
+    RE_MISSING_HEM_TOKEN,
+    parse_coordinates,
+    repair_coordinate_token,
+)
 
 DEFAULT_MODEL = "gemini-3.8-flash"
 
@@ -142,10 +146,6 @@ ALLOWED_PROPOSAL_FIELDS = {
     "unplotted_reason",
 }
 
-# Regex for ungrounded coordinate patterns with missing hemispheres (e.g. 54-12.0 011-14.5 without N/S/E/W)
-RE_MISSING_HEM = re.compile(
-    r"\b(\d{1,2}-\d{2}(?:\.\d+)?)\s*(?![\d\.\-NSEWnsew])\b"
-)
 
 
 def get_supabase_client(url: Optional[str] = None, key: Optional[str] = None) -> Any:
@@ -454,7 +454,7 @@ def validate_warning_record(record: Dict[str, Any]) -> List[Dict[str, Any]]:
         has_coords = len(coords) > 0
 
         # Check for ambiguous missing hemisphere in raw text
-        if not has_coords and RE_MISSING_HEM.search(raw_text):
+        if not has_coords and RE_MISSING_HEM_TOKEN.search(raw_text):
             issues.append({
                 "code": "MISSING_HEMISPHERE_UNRESOLVED",
                 "field": "unplotted_reason",

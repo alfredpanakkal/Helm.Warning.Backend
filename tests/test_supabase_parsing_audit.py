@@ -391,7 +391,32 @@ class TestSupabaseParsingAudit(unittest.TestCase):
         issues = validate_warning_record(record)
         self.assertTrue(any(iss["code"] == "MISSING_HEMISPHERE_UNRESOLVED" for iss in issues))
 
-    # 5. Malformed GeoJSON rejected
+    # 5. Explicit hemispheres separated by whitespace are not missing.
+    def test_explicit_spaced_hemispheres_not_flagged(self):
+        record = dict(self.sample_active_warning)
+        record["raw_text"] = (
+            "AREA BOUNDED BY 38-40.30 S TO 38-48.00 S "
+            "AND 142-37.00 E TO 142-50.50 E"
+        )
+        issues = validate_warning_record(record)
+        self.assertFalse(any(
+            iss["code"] == "MISSING_HEMISPHERE_UNRESOLVED" for iss in issues
+        ))
+
+    # Backtick punctuation used in AUSCOAST DDM positions is not evidence
+    # that the explicit S/E hemisphere is missing.
+    def test_explicit_backtick_hemispheres_not_flagged_as_missing(self):
+        record = dict(self.sample_active_warning)
+        record["raw_text"] = (
+            "TOWING OPERATIONS FROM 12-19.96\u0060 S 130-33.02\u0060 E "
+            "TO 13-47.37\u0060 S 123-19.16\u0060 E"
+        )
+        issues = validate_warning_record(record)
+        self.assertFalse(any(
+            iss["code"] == "MISSING_HEMISPHERE_UNRESOLVED" for iss in issues
+        ))
+
+    # 6. Malformed GeoJSON rejected
     def test_malformed_geojson_rejected(self):
         record = dict(self.sample_active_warning)
         bad_geom = {
