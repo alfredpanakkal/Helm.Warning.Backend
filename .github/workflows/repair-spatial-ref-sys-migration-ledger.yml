@@ -37,6 +37,12 @@ jobs:
             exit 1
           fi
 
+          # The repository keeps SQL migrations in /migrations; the Supabase CLI
+          # requires the matching version file under supabase/migrations.
+          mkdir -p supabase/migrations
+          cp migrations/20261120150000_sync_spatial_ref_sys_api_guard.sql \
+            supabase/migrations/20261120150000_sync_spatial_ref_sys_api_guard.sql
+
           supabase migration repair 20261120150000 \
             --status applied \
             --yes \
