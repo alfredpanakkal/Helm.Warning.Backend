@@ -44,9 +44,14 @@ jobs:
             exit 0
           fi
           mkdir -p backups
-          pg_dump --version
-          pg_dump "$SUPABASE_DB_URL" --schema=public -f backups/schema.sql
-          pg_dump "$SUPABASE_DB_URL" --schema=public -Fc -f "backups/supabase_full_$(date -u +%Y%m%dT%H%M%SZ).dump"
+          docker run --rm \
+            -e SUPABASE_DB_URL \
+            -v "$PWD/backups:/backups" \
+            postgis/postgis:17-3.3 sh -ec '
+              pg_dump --version
+              pg_dump "$SUPABASE_DB_URL" --schema=public -f /backups/schema.sql
+              pg_dump "$SUPABASE_DB_URL" --schema=public -Fc -f "/backups/supabase_full_$(date -u +%Y%m%dT%H%M%SZ).dump"
+            '
           echo "created=true" >> "$GITHUB_OUTPUT"
           echo "pg_dump complete."
 
