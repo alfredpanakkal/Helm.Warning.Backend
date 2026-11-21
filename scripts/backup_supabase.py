@@ -85,7 +85,6 @@ def _fetch_all_rows(base_url, key, table):
         offset += PAGE_SIZE
 
 
-
 def _sha256_file(path):
     """Return the SHA-256 digest of a completed backup file."""
     digest = hashlib.sha256()
@@ -124,6 +123,7 @@ def verify_backup_directory(backup_dir="backups"):
         if entry.get("sha256") != _sha256_file(path):
             raise ValueError("Backup checksum mismatch: " + table)
     return True
+
 
 def main() -> int:
     url = os.environ.get("SUPABASE_URL")
