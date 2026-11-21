@@ -104,6 +104,17 @@ jobs:
               AND to_regclass('public.nav_warning_geometries') IS NOT NULL
               AND to_regclass('public.raw_messages') IS NOT NULL
               AND EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'postgis')
+              AND EXISTS (SELECT 1 FROM information_schema.columns
+                          WHERE table_schema = 'public' AND table_name = 'nav_warning_geometries'
+                            AND column_name = 'geom_postgis' AND udt_name = 'geography')
+              AND EXISTS (SELECT 1 FROM information_schema.columns
+                          WHERE table_schema = 'public' AND table_name = 'nav_warning_geometries'
+                            AND column_name = 'corridor_half_width_nm')
+              AND EXISTS (SELECT 1 FROM pg_constraint
+                          WHERE conrelid = 'public.nav_warning_geometries'::regclass
+                            AND conname = 'nav_warning_geometries_warning_id_fkey')
+              AND EXISTS (SELECT 1 FROM pg_indexes
+                          WHERE schemaname = 'public' AND tablename = 'nav_warning_geometries')
               AND EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
                           WHERE n.nspname = 'public' AND p.proname = 'upsert_nav_warning');
           ")
