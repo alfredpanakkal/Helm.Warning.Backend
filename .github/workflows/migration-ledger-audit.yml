@@ -1,0 +1,48 @@
+name: Read-only Supabase Migration Ledger Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit-ledger:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Compare repository migrations with Supabase ledger
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set +e
+          python -m scripts.audit_migration_ledger | tee migration-ledger-report.json
+          rc=${PIPESTATUS[0]}
+          {
+            echo "### Read-only migration ledger audit"
+            echo '~~~json'
+            cat migration-ledger-report.json
+            echo '~~~'
+            echo "No migrations or ledger rows were changed."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+      - name: Upload migration audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-ledger-audit-${{ github.run_id }}
+          path: migration-ledger-report.json
+          if-no-files-found: ignore
+          retention-days: 30

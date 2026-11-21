@@ -128,5 +128,45 @@ class TestMain(unittest.TestCase):
         self.assertNotEqual(rc, 0)
 
 
+class TestBackupVerification(unittest.TestCase):
+
+    def _create_backup(self, tmp):
+        env = {"SUPABASE_URL": "https://xyz.supabase.co",
+               "SUPABASE_KEY": "test-key"}
+        prev = os.getcwd()
+        os.chdir(tmp)
+        try:
+            with mock.patch.dict(os.environ, env, clear=True), \
+                 mock.patch.object(backup_supabase, "_fetch_all_rows",
+                                   lambda base, key, table: [{"id": table}]):
+                self.assertEqual(backup_supabase.main(), 0)
+        finally:
+            os.chdir(prev)
+
+    def test_manifest_checksums_and_row_counts_verify(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._create_backup(tmp)
+            self.assertTrue(backup_supabase.verify_backup_directory(
+                os.path.join(tmp, "backups")))
+
+    def test_corrupted_table_file_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._create_backup(tmp)
+            path = os.path.join(tmp, "backups", "nav_warnings.json")
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(" ")
+            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+                backup_supabase.verify_backup_directory(
+                    os.path.join(tmp, "backups"))
+
+    def test_missing_table_file_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._create_backup(tmp)
+            os.remove(os.path.join(tmp, "backups", "raw_messages.json"))
+            with self.assertRaises(FileNotFoundError):
+                backup_supabase.verify_backup_directory(
+                    os.path.join(tmp, "backups"))
+
+
 if __name__ == "__main__":
     unittest.main()
