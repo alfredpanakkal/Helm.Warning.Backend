@@ -32,18 +32,79 @@ jobs:
           pip install -r requirements.txt
 
       - name: Optional pg_dump (public schema only) if SUPABASE_DB_URL secret is set
+        id: pg_dump
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           if [ -z "$SUPABASE_DB_URL" ]; then
-            echo "SUPABASE_DB_URL secret not set — skipping pg_dump (PostgREST JSON export below is the backup)."
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::SUPABASE_DB_URL is not configured. Only the JSON data export will be produced; no database restore can be verified."
+            echo "### Database dump and restore drill skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "SUPABASE_DB_URL is not configured. JSON exports are not a substitute for a schema-and-data restore." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           mkdir -p backups
           pg_dump --version
           pg_dump "$SUPABASE_DB_URL" --schema=public -f backups/schema.sql
           pg_dump "$SUPABASE_DB_URL" --schema=public -Fc -f "backups/supabase_full_$(date -u +%Y%m%dT%H%M%SZ).dump"
+          echo "created=true" >> "$GITHUB_OUTPUT"
           echo "pg_dump complete."
+
+      - name: Restore dump into an isolated PostGIS database
+        if: steps.pg_dump.outputs.created == 'true'
+        run: |
+          set -euo pipefail
+          docker run -d --name helm-restore-test \
+            -e POSTGRES_PASSWORD=restore-test-only \
+            -e POSTGRES_DB=helm_restore \
+            -p 5432:5432 postgis/postgis:17-3.3
+          trap 'docker rm -f helm-restore-test >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 30); do
+            if docker exec helm-restore-test pg_isready -U postgres -d helm_restore; then
+              break
+            fi
+            sleep 2
+          done
+          docker exec helm-restore-test pg_isready -U postgres -d helm_restore
+
+          # Supabase-owned roles and auth helpers are intentionally stubbed
+          # only inside this disposable restore target. No Production SQL runs.
+          docker exec -i helm-restore-test psql -v ON_ERROR_STOP=1 -U postgres -d helm_restore <<'SQL'
+          CREATE ROLE anon NOLOGIN;
+          CREATE ROLE authenticated NOLOGIN;
+          CREATE ROLE service_role NOLOGIN;
+          CREATE ROLE authenticator NOLOGIN;
+          CREATE ROLE supabase_admin NOLOGIN;
+          CREATE SCHEMA IF NOT EXISTS auth;
+          CREATE SCHEMA IF NOT EXISTS extensions;
+          CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;
+          CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA extensions;
+          CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid
+            LANGUAGE sql STABLE AS $ SELECT NULL::uuid $;
+          CREATE OR REPLACE FUNCTION auth.role() RETURNS text
+            LANGUAGE sql STABLE AS $ SELECT NULL::text $;
+          CREATE OR REPLACE FUNCTION auth.jwt() RETURNS jsonb
+            LANGUAGE sql STABLE AS $ SELECT NULL::jsonb $;
+          SQL
+
+          dump_file=$(find backups -maxdepth 1 -name 'supabase_full_*.dump' -type f | sort | tail -n 1)
+          test -n "$dump_file"
+          docker cp "$dump_file" helm-restore-test:/tmp/supabase.dump
+          docker exec helm-restore-test pg_restore --no-owner --no-acl --exit-on-error \
+            -U postgres -d helm_restore /tmp/supabase.dump
+
+          restored=$(docker exec helm-restore-test psql -X -A -t -v ON_ERROR_STOP=1 -U postgres -d helm_restore -c "
+            SELECT
+              to_regclass('public.nav_warnings') IS NOT NULL
+              AND to_regclass('public.nav_warning_geometries') IS NOT NULL
+              AND to_regclass('public.raw_messages') IS NOT NULL
+              AND EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'postgis')
+              AND EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                          WHERE n.nspname = 'public' AND p.proname = 'upsert_nav_warning');
+          ")
+          test "$restored" = "t"
+          echo "### Isolated database restore" >> "$GITHUB_STEP_SUMMARY"
+          echo "The public-schema dump restored successfully into a disposable PostgreSQL 17/PostGIS database. Core warning, geometry, provenance tables and the atomic upsert RPC were verified." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Export All Table Data (PostgREST JSON, admin_users excluded)
         env:
@@ -54,9 +115,9 @@ jobs:
 
       - name: Upload Backup Artifact
         uses: actions/upload-artifact@v4
-        if: always()
+        if: success()
         with:
           name: supabase-backup-${{ github.run_id }}
           path: backups/
           retention-days: 90
-          if-no-files-found: warn
+          if-no-files-found: error
