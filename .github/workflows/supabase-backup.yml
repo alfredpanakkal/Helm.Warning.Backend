@@ -85,11 +85,11 @@ jobs:
           CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;
           CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA extensions;
           CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid
-            LANGUAGE sql STABLE AS $ SELECT NULL::uuid $;
+            LANGUAGE sql STABLE AS $function$ SELECT NULL::uuid $function$;
           CREATE OR REPLACE FUNCTION auth.role() RETURNS text
-            LANGUAGE sql STABLE AS $ SELECT NULL::text $;
+            LANGUAGE sql STABLE AS $function$ SELECT NULL::text $function$;
           CREATE OR REPLACE FUNCTION auth.jwt() RETURNS jsonb
-            LANGUAGE sql STABLE AS $ SELECT NULL::jsonb $;
+            LANGUAGE sql STABLE AS $function$ SELECT NULL::jsonb $function$;
           SQL
 
           dump_file=$(find backups -maxdepth 1 -name 'supabase_full_*.dump' -type f | sort | tail -n 1)
