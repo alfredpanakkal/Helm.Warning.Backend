@@ -980,7 +980,8 @@ def _validated_ai_proposal(
         "canonical_id": record.get("canonical_id") or "UNKNOWN",
         "navarea": record.get("navarea"),
         "field_name": field_name,
-        "original_value": item.get("original_value", record.get(field_name)),
+        # The stored value is authoritative; never trust the model's claimed original value.
+        "original_value": record.get(field_name),
         "proposed_value": item.get("proposed_value"),
         "raw_evidence": raw_evidence,
         "explanation": explanation,
@@ -989,6 +990,7 @@ def _validated_ai_proposal(
             "grounded": True,
             "model_name": model,
             "assessed_at": datetime.now(timezone.utc).isoformat(),
+            "record_updated_at": record.get("updated_at"),
         },
         "status": "pending",
     }
@@ -1443,7 +1445,30 @@ def apply_approved_corrections(
                 })
                 continue
 
-            # Step 6: Idempotency + optimistic concurrency pre-check on the just-read row
+            # Step 6: Require the warning snapshot captured when the proposal was created.
+            # Legacy proposals without this timestamp cannot be safely applied.
+            validation = prop.get("validation") or {}
+            proposal_updated_at = validation.get("record_updated_at")
+            current_updated_at = current_warning.get("updated_at")
+            if not proposal_updated_at or proposal_updated_at != current_updated_at:
+                reason = (
+                    "Proposal has no warning snapshot timestamp; re-audit required."
+                    if not proposal_updated_at
+                    else "Warning changed since proposal creation; re-audit required."
+                )
+                client.table("parsing_correction_proposals").update({
+                    "status": "stale",
+                    "error_message": reason,
+                }).eq("id", clean_uuid).execute()
+                summary["stale"].append({
+                    "proposal_id": clean_uuid,
+                    "canonical_id": prop.get("canonical_id"),
+                    "field_name": field_name,
+                    "reason": reason,
+                })
+                continue
+
+            # Step 7: Idempotency + field-level snapshot check.
             cur_val = current_warning.get(field_name)
             if cur_val == proposed_val:
                 # Idempotent no-op: the row already carries the proposed value.
@@ -1460,7 +1485,7 @@ def apply_approved_corrections(
                     "reason": "already_applied",
                 })
                 continue
-            if original_val is not None and cur_val != original_val:
+            if cur_val != original_val:
                 client.table("parsing_correction_proposals").update({
                     "status": "stale",
                     "error_message": (
