@@ -94,14 +94,12 @@ jobs:
           python -m scripts.run_manual_paste --navarea "$NAVAREA" --input pasted.txt 2>&1 | tee direct_ingest.log
           exit ${PIPESTATUS[0]}
 
-      # Queue row failures are already recorded per-row in
-      # manual_ingest_queue.status (visible in the admin panel), so the job
-      # does NOT fail red on a queue issue. Surface a warning annotation
-      # instead so problems stay visible without masking the run as broken.
+      # Queue row failures are recorded in manual_ingest_queue.status. Fail the
+      # workflow after the optional direct paste so queue errors remain visible.
       - name: Report queue result
         if: always()
         run: |
-          QEXIT=$(cat /tmp/queue_exit)
+          QEXIT=$(cat /tmp/queue_exit 2>/dev/null || echo 1)
           if [ "$QEXIT" != "0" ]; then
             echo "::error::Paste queue drain failed (exit $QEXIT). Row-level outcomes are in manual_ingest_queue.status; see the paste_queue.log artifact."
             exit "$QEXIT"
