@@ -99,7 +99,7 @@ def verify_backup_directory(backup_dir="backups"):
     with open(manifest_path, encoding="utf-8") as f:
         manifest = json.load(f)
 
-    if manifest.get("schema_version") != 1:
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
         raise ValueError("Unsupported or missing backup manifest schema_version")
     tables = manifest.get("tables")
     if not isinstance(tables, dict) or set(tables) != set(BACKUP_TABLES):
@@ -107,6 +107,8 @@ def verify_backup_directory(backup_dir="backups"):
 
     for table in BACKUP_TABLES:
         entry = tables[table]
+        if not isinstance(entry, dict):
+            raise ValueError("Invalid backup manifest entry: " + table)
         expected_file = table + ".json"
         if entry.get("file") != expected_file:
             raise ValueError("Unexpected backup file path for " + table)
