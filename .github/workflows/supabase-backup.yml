@@ -82,6 +82,9 @@ jobs:
           CREATE ROLE supabase_admin NOLOGIN;
           CREATE SCHEMA IF NOT EXISTS auth;
           CREATE SCHEMA IF NOT EXISTS extensions;
+          -- Public admin_users retains its FK definition, but its rows and the
+          -- Supabase auth schema are deliberately absent from the public dump.
+          CREATE TABLE IF NOT EXISTS auth.users (id uuid PRIMARY KEY);
           CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;
           CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA extensions;
           CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid
