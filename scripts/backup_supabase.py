@@ -15,6 +15,7 @@ exported, so credential/identity material never leaves Supabase.
 Note: this JSON export is a data export, not a proven backup — a
 restore has never been tested. pg_dump is the real backup.
 """
+import hashlib
 import json
 import os
 import sys
@@ -82,6 +83,44 @@ def _fetch_all_rows(base_url, key, table):
         offset += PAGE_SIZE
 
 
+
+def _sha256_file(path):
+    """Return the SHA-256 digest of a completed backup file."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_backup_directory(backup_dir="backups"):
+    """Fail closed unless every allowlisted JSON export matches its manifest."""
+    manifest_path = os.path.join(backup_dir, "manifest.json")
+    with open(manifest_path, encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    if manifest.get("schema_version") != 1:
+        raise ValueError("Unsupported or missing backup manifest schema_version")
+    tables = manifest.get("tables")
+    if not isinstance(tables, dict) or set(tables) != set(BACKUP_TABLES):
+        raise ValueError("Backup manifest table set does not match BACKUP_TABLES")
+
+    for table in BACKUP_TABLES:
+        entry = tables[table]
+        expected_file = table + ".json"
+        if entry.get("file") != expected_file:
+            raise ValueError("Unexpected backup file path for " + table)
+        path = os.path.join(backup_dir, expected_file)
+        with open(path, encoding="utf-8") as f:
+            rows = json.load(f)
+        if not isinstance(rows, list):
+            raise ValueError("Backup table payload is not a JSON array: " + table)
+        if entry.get("row_count") != len(rows):
+            raise ValueError("Backup row count mismatch: " + table)
+        if entry.get("sha256") != _sha256_file(path):
+            raise ValueError("Backup checksum mismatch: " + table)
+    return True
+
 def main() -> int:
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")
@@ -103,8 +142,8 @@ def main() -> int:
 
     os.makedirs("backups", exist_ok=True)
     fetched_at = datetime.now(timezone.utc).isoformat()
-    manifest = {"fetched_at": fetched_at, "base_url": base_url,
-                "tables": {}}
+    manifest = {"schema_version": 1, "fetched_at": fetched_at,
+                "base_url": base_url, "tables": {}}
 
     failed = []
     for table in BACKUP_TABLES:
@@ -118,8 +157,11 @@ def main() -> int:
         path = os.path.join("backups", table + ".json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(rows, f, ensure_ascii=False, indent=1)
-        manifest["tables"][table] = {"row_count": len(rows),
-                                     "file": path}
+        manifest["tables"][table] = {
+            "row_count": len(rows),
+            "file": table + ".json",
+            "sha256": _sha256_file(path),
+        }
         print("  ✔ " + table + ": " + str(len(rows)) + " rows")
 
     if failed:
@@ -130,6 +172,12 @@ def main() -> int:
     with open(os.path.join("backups", "manifest.json"), "w",
               encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=1)
+
+    try:
+        verify_backup_directory("backups")
+    except (OSError, ValueError, json.JSONDecodeError) as e:
+        print("❌ Backup verification failed: " + str(e), file=sys.stderr)
+        return 1
 
     total = sum(t["row_count"] for t in manifest["tables"].values())
     print("📦 Backup complete: " + str(len(manifest["tables"]))
