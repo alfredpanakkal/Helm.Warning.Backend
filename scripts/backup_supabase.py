@@ -10,10 +10,12 @@ fail-closed on any HTTP error — a table that 404s or fails fails
 the whole run. Run by .github/workflows/supabase-backup.yml
 (monthly cron + manual workflow_dispatch).
 
-admin_users (and anything else not on the allowlist) is never
-exported, so credential/identity material never leaves Supabase.
-Note: this JSON export is a data export, not a proven backup — a
-restore has never been tested. pg_dump is the real backup.
+admin_users is excluded from this JSON allowlist and its table data
+is excluded from the optional public-schema pg_dump. The schema may be
+restored, but account rows are not exported. When SUPABASE_DB_URL is
+configured, the backup workflow restores the dump into a disposable
+PostgreSQL/PostGIS database and verifies core objects. Without that
+secret, only the JSON data export is validated; it is not a full restore.
 """
 import hashlib
 import json
